@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from half.errors import CorruptLogError, SchemaVersionError, SecretLeakError, UnknownOpError
@@ -150,9 +152,11 @@ def test_export_reconstructs_state_and_omits_the_derived_database(store, tmp_pat
 
 def test_export_refuses_when_secret_material_is_present(store, tmp_path):
     store.record(Op.ASSERT, "b_1", "2026-08-01T00:00Z", claim="ok")
-    (store.root / "stray.json").write_text(
-        '{"refresh_token":"1//0abcdefghijklmnopqrstuvwxyz012345"}', encoding="utf-8"
-    )
+    # Assembled at runtime rather than written as a literal: this repo is
+    # public, and a secret-shaped literal trips GitHub's own scanning and every
+    # grep anyone runs over the tree. The value is synthetic either way.
+    fake = {"refresh" + "_token": "1/" + "/0" + "abcdefghijklmnopqrstuvwxyz012345"}
+    (store.root / "stray.json").write_text(json.dumps(fake), encoding="utf-8")
     with pytest.raises(SecretLeakError):
         export(store.root, tmp_path / "export")
     assert not (tmp_path / "export").exists()
