@@ -26,6 +26,9 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from half.errors import StoreError
+from half.retrieval.prefix import build_prefix
+from half.retrieval.rank import RetrievalSwitch
+from half.retrieval.strands import Strands
 from half.store.store import Store
 
 #: A main_id becomes a directory name, so it is validated before it can reach
@@ -51,6 +54,17 @@ class Actor:
 
     main_id: str
     store: Store
+    #: What this main's conversation is currently about, as weights (CAP-1).
+    #: Volatile by AD-26: never logged, never projected, and gone when the
+    #: actor is evicted — which is correct, because how the main is right now
+    #: is not a belief. A restart begins with no strand weighted, and the
+    #: floor in ``strand_weight`` means that costs reach, not results.
+    strands: Strands = field(default_factory=Strands)
+    #: Whether ledger retrieval is permitted for *this main* (CAP-12). One
+    #: switch per actor, not per worker: a single shared switch meant one
+    #: main's crisis disabled retrieval for every other main the process was
+    #: serving, which is a silent, total memory outage for uninvolved people.
+    retrieval: RetrievalSwitch = field(default_factory=RetrievalSwitch)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     #: Turns holding *or waiting for* the lock. Incremented before the acquire
     #: and decremented after the release, so it is never zero while any turn
@@ -88,7 +102,13 @@ class ActorRegistry:
         """Open a main's store. Cheap — SQLite open plus a snapshot read, which
         the work that follows dwarfs."""
         validate_main_id(main_id)
-        actor = Actor(main_id=main_id, store=Store(self.root / main_id))
+        # The prefix builder is handed to the store here rather than imported
+        # by it: ``half.store`` may not depend on ``half.retrieval``. Wiring it
+        # at hydration is what makes prefix hits work in the running product
+        # and not only where a test remembers to pass it.
+        actor = Actor(
+            main_id=main_id, store=Store(self.root / main_id, prefix=build_prefix)
+        )
         self._actors[main_id] = actor
         return actor
 
@@ -130,6 +150,19 @@ class ActorRegistry:
             self._evict_if_needed()
 
     # -- introspection -------------------------------------------------------
+
+    def retrieval_switch(self, main_id: str) -> RetrievalSwitch:
+        """This main's retrieval switch, hydrating the actor if needed.
+
+        The crisis gate runs before the mutex is taken, so it needs a way to
+        reach one main's switch without holding that main's actor. Hydration is
+        a dict entry plus a lazily-opened store, and the switch is volatile
+        state on the actor — so this neither writes nor blocks.
+        """
+        actor = self._actors.get(main_id)
+        if actor is None:
+            actor = self._hydrate(main_id)
+        return actor.retrieval
 
     @property
     def hydrated(self) -> list[str]:

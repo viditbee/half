@@ -50,6 +50,21 @@ class SecretLeakError(StoreError):
     """Secret material was found somewhere it must never appear (AD-11)."""
 
 
+class RetrievalError(HalfError):
+    """A fault in the retrieval layer (CAP-9)."""
+
+
+class RetrievalDisabled(RetrievalError):
+    """Retrieval was queried while switched off (CAP-12).
+
+    Loud on purpose. Crisis mode hard-disables ledger retrieval, and the
+    tempting implementation returns an empty result instead — which is
+    indistinguishable from "this main has no beliefs" and reads, one layer up,
+    as Half not having access to its own memory. A disabled retriever raises so
+    that a caller which forgot to branch fails visibly rather than quietly.
+    """
+
+
 class ChannelError(HalfError):
     """A fault in the messaging channel."""
 

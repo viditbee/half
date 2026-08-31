@@ -23,16 +23,33 @@ from __future__ import annotations
 from typing import Awaitable, Callable
 
 from half.channel.port import Inbound
+from half.retrieval.rank import RetrievalSwitch
 
 #: What the gate delegates to once a turn is judged ordinary.
 Pipeline = Callable[[Inbound], Awaitable[str | None]]
+
+#: Resolves one main's retrieval switch. A function rather than a switch,
+#: because crisis is a state of one person and not of the worker process.
+SwitchFor = Callable[[str], RetrievalSwitch]
 
 
 class CrisisGate:
     """Every inbound message crosses this before anything else sees it."""
 
-    def __init__(self, pipeline: Pipeline) -> None:
+    def __init__(self, pipeline: Pipeline, retrieval: SwitchFor | None = None) -> None:
         self._pipeline = pipeline
+        # CAP-12 requires ledger retrieval to be hard-disabled in crisis mode,
+        # and the gate is the only place that knows the mode has been entered.
+        # It is resolved per main: the runtime passes the actor registry's
+        # resolver, so the switch this turns off is the one that main's own
+        # retriever reads. A gate built without one keeps its own per-main
+        # switches rather than a single shared flag, so even the standalone
+        # case cannot silence a bystander.
+        self._own: dict[str, RetrievalSwitch] = {}
+        self._retrieval = retrieval if retrieval is not None else self._mine
+
+    def _mine(self, main_id: str) -> RetrievalSwitch:
+        return self._own.setdefault(main_id, RetrievalSwitch())
 
     async def handle(self, inbound: Inbound) -> str | None:
         """Assess, then either respond directly or delegate inward.
@@ -41,6 +58,11 @@ class CrisisGate:
         outcome, not a failure (AD-27).
         """
         if self._is_crisis(inbound):
+            # Disabled here rather than inside the response, so it stays on the
+            # path even when story 6 rewrites the response entirely. A disabled
+            # retriever raises when queried; it never returns an empty set that
+            # a caller could mistake for "this main has nothing" (CAP-12).
+            self._retrieval(inbound.main_id).disable()
             return await self._respond_to_crisis(inbound)
         return await self._pipeline(inbound)
 

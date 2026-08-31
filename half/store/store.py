@@ -38,11 +38,15 @@ DB_NAME = "half.db"
 class Store:
     """Owns one main's directory."""
 
-    def __init__(self, root: Path | str) -> None:
+    def __init__(self, root: Path | str, *, prefix: db.PrefixFn | None = None) -> None:
         self.root = Path(root)
         # 0700: the tree holds every claim Half has about one person.
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.log = BeliefLog(self.root / BELIEFS_DIR)
+        # Injected, never imported: the contextual prefix is retrieval's idea
+        # and ``half.store`` may not depend on ``half.retrieval``. A store built
+        # without one indexes claim text only — correct, minus prefix hits.
+        self._prefix = prefix
         self._conn: sqlite3.Connection | None = None
 
     # -- lifecycle -----------------------------------------------------------
@@ -61,6 +65,13 @@ class Store:
     def conn(self) -> sqlite3.Connection:
         if self._conn is None:
             self._conn = db.connect(self.db_path)
+            if db.is_empty(self._conn):
+                # Either a first open, where this costs nothing, or a derived
+                # view this build's schema discarded. Replaying is the whole
+                # point of the log being the authority (AD-3, AD-4) — an
+                # upgrade must not leave a main with an empty index and no
+                # signal that anything happened.
+                self.rebuild()
         return self._conn
 
     def close(self) -> None:
@@ -120,9 +131,34 @@ class Store:
         """Rebuild the derived view from the log. Safe at any time; the only
         way SQLite is ever written."""
         state = self.fold()
-        db.rebuild(self.conn, state)
+        db.rebuild(self.conn, state, prefix=self._prefix)
         return state
 
     def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
-        """BM25-ranked search over claims (AD-5)."""
+        """BM25-ranked search over claims and their prefixes (AD-5)."""
         return db.search(self.conn, query, limit)
+
+    # -- read: the retrieval layer's door ------------------------------------
+    #
+    # Three accessors rather than a handle on the connection, so that ranking
+    # policy stays outside ``half/store/`` while retrieval still gets what it
+    # needs in one query each. None of them orders by anything but bm25 or id.
+
+    def candidates(self, query: str) -> list[dict[str, Any]]:
+        """Term-matched beliefs with their bm25 score, prefix and record.
+
+        Unbounded for the same reason ``all_candidates`` is: a ``LIMIT`` here
+        would be a silent cap ordered by bm25, and only retrieval can bound the
+        set by salience and say in its result that it did."""
+        return db.search_beliefs(self.conn, query)
+
+    def all_candidates(self) -> list[dict[str, Any]]:
+        """Every belief, id-ordered, unscored — the backstop behind a query that
+        matches no term. Unbounded: bounding it is retrieval's job, because only
+        retrieval knows which beliefs are worth keeping (salience) and how to say
+        in its result that it dropped some."""
+        return db.all_beliefs(self.conn)
+
+    def loops(self) -> dict[str, dict[str, Any]]:
+        """The loop projection: the ranking function for everything Half does."""
+        return db.read_loops(self.conn)

@@ -39,10 +39,10 @@ jobs:
           enable-cache: true
 
       - name: 'AD-4: replay reproduces byte-identical state'
-        run: uv run --extra dev pytest tests/test_replay.py -q
+        run: uv run --locked --extra dev pytest tests/test_replay.py -q
 
       - name: 'AD-30: the fold is pure'
-        run: uv run --extra dev pytest tests/test_purity.py -q
+        run: uv run --locked --extra dev pytest tests/test_purity.py -q
 
       - name: 'AD-2: the runtime imports only stdlib and pinned dependencies'
         # Lives in the suite (tests/test_dependencies.py) rather than inline
@@ -50,10 +50,29 @@ jobs:
         # declaration rather than pinning and hardcoded one import-name
         # mapping, so it passed an unpinned dependency and failed a correctly
         # pinned one.
-        run: uv run --extra dev pytest tests/test_dependencies.py -q
+        run: uv run --locked --extra dev pytest tests/test_dependencies.py -q
 
       - name: 'AD-11: no secret material in the tree'
         # In the suite (tests/test_secret_gate.py) so the gate itself is
         # testable, matching the AD-2 step above. An inline version drifted
         # away from scan_for_secrets and stopped checking untracked files.
-        run: uv run --extra dev pytest tests/test_secret_gate.py -q
+        run: uv run --locked --extra dev pytest tests/test_secret_gate.py -q
+
+      - name: 'AD-24: retrieval weights and never excludes'
+        # A topic switch that can empty the candidate set, or a cap that drops
+        # beliefs without saying so, is what produces "I don't have access to
+        # that" — the sentence the spec rejects outright.
+        run: uv run --locked --extra dev pytest -q -m ad24
+
+      - name: 'AD-18: no retrieved belief text reaches a reply'
+        # Licenses are enforced at context construction, which is not built
+        # yet. Until it is, the boundary is that nothing retrieved is said.
+        # Marker-selected rather than file-selected, so this cannot go green
+        # only because the AD-24 step already ran the same file.
+        run: uv run --locked --extra dev pytest -q -m ad18
+
+      - name: 'AD-5 and AD-30: retrieval degrades, and never writes'
+        # The reranker fallback, the salience-is-derived assertions, the
+        # no-clock scan, and the AD-3 discard-and-replay of an older derived
+        # view all live here and were named by no gate.
+        run: uv run --locked --extra dev pytest -q tests/test_retrieval.py

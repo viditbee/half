@@ -142,7 +142,10 @@ def test_an_inbound_message_is_stored_and_answered(tmp_path):
     reg = ActorRegistry(tmp_path / "mains")
     asyncio.run(Runtime(channel=channel, registry=reg).run())
 
-    assert transport.sent == [("123", "noted: i want to fly again")]
+    # The reply carries no belief text — not even the main's own words back,
+    # which are now a stored claim. Licenses are enforced at context
+    # construction (AD-18) and that construction is story 5.
+    assert transport.sent == [("123", "noted.")]
 
     async def read():
         async with reg.acquire("vidit") as actor:
@@ -297,7 +300,7 @@ def test_one_failed_send_does_not_stop_the_loop_for_anyone(tmp_path):
     reg = ActorRegistry(tmp_path / "mains")
     asyncio.run(Runtime(channel=channel, registry=reg).run())
 
-    assert transport.sent == [("123", "noted: second")]
+    assert transport.sent == [("123", "noted.")]
 
     async def read():
         async with reg.acquire("vidit") as actor:
@@ -315,7 +318,7 @@ def test_a_retryable_send_is_retried_and_succeeds(tmp_path, monkeypatch):
     channel = TelegramChannel(transport=transport, mains={"123": "vidit"})
     reg = ActorRegistry(tmp_path / "mains")
     asyncio.run(Runtime(channel=channel, registry=reg).run())
-    assert transport.sent == [("123", "noted: hello")]
+    assert transport.sent == [("123", "noted.")]
     assert transport.attempts == 3
     reg.close()
 

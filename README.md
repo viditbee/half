@@ -16,10 +16,15 @@ Your credentials are never in this tree.
 
 ## Status
 
-Stories 1–2 of 12: the store, and the Telegram channel. Half can hold a
-conversation and remember it. It cannot yet ingest your mail, retrieve
-meaningfully, govern what it says, or handle a crisis — the responder is a
-deterministic stub that later stories replace.
+Stories 1–4 of 12: the store, the Telegram channel, mail ingestion, and
+retrieval. Half can hold a conversation, remember it, derive claims from your
+mail without keeping the mail, and rank what it knows against what you just
+said.
+
+It cannot yet decide what is worth saying, and by design it says none of what
+it retrieves: licenses are enforced when context is *built* (story 5), so until
+that lands the responder is a deterministic stub and no belief text is allowed
+into a reply. Crisis handling (story 6) is still unimplemented.
 
 **Not ready for real use.** In particular the crisis protocol (story 6) is
 unimplemented, and that is a launch gate.
@@ -55,6 +60,9 @@ The suite is hermetic — it makes no network calls and needs no bot token.
 | Module | What it holds |
 | --- | --- |
 | `half/store/` | The four layers: log, pure fold, SQLite + FTS5, export |
+| `half/ingest/` | Connectors, secret scrubbing, independence, admission gates |
+| `half/retrieval/` | Strand weighting, contextual prefix, salience, bm25 fusion |
+| `half/text.py` | One unicode-aware tokenizer, shared by index and matcher |
 | `half/channel/` | The `Channel` port, reachability, the Telegram adapter |
 | `half/actor/` | One actor per main — an inbox and a mutex — and the wiring |
 | `half/crisis/` | Owns the inbound entrypoint; the assessment lands in story 6 |
@@ -74,6 +82,29 @@ is the crisis gate.
 
 `test_dependencies.py` enforces that the runtime imports only the standard
 library and pinned dependencies.
+
+`test_retrieval.py` varies one ranking factor at a time with the score
+tie-break deliberately pointing the other way, so a factor quietly replaced by
+a constant fails rather than passing by coincidence. It also rebuilds the
+*previous* release's database schema and asserts the upgrade replays.
+
+`test_strands.py` watches the live turn rank through a recording reranker
+rather than grepping for a call, asserts one main's crisis cannot disable
+another's retrieval, and checks byte-wise that no retrieved claim reaches the
+wire.
+
+## Retrieval, in one paragraph
+
+BM25 over FTS5 — no vector service, no embeddings, nothing to self-host beyond
+SQLite. Each belief is indexed twice: its claim, and a short *contextual
+prefix* built from its own fields, so a query naming a loop finds a belief
+whose words never mention it. The bm25 score is then fused with strand match
+(what this conversation is about), recency, and salience (independence, last
+corroboration, loop state). Every multiplier has a strictly positive floor, so
+weighting can reorder the belief set but can never remove anything from it —
+Half must never be able to say *"I don't have access to that."* A reranker is
+optional, has exactly one method, and when it is missing or misbehaves the
+result carries an explicit no-op annotation rather than degrading silently.
 
 ## Architecture
 
