@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: tests (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Run the suite
+        run: uv run --python ${{ matrix.python }} --extra dev pytest -q
+
+  invariants:
+    # AD-4 and AD-30 say these are enforced per commit rather than by
+    # convention. They run in the suite above too — this job exists so a red
+    # build names which invariant broke instead of saying "tests failed".
+    name: architecture invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: 'AD-4: replay reproduces byte-identical state'
+        run: uv run --extra dev pytest tests/test_replay.py -q
+
+      - name: 'AD-30: the fold is pure'
+        run: uv run --extra dev pytest tests/test_purity.py -q
+
+      - name: 'AD-2: the runtime imports nothing outside the standard library'
+        run: |
+          uv run python - <<'PY'
+          import ast, pathlib, sys
+          external = set()
+          for path in pathlib.Path("half").rglob("*.py"):
+              for node in ast.walk(ast.parse(path.read_text())):
+                  if isinstance(node, ast.Import):
+                      external.update(a.name.split(".")[0] for a in node.names)
+                  elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                      external.add(node.module.split(".")[0])
+          leaked = sorted(m for m in external if m not in sys.stdlib_module_names and m != "half")
+          if leaked:
+              sys.exit(f"runtime dependency crept in: {leaked}")
+          print("runtime is stdlib-only")
+          PY
+
+      - name: 'AD-11: the committed tree carries no secret material'
+        run: |
+          uv run python - <<'PY'
+          import pathlib, sys
+          from half.store.export import scan_for_secrets
+          findings = [
+              f for f in scan_for_secrets(pathlib.Path("."))
+              if ".venv" not in f and ".git/" not in f and "__pycache__" not in f
+          ]
+          if findings:
+              sys.exit("secret material in the tree:\n  " + "\n  ".join(findings))
+          print("tree scans clean")
+          PY
