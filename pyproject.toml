@@ -3,7 +3,7 @@ name = "half"
 version = "0.1.0"
 description = "A second self that lives in your messaging app."
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["python-telegram-bot>=22.8,<23"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

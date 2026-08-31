@@ -48,3 +48,33 @@ class SchemaVersionError(StoreError):
 
 class SecretLeakError(StoreError):
     """Secret material was found somewhere it must never appear (AD-11)."""
+
+
+class ChannelError(HalfError):
+    """A fault in the messaging channel."""
+
+
+class SendFailed(ChannelError):
+    """A platform refused or failed a send.
+
+    ``retryable`` separates a transient transport fault from a permanent
+    refusal, because the two want opposite handling and a caller that cannot
+    tell them apart will either hammer a dead endpoint or drop a recoverable
+    message.
+    """
+
+    def __init__(self, reason: str, *, retryable: bool) -> None:
+        self.retryable = retryable
+        super().__init__(f"{'transient' if retryable else 'permanent'}: {reason}")
+
+
+class UnknownSender(ChannelError):
+    """Inbound from an address belonging to no registered main."""
+
+
+class NotReachable(ChannelError):
+    """Half may not contact this main unprompted right now (AD-7)."""
+
+
+class ForbiddenRecipient(ChannelError):
+    """An outbound send was addressed to someone other than the main (AD-25)."""
