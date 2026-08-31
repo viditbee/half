@@ -24,7 +24,7 @@ jobs:
         with:
           enable-cache: true
       - name: Run the suite
-        run: uv run --python ${{ matrix.python }} --extra dev pytest -q
+        run: uv run --locked --python ${{ matrix.python }} --extra dev pytest -q
 
   invariants:
     # AD-4 and AD-30 say these are enforced per commit rather than by
@@ -45,35 +45,12 @@ jobs:
         run: uv run --extra dev pytest tests/test_purity.py -q
 
       - name: 'AD-2: the runtime imports only stdlib and pinned dependencies'
-        # Was stdlib-only, which was true for the store and wrong the moment a
-        # platform SDK arrived. The spine's Stack table always listed these, so
-        # the gate was over-tight rather than the dependency being wrong. An
-        # allowlist still catches an UNPINNED dependency creeping in without
-        # the human decision the story's Ask First rule requires.
-        run: |
-          uv run python - <<'PY'
-          import ast, pathlib, sys, tomllib
-          pinned = set()
-          meta = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
-          for spec in meta["project"].get("dependencies", []):
-              pinned.add(spec.split("[")[0].split(">")[0].split("<")[0].split("=")[0].strip())
-          # Distribution names differ from import names; map the exceptions.
-          pinned |= {"telegram"} if "python-telegram-bot" in pinned else set()
-          external = set()
-          for path in pathlib.Path("half").rglob("*.py"):
-              for node in ast.walk(ast.parse(path.read_text())):
-                  if isinstance(node, ast.Import):
-                      external.update(a.name.split(".")[0] for a in node.names)
-                  elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-                      external.add(node.module.split(".")[0])
-          leaked = sorted(
-              m for m in external
-              if m not in sys.stdlib_module_names and m != "half" and m not in pinned
-          )
-          if leaked:
-              sys.exit(f"unpinned runtime dependency crept in: {leaked}")
-          print(f"runtime imports only stdlib and pinned deps: {sorted(pinned) or 'none pinned'}")
-          PY
+        # Lives in the suite (tests/test_dependencies.py) rather than inline
+        # here, so the gate itself is testable. The inline version checked
+        # declaration rather than pinning and hardcoded one import-name
+        # mapping, so it passed an unpinned dependency and failed a correctly
+        # pinned one.
+        run: uv run --extra dev pytest tests/test_dependencies.py -q
 
       - name: 'AD-11: the committed tree carries no secret material'
         run: |

@@ -57,6 +57,14 @@ class CrisisGate:
         return False
 
     async def _respond_to_crisis(self, inbound: Inbound) -> str | None:
+        """Unimplemented on purpose until story 6.
+
+        Deliberately raising rather than returning a placeholder: a plausible
+        response here would read as coverage and discourage building the real
+        one, which the crisis-protocol companion specifies precisely. The
+        runtime isolates the failure to this message, so an unimplemented
+        branch cannot stop the worker.
+        """
         raise NotImplementedError(
             "crisis response is story 6; implement it from the crisis-protocol "
             "companion verbatim, never paraphrased"

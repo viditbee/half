@@ -16,47 +16,64 @@ Your credentials are never in this tree.
 
 ## Status
 
-Story 1 of 12: the store. The messaging channel, ingestion, retrieval ranking,
-delivery governance and the crisis protocol are not built yet.
+Stories 1–2 of 12: the store, and the Telegram channel. Half can hold a
+conversation and remember it. It cannot yet ingest your mail, retrieve
+meaningfully, govern what it says, or handle a crisis — the responder is a
+deterministic stub that later stories replace.
+
+**Not ready for real use.** In particular the crisis protocol (story 6) is
+unimplemented, and that is a launch gate.
 
 ## Running it
 
-Runtime is the Python standard library — no dependencies. `pytest` is the only
-development dependency.
-
 ```bash
 uv sync --extra dev
+
+export TELEGRAM_BOT_TOKEN="<from @BotFather>"
+export HALF_MAINS="<your-telegram-chat-id>:<a-name-for-you>"
+export HALF_ROOT="$HOME/.half"        # optional, this is the default
+
+uv run half                            # or: uv run python -m half
+```
+
+Telegram uses long polling, so **no public URL is needed** — it works from a
+laptop behind NAT. WhatsApp needs a public webhook and lands in a later story.
+
+Send the bot a message first: a Telegram bot can never open a conversation, so
+Half literally cannot speak until you do.
+
+## Tests
+
+```bash
 uv run --extra dev pytest -q
 ```
 
-## Using the store
+The suite is hermetic — it makes no network calls and needs no bot token.
 
-```python
-from half.store.store import Store
-from half.store.ops import Op
+## Layout
 
-with Store("~/.half/me") as store:
-    store.record(Op.ASSERT, "b_1", "2026-08-14T09:12Z",
-                 subject="self", claim="replies to mother within three minutes",
-                 ledger="revealed", license="behave", independent=2)
+| Module | What it holds |
+| --- | --- |
+| `half/store/` | The four layers: log, pure fold, SQLite + FTS5, export |
+| `half/channel/` | The `Channel` port, reachability, the Telegram adapter |
+| `half/actor/` | One actor per main — an inbox and a mutex — and the wiring |
+| `half/crisis/` | Owns the inbound entrypoint; the assessment lands in story 6 |
+| `half/config.py` | Who counts as a main, from the environment |
+| `half/__main__.py` | The composition root |
 
-    store.search("mother")          # BM25-ranked
-    store.state().beliefs           # the current derived view
-    store.rebuild()                 # re-fold from the log at any time
-```
+## The tests that carry the design
 
-Timestamps are always supplied by the caller. Nothing under `store` reads a
-clock, so folding a log is a pure function of that log.
+`test_replay.py` deletes the SQLite file, replays the log, and asserts
+byte-identical state — across a fixture that spans a model-tier change.
 
-## The two tests that carry the design
+`test_purity.py` statically forbids the fold from reaching a clock, the
+network, a model, or ambient process state.
 
-`tests/test_replay.py` deletes the SQLite file, replays the log, and asserts
-byte-identical state — across a fixture that deliberately spans a model-tier
-change.
+`test_entrypoint.py` asserts the pipeline has exactly one caller, and that it
+is the crisis gate.
 
-`tests/test_purity.py` statically forbids the fold from reaching a clock, the
-network, a model, or ambient process state. A behavioural test cannot catch a
-fold that re-derives instead of replaying until the tier actually changes.
+`test_dependencies.py` enforces that the runtime imports only the standard
+library and pinned dependencies.
 
 ## Architecture
 
@@ -68,4 +85,4 @@ the planning artifacts, alongside the specification and the constitution.
 
 MIT. Portions study or adapt work from
 [hermes-agent](https://github.com/NousResearch/hermes-agent) (MIT, © 2025 Nous
-Research); see the extraction manifest in the planning artifacts.
+Research).

@@ -43,3 +43,35 @@ def tier_change_log(tmp_path):
                  loop="buy-farmland", state="stalled", timescale="years",
                  last_movement="2026-03-12")
         yield s
+
+
+class FakeTransport:
+    """The whole network surface the adapter needs, so tests stay offline."""
+
+    def __init__(self, updates=None, fail=None, fail_times=None):
+        self.updates = updates or []
+        self.sent: list[tuple[str, str]] = []
+        self.fail = fail
+        self.fail_times = fail_times  # fail this many times, then succeed
+        self.attempts = 0
+
+    async def poll(self):
+        for update in self.updates:
+            yield update
+
+    async def send_message(self, chat_id: str, text: str) -> str:
+        self.attempts += 1
+        if self.fail is not None:
+            if self.fail_times is None or self.attempts <= self.fail_times:
+                raise self.fail
+        self.sent.append((chat_id, text))
+        return f"mid-{len(self.sent)}"
+
+
+def msg(**kw):
+    return {"chat_id": "123", "text": "hi", "message_id": "1", "date": 1000, **kw}
+
+
+@pytest.fixture
+def fake_transport():
+    return FakeTransport

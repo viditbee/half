@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import pytest
 
 from half.actor.registry import ActorRegistry
 from half.actor.runtime import Runtime, respond
 from half.channel.telegram import TelegramChannel
+from half.crisis.gate import CrisisGate
+from half.errors import StoreError
 from half.store.ops import Op
-from tests.test_channel import FakeTransport, msg
+from tests.conftest import FakeTransport, msg
 
 
 @pytest.fixture
@@ -172,3 +175,218 @@ async def _touch(registry: ActorRegistry, main_id: str) -> None:
 
 async def _gather(*coros) -> None:
     await asyncio.gather(*coros)
+
+
+# ── review findings: the AD-1 eviction window ───────────────────────────────
+
+def test_an_actor_with_a_queued_turn_is_not_evicted_under_pressure(tmp_path):
+    """AD-1. ``asyncio.Lock.release()`` clears its flag and only *schedules*
+    the next waiter, so ``lock.locked()`` alone reports an actor with a queued
+    turn as idle. Evicting there closes the store under a turn about to run,
+    and the next acquire hydrates a second Actor with a second lock for the
+    same main — two writers on one belief log.
+    """
+    reg = ActorRegistry(tmp_path / "mains", capacity=1)
+    b_in, b_out, a_in, a_out = (asyncio.Event() for _ in range(4))
+    observed: dict[str, bool] = {}
+
+    async def scenario() -> None:
+        async def hold_b() -> None:
+            async with reg.acquire("b"):
+                b_in.set()
+                await b_out.wait()
+
+        async def hold_a() -> None:
+            async with reg.acquire("a") as actor:
+                actor.store.conn  # force the connection open
+                a_in.set()
+                await a_out.wait()
+
+        async def queued() -> None:
+            async with reg.acquire("a") as actor:
+                observed["store_open"] = actor.store._conn is not None
+
+        tb = asyncio.create_task(hold_b())
+        await b_in.wait()
+        ta = asyncio.create_task(hold_a())
+        await a_in.wait()
+
+        tq = asyncio.create_task(queued())
+        for _ in range(3):
+            await asyncio.sleep(0)  # park the waiter on a's lock
+
+        a_out.set()
+        await ta          # release -> eviction considered in this window
+        await tq
+        b_out.set()
+        await tb
+
+    asyncio.run(scenario())
+    assert observed["store_open"], "a queued turn resumed on a closed store"
+
+
+def test_a_failing_turn_still_lets_the_registry_evict(tmp_path):
+    """Eviction lives in a finally. Sitting after the ``async with`` meant a
+    raising turn skipped it and the registry grew past capacity forever."""
+    reg = ActorRegistry(tmp_path / "mains", capacity=1)
+
+    async def scenario() -> None:
+        for main_id in ("a", "b", "c"):
+            with contextlib.suppress(RuntimeError):
+                async with reg.acquire(main_id):
+                    raise RuntimeError("turn failed")
+
+    asyncio.run(scenario())
+    assert len(reg.hydrated) <= 1
+
+
+def test_capacity_must_be_at_least_one(tmp_path):
+    with pytest.raises(ValueError):
+        ActorRegistry(tmp_path / "mains", capacity=0)
+
+
+@pytest.mark.parametrize("bad", ["../escape", "a/b", "", ".", "..", "with space", "x" * 65])
+def test_an_unsafe_main_id_never_reaches_the_filesystem(tmp_path, bad):
+    """main_id becomes a directory name and arrives from configuration."""
+    reg = ActorRegistry(tmp_path / "mains")
+
+    async def attempt() -> None:
+        async with reg.acquire(bad):
+            pass
+
+    with pytest.raises(StoreError):
+        asyncio.run(attempt())
+
+
+def test_close_refuses_while_a_turn_is_running(tmp_path):
+    reg = ActorRegistry(tmp_path / "mains")
+    entered, release = asyncio.Event(), asyncio.Event()
+    failed: list[bool] = []
+
+    async def scenario() -> None:
+        async def hold() -> None:
+            async with reg.acquire("a"):
+                entered.set()
+                await release.wait()
+
+        task = asyncio.create_task(hold())
+        await entered.wait()
+        try:
+            reg.close()
+            failed.append(False)
+        except RuntimeError:
+            failed.append(True)
+        release.set()
+        await task
+
+    asyncio.run(scenario())
+    assert failed == [True]
+
+
+# ── review findings: isolation, retry, idempotency ─────────────────────────
+
+def test_one_failed_send_does_not_stop_the_loop_for_anyone(tmp_path):
+    """An uncaught SendFailed used to propagate out of run() and end polling
+    for every main — Half stayed up and silently stopped receiving."""
+    transport = FakeTransport(
+        [msg(text="first", message_id="1"), msg(text="second", message_id="2")],
+        fail=RuntimeError("Bad Request: chat not found"),
+        fail_times=1,
+    )
+    channel = TelegramChannel(transport=transport, mains={"123": "vidit"})
+    reg = ActorRegistry(tmp_path / "mains")
+    asyncio.run(Runtime(channel=channel, registry=reg).run())
+
+    assert transport.sent == [("123", "noted: second")]
+
+    async def read():
+        async with reg.acquire("vidit") as actor:
+            return sorted(actor.store.state().beliefs)
+    assert asyncio.run(read()) == ["b_1", "b_2"]  # both stored
+    reg.close()
+
+
+def test_a_retryable_send_is_retried_and_succeeds(tmp_path, monkeypatch):
+    """SendFailed.retryable previously had no reader anywhere."""
+    monkeypatch.setattr("half.actor.runtime.RETRY_DELAYS", (0.0, 0.0, 0.0))
+    transport = FakeTransport(
+        [msg(text="hello")], fail=TimeoutError("timed out"), fail_times=2
+    )
+    channel = TelegramChannel(transport=transport, mains={"123": "vidit"})
+    reg = ActorRegistry(tmp_path / "mains")
+    asyncio.run(Runtime(channel=channel, registry=reg).run())
+    assert transport.sent == [("123", "noted: hello")]
+    assert transport.attempts == 3
+    reg.close()
+
+
+def test_a_permanent_send_failure_is_not_retried(tmp_path):
+    transport = FakeTransport(
+        [msg(text="hello")], fail=RuntimeError("Forbidden: bot was blocked")
+    )
+    channel = TelegramChannel(transport=transport, mains={"123": "vidit"})
+    reg = ActorRegistry(tmp_path / "mains")
+    asyncio.run(Runtime(channel=channel, registry=reg).run())
+    assert transport.attempts == 1
+    reg.close()
+
+
+def test_a_redelivered_message_is_not_recorded_twice(tmp_path):
+    """At-least-once delivery makes redelivery routine, so the turn is
+    idempotent."""
+    same = msg(text="i want to fly again", message_id="42")
+    transport = FakeTransport([same, dict(same)])
+    channel = TelegramChannel(transport=transport, mains={"123": "vidit"})
+    reg = ActorRegistry(tmp_path / "mains")
+    asyncio.run(Runtime(channel=channel, registry=reg).run())
+
+    async def read():
+        async with reg.acquire("vidit") as actor:
+            return list(actor.store.state().beliefs)
+    assert asyncio.run(read()) == ["b_42"]
+    assert len(transport.sent) == 1  # the duplicate produced no second reply
+    reg.close()
+
+
+def test_a_raising_turn_does_not_end_the_loop(tmp_path):
+    """Any handler error is isolated to its message."""
+    class Exploding(CrisisGate):
+        def __init__(self):
+            self.calls = 0
+            super().__init__(pipeline=self._boom)
+
+        async def _boom(self, inbound):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("handler blew up")
+            return "recovered"
+
+    transport = FakeTransport([msg(message_id="1"), msg(message_id="2")])
+    channel = TelegramChannel(transport=transport, mains={"123": "vidit"})
+    reg = ActorRegistry(tmp_path / "mains")
+    asyncio.run(Runtime(channel=channel, registry=reg, gate=Exploding()).run())
+    assert transport.sent == [("123", "recovered")]
+    reg.close()
+
+
+def test_the_crisis_branch_is_reachable_from_a_test(tmp_path):
+    """The gate was constructed inside run(), so no test could supply one that
+    reports a crisis — the whole branch was unreachable."""
+    class AlwaysCrisis(CrisisGate):
+        def _is_crisis(self, inbound):
+            return True
+
+        async def _respond_to_crisis(self, inbound):
+            return "I'm software. You need a person."
+
+    transport = FakeTransport([msg(text="anything")])
+    channel = TelegramChannel(transport=transport, mains={"123": "vidit"})
+    reg = ActorRegistry(tmp_path / "mains")
+    gate = AlwaysCrisis(pipeline=_never)
+    asyncio.run(Runtime(channel=channel, registry=reg, gate=gate).run())
+    assert transport.sent == [("123", "I'm software. You need a person.")]
+    reg.close()
+
+
+async def _never(inbound):  # pragma: no cover - must not be reached
+    raise AssertionError("the crisis branch must not reach the pipeline")

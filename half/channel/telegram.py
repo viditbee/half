@@ -16,6 +16,7 @@ production implementation is a thin `python-telegram-bot` wrapper.
 
 from __future__ import annotations
 
+import datetime as _dt
 import time
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Protocol
@@ -23,10 +24,12 @@ from urllib.parse import quote
 
 from half.channel.port import Inbound, Reachability, SendResult
 from half.channel.window import LatchRule, ReachabilityTracker
-from half.errors import ForbiddenRecipient, NotReachable, SendFailed, UnknownSender
+from half.errors import ForbiddenRecipient, NotReachable, SendFailed
 
-#: Telegram rejects messages over 4096 UTF-16 code units. Split below it.
-MAX_MESSAGE_CHARS = 4096
+#: Telegram rejects messages over 4096 UTF-16 code units — not characters.
+#: Measured with :func:`utf16_len`, because an emoji is one character and two
+#: code units, so a code-point measure ships an unsendable message.
+MAX_MESSAGE_UNITS = 4096
 
 
 class Transport(Protocol):
@@ -67,7 +70,7 @@ class TelegramChannel:
             main_id = self.mains.get(address)
             if main_id is None:
                 continue
-            epoch = float(update.get("date", time.time()))
+            epoch = _epoch(update.get("date"))
             self.reach.note_inbound(main_id, epoch=epoch)
             yield Inbound(
                 main_id=main_id,
@@ -87,13 +90,25 @@ class TelegramChannel:
                 f"{self.name} will not carry an unprompted message to {main_id}"
             )
 
-        chunks = split(text, MAX_MESSAGE_CHARS)
+        if not text.strip():
+            # Telegram rejects an empty body; refusing here keeps a
+            # self-inflicted 400 from being reported as a transport fault.
+            return SendResult(external_id="", parts=0)
+
+        chunks = split(text, MAX_MESSAGE_UNITS)
         last = ""
-        for chunk in chunks:
+        for index, chunk in enumerate(chunks):
             try:
                 last = await self.transport.send_message(address, chunk)
+            except (TypeError, AttributeError, NameError):
+                # A programming error, not a transport fault. Classifying it as
+                # retryable would retry a bug forever.
+                raise
             except Exception as exc:  # noqa: BLE001 - translated at the boundary
-                raise SendFailed(str(exc), retryable=_is_retryable(exc)) from exc
+                raise SendFailed(
+                    f"{exc} (chunk {index + 1} of {len(chunks)})",
+                    retryable=_is_retryable(exc),
+                ) from exc
         return SendResult(external_id=last, parts=len(chunks))
 
     # -- port: draft_link ----------------------------------------------------
@@ -105,9 +120,16 @@ class TelegramChannel:
         so the main stays the sender in fact rather than in attribution (AD-25)
         — and on a platform where a bot cannot open a conversation at all, this
         is also the only thing that works.
+
+        Two shapes, because Telegram has two. With a recipient, a deep link to
+        that conversation with the message prefilled; without one, the share
+        sheet so the main picks. An earlier version put the recipient in the
+        share sheet's ``url`` parameter, which is the shared *link* rather than
+        an addressee — it neither targeted anyone nor was discarded.
         """
-        target = f"@{to}" if to else ""
-        return f"https://t.me/share/url?url={quote(target)}&text={quote(text)}"
+        if to:
+            return f"https://t.me/{quote(to.lstrip('@'))}?text={quote(text)}"
+        return f"https://t.me/share/url?url=&text={quote(text)}"
 
     # -- port: capability_query ---------------------------------------------
 
@@ -131,34 +153,90 @@ class TelegramChannel:
         )
 
 
+def utf16_len(text: str) -> int:
+    """Length in UTF-16 code units — the unit Telegram actually counts."""
+    return len(text.encode("utf-16-le")) // 2
+
+
 def split(text: str, limit: int) -> list[str]:
-    """Split ``text`` into pieces under ``limit``, preserving order.
+    """Split ``text`` into pieces within ``limit`` UTF-16 code units.
 
     Prefers a paragraph break, then a line break, then a space, before cutting
-    mid-word — a hard slice at the limit reads as corruption to the person on
-    the other end.
+    mid-word — a hard slice reads as corruption to the person on the other end.
+    Empty pieces are never emitted: the platform rejects an empty body, and a
+    whitespace-only reply should produce nothing rather than a bad request.
     """
-    if len(text) <= limit:
-        return [text]
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+    if utf16_len(text) <= limit:
+        return [text] if text.strip() else []
+
     parts: list[str] = []
     rest = text
-    while len(rest) > limit:
-        window = rest[:limit]
+    while utf16_len(rest) > limit:
+        window = _take(rest, limit)
         cut = max(window.rfind("\n\n"), window.rfind("\n"), window.rfind(" "))
         if cut <= 0:
-            cut = limit
-        parts.append(rest[:cut].rstrip())
-        rest = rest[cut:].lstrip()
-    if rest:
+            cut = len(window)
+        head, rest = rest[:cut].rstrip(), rest[cut:].lstrip()
+        if head:
+            parts.append(head)
+    if rest.strip():
         parts.append(rest)
     return parts
 
 
+def _take(text: str, limit: int) -> str:
+    """The longest prefix of ``text`` within ``limit`` UTF-16 code units.
+
+    Never splits a surrogate pair: a half-emoji is invalid UTF-8 on the wire.
+    """
+    if utf16_len(text) <= limit:
+        return text
+    low, high = 0, len(text)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if utf16_len(text[:mid]) <= limit:
+            low = mid
+        else:
+            high = mid - 1
+    return text[:low]
+
+
+#: python-telegram-bot raises a typed hierarchy. Matching on type is both
+#: correct and cheaper than matching substrings of a human-readable message,
+#: which misclassifies anything phrased unexpectedly and anything whose text
+#: merely mentions one of the words.
+_PERMANENT_TYPES = ("Forbidden", "BadRequest", "InvalidToken", "ChatMigrated")
+_RETRYABLE_TYPES = ("TimedOut", "NetworkError", "RetryAfter", "TimeoutError",
+                    "ConnectionError")
+
+
 def _is_retryable(exc: Exception) -> bool:
     """Transient transport faults are worth retrying; refusals are not."""
-    text = f"{type(exc).__name__} {exc}".lower()
-    permanent = ("forbidden", "blocked", "not found", "unauthorized", "bad request")
-    return not any(token in text for token in permanent)
+    for klass in type(exc).__mro__:
+        if klass.__name__ in _PERMANENT_TYPES:
+            return False
+        if klass.__name__ in _RETRYABLE_TYPES:
+            return True
+    # Unknown shape: treat as permanent. Retrying something we do not
+    # understand risks hammering a dead endpoint.
+    return False
+
+
+def _epoch(raw: object) -> float:
+    """A usable timestamp from whatever the platform sent.
+
+    A malformed date must not kill the receive loop for every main.
+    """
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return float(raw)
+    if isinstance(raw, str):
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return time.time()
 
 
 def _iso(epoch: float) -> str:
@@ -167,11 +245,9 @@ def _iso(epoch: float) -> str:
     The adapter is the boundary where wall-clock time enters. Nothing
     downstream reads a clock, which is what keeps the fold pure (AD-30).
     """
-    import datetime as _dt
-
-    return (
-        _dt.datetime.fromtimestamp(epoch, _dt.UTC)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
+    try:
+        stamp = _dt.datetime.fromtimestamp(epoch, _dt.UTC)
+    except (OverflowError, OSError, ValueError):
+        # A hostile or absurd timestamp must not abort inbound processing.
+        stamp = _dt.datetime.now(_dt.UTC)
+    return stamp.replace(microsecond=0).isoformat().replace("+00:00", "Z")

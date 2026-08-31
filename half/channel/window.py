@@ -23,6 +23,7 @@ by design: the morning surface and every nudge are unprompted.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from half.channel.port import Reachability
 
@@ -49,7 +50,9 @@ class RollingWindowRule:
     def reachability(self, *, last_inbound_epoch: float | None, now: float) -> Reachability:
         if last_inbound_epoch is None:
             return Reachability.NEVER_CONTACTED
-        if now - last_inbound_epoch > self.seconds:
+        # >= closes exactly at expiry, and a future-dated inbound must not
+        # hold a window open indefinitely.
+        if last_inbound_epoch > now or now - last_inbound_epoch >= self.seconds:
             return Reachability.WINDOW_CLOSED
         return Reachability.OPEN
 
@@ -77,3 +80,30 @@ class ReachabilityTracker:
         return self.rule.reachability(
             last_inbound_epoch=self._last_inbound.get(main_id), now=now
         )
+
+    def rebuild_from(self, main_id: str, records) -> None:
+        """Restore last-inbound from a main's log.
+
+        Without this the tracker is populated only by live traffic, so a
+        restart reported every main as never-contacted and the morning surface
+        — the whole reason unprompted contact is modelled — was dead on boot.
+        The claim that this is derived and never a second source of truth is
+        only true if it can actually be derived.
+        """
+        latest: float | None = None
+        for record in records:
+            stamp = record.data.get("t")
+            if record.data.get("ledger") != "stated" or not isinstance(stamp, str):
+                continue
+            epoch = _epoch_from_iso(stamp)
+            if epoch is not None and (latest is None or epoch > latest):
+                latest = epoch
+        if latest is not None:
+            self.note_inbound(main_id, epoch=latest)
+
+
+def _epoch_from_iso(stamp: str) -> float | None:
+    try:
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None

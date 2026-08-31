@@ -18,13 +18,28 @@ between a model call and its log append and lose work already paid for.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator
 
+from half.errors import StoreError
 from half.store.store import Store
+
+#: A main_id becomes a directory name, so it is validated before it can reach
+#: the filesystem. It arrives from configuration, which is operator input, and
+#: an unvalidated '..' walks the store tree straight out of its root.
+_SAFE_MAIN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+
+
+def validate_main_id(main_id: str) -> str:
+    if not _SAFE_MAIN_ID.fullmatch(main_id):
+        raise StoreError(
+            f"unsafe main_id {main_id!r}: letters, digits, dash and underscore only"
+        )
+    return main_id
 
 #: How many hydrated actors a worker holds before evicting the least recent.
 DEFAULT_CAPACITY = 256
@@ -37,16 +52,32 @@ class Actor:
     main_id: str
     store: Store
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    #: Turns holding *or waiting for* the lock. Incremented before the acquire
+    #: and decremented after the release, so it is never zero while any turn
+    #: still needs this actor.
+    claims: int = 0
 
     @property
     def busy(self) -> bool:
-        return self.lock.locked()
+        """True while any turn holds or awaits this actor.
+
+        ``lock.locked()`` alone is not enough, and the gap is not theoretical:
+        ``asyncio.Lock.release()`` clears its flag and merely *schedules* the
+        next waiter, which sets it again only when it resumes. An actor evicted
+        in that window has its store closed under a turn that is about to run,
+        and the next acquire hydrates a second Actor with a second lock for the
+        same main — two writers on one belief log, which is the exact race the
+        store skips a journal and rollback for (AD-1).
+        """
+        return self.claims > 0 or self.lock.locked()
 
 
 class ActorRegistry:
     """Hydrates, serializes and evicts actors."""
 
     def __init__(self, root: Path | str, *, capacity: int = DEFAULT_CAPACITY) -> None:
+        if capacity < 1:
+            raise ValueError("capacity must be at least 1")
         self.root = Path(root)
         self.capacity = capacity
         self._actors: "OrderedDict[str, Actor]" = OrderedDict()
@@ -56,12 +87,13 @@ class ActorRegistry:
     def _hydrate(self, main_id: str) -> Actor:
         """Open a main's store. Cheap — SQLite open plus a snapshot read, which
         the work that follows dwarfs."""
+        validate_main_id(main_id)
         actor = Actor(main_id=main_id, store=Store(self.root / main_id))
         self._actors[main_id] = actor
         return actor
 
     def _evict_if_needed(self) -> None:
-        """Drop least-recently-used actors that are not mid-turn.
+        """Drop least-recently-used actors that no turn holds or awaits.
 
         A busy actor is skipped rather than waited on: eviction is an
         optimisation, and blocking on it would turn memory pressure into a
@@ -74,7 +106,7 @@ class ActorRegistry:
                     actor.store.close()
                     break
             else:
-                return  # every actor is busy; try again after one finishes
+                return  # every actor is claimed; try again after one finishes
 
     @asynccontextmanager
     async def acquire(self, main_id: str) -> AsyncIterator[Actor]:
@@ -84,14 +116,18 @@ class ActorRegistry:
             actor = self._hydrate(main_id)
         self._actors.move_to_end(main_id)
 
-        async with actor.lock:
-            try:
+        # Claimed before awaiting the lock, so this actor cannot be evicted
+        # while this turn is merely queued behind another.
+        actor.claims += 1
+        try:
+            async with actor.lock:
                 yield actor
-            finally:
-                # Eviction is considered only once the mutex is released, so a
-                # turn is never interrupted (AD-33).
-                pass
-        self._evict_if_needed()
+        finally:
+            actor.claims -= 1
+            # Eviction is considered only once nothing holds or awaits the
+            # actor, so a turn is never interrupted (AD-33). In a finally so a
+            # failing turn cannot let the registry grow past capacity forever.
+            self._evict_if_needed()
 
     # -- introspection -------------------------------------------------------
 
@@ -103,6 +139,11 @@ class ActorRegistry:
         return main_id in self._actors
 
     def close(self) -> None:
+        """Close every store. Refuses while any turn is still running, rather
+        than pulling a store out from under an in-flight append."""
+        busy = [a.main_id for a in self._actors.values() if a.busy]
+        if busy:
+            raise RuntimeError(f"actors still mid-turn: {sorted(busy)}")
         for actor in self._actors.values():
             actor.store.close()
         self._actors.clear()
