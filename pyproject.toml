@@ -20,9 +20,14 @@ packages = ["half"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# --strict-markers so a misspelled or renamed marker is an error rather than a
+# gate that selects nothing and exits green; --strict-config so a typo in this
+# table is the same. `pytest -m ad99` used to print "416 deselected" and exit
+# 0, which meant renaming a marker turned the AD-18 step into a no-op.
+addopts = "--strict-markers --strict-config"
 # Named so CI can gate on one invariant at a time and a red build says which
 # one broke, rather than pointing at a whole file that covers several.
 markers = [
-    "ad18: no retrieved belief text may reach an outbound message",
+    "ad18: licenses are enforced at context construction, never by filtering",
     "ad24: retrieval weights and never excludes",
 ]

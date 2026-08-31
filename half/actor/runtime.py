@@ -11,17 +11,22 @@ turn completes, so a crash redelivers rather than loses. That makes redelivery
 routine, so the turn is idempotent: a message already recorded is not recorded
 twice.
 
-The responder is a deterministic stub — no model is called anywhere in this
-story, which keeps the suite hermetic. Later stories replace ``respond``
-without touching the channel or the registry.
+The responder is a deterministic stub — no model is called anywhere yet, which
+keeps the suite hermetic. Later stories replace ``respond`` without touching
+the channel or the registry.
 
-**Retrieval runs on the live turn and nothing it returns is said.** Ranking the
-belief set is this story; putting a belief in front of the main is AD-18's
-context builder, which is the next one. Until that lands there is no license
-enforcement at all, so no retrieved claim text may reach an outbound message —
-asserted byte-wise in ``tests/test_strands.py``, not left as a convention.
-Retrieval is wired in anyway rather than deferred with it, because a layer no
-shipped code calls is a layer nobody has run.
+**Retrieval runs on the live turn, and what it returns is governed by license.**
+Story 4 ranked the belief set under an interim ban: nothing retrieved could be
+said, because the thing that decides what Half may *say* did not exist. It does
+now. ``respond`` builds a two-channel context (AD-18) and may quote its content
+channel — `assert`-licensed claims and nothing else. `behave` and `ask` claim
+text cannot reach a reply because it never reaches the context, which is
+enforcement by construction rather than by filtering what was generated.
+
+**This module never touches belief text directly.** It reads the ranked set
+only through ``half.context``, so there is no path from a `Candidate` to an
+outbound message that skips the license split — asserted statically in
+``tests/test_strands.py``, byte-wise in ``tests/test_context.py``.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ from dataclasses import dataclass, field
 
 from half.actor.registry import Actor, ActorRegistry
 from half.channel.port import Channel, Inbound
+from half.context.build import build as build_context
 from half.crisis.gate import CrisisGate
 from half.errors import HalfError, NotReachable, RetrievalDisabled, SendFailed
 from half.retrieval.port import Ranked, Reranker
@@ -181,19 +187,30 @@ class Runtime:
 
 
 def respond(inbound: Inbound, ranked: Ranked | None = None) -> str | None:
-    """Deterministic placeholder. Story 5 brings the two-channel context builder.
+    """Build the turn's context and reply from what its licenses permit.
 
-    Takes the ranked beliefs and says none of them. That is not an oversight
-    and not laziness about the stub: licenses are enforced at context
-    construction (AD-18), that construction is the next story, and until it
-    exists every belief in the store is effectively `behave` — material Half
-    may act on and may not quote. So this reply is derived from the turn alone.
+    Still deterministic and still model-free — AD-19's port is unbuilt, so
+    nothing here composes prose. What changed from story 4 is the boundary: the
+    ranked set is no longer uniformly unsayable. It is split by license
+    (AD-18), and the content channel is the one rung Half has the standing to
+    state, so its text may reach the main.
 
-    It does not echo the main's words either. A belief was just recorded whose
-    claim *is* those words, so an echo would put a stored claim's exact bytes
-    in an outbound message — indistinguishable, to the assertion that guards
-    this boundary, from quoting the ledger.
+    ``now`` is the inbound stamp the adapter read. Nothing below this line
+    touches a clock, so one conversation replays to one set of replies.
+
+    Three properties this shape holds that a filter could not:
+
+    * `behave` and `ask` claim text is absent from the reply because it is
+      absent from the context — there is no branch here that could re-admit it.
+    * The reply still does not echo the main's own words. The belief carrying
+      them is recorded after this returns, and it is recorded `behave`.
+    * A context with no content still produces a reply. Empty is an ordinary
+      outcome — an empty ledger, or retrieval disabled by a crisis — and is
+      never phrased as missing access (AD-24, AD-27).
     """
     if not inbound.text.strip():
         return None
-    return "noted."
+    quotable = build_context(ranked, now=inbound.t).quotable()
+    if not quotable:
+        return "noted."
+    return f"noted. {quotable[0]}"

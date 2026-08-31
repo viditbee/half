@@ -16,15 +16,22 @@ Your credentials are never in this tree.
 
 ## Status
 
-Stories 1–4 of 12: the store, the Telegram channel, mail ingestion, and
-retrieval. Half can hold a conversation, remember it, derive claims from your
-mail without keeping the mail, and rank what it knows against what you just
-said.
+Stories 1–4b of 12: the store, the Telegram channel, mail ingestion, retrieval,
+and the two-channel context. Half can hold a conversation, remember it, derive
+claims from your mail without keeping the mail, rank what it knows against what
+you just said, and decide which of it may be *said* as opposed to merely acted
+on.
 
-It cannot yet decide what is worth saying, and by design it says none of what
-it retrieves: licenses are enforced when context is *built* (story 5), so until
-that lands the responder is a deterministic stub and no belief text is allowed
-into a reply. Crisis handling (story 6) is still unimplemented.
+Every belief carries a license, and licenses are enforced when the context is
+**built** rather than by filtering what comes out. A claim licensed `assert`
+may be quoted to you. A claim licensed `behave` reaches the context only as a
+topic — its wording appears nowhere, in any channel, and that is asserted
+byte-wise over the rendered context and over the reply. Anything missing,
+unknown or malformed is treated as `behave`.
+
+It still cannot decide what is *worth* saying: the responder is a deterministic
+stub because no model is called anywhere yet (story 5). Crisis handling
+(story 6) is still unimplemented.
 
 **Not ready for real use.** In particular the crisis protocol (story 6) is
 unimplemented, and that is a launch gate.
@@ -62,6 +69,7 @@ The suite is hermetic — it makes no network calls and needs no bot token.
 | `half/store/` | The four layers: log, pure fold, SQLite + FTS5, export |
 | `half/ingest/` | Connectors, secret scrubbing, independence, admission gates |
 | `half/retrieval/` | Strand weighting, contextual prefix, salience, bm25 fusion |
+| `half/context/` | The license split: content, directives, question candidates |
 | `half/text.py` | One unicode-aware tokenizer, shared by index and matcher |
 | `half/channel/` | The `Channel` port, reachability, the Telegram adapter |
 | `half/actor/` | One actor per main — an inbox and a mutex — and the wiring |
@@ -90,8 +98,14 @@ a constant fails rather than passing by coincidence. It also rebuilds the
 
 `test_strands.py` watches the live turn rank through a recording reranker
 rather than grepping for a call, asserts one main's crisis cannot disable
-another's retrieval, and checks byte-wise that no retrieved claim reaches the
+another's retrieval, and checks byte-wise that no `behave` claim reaches the
 wire.
+
+`test_context.py` is the AD-18 gate. It scans the rendered context and the
+reply for any *fragment* of a withheld claim — adjacent word pairs,
+concatenated, so a language that does not space its words is covered by the
+same rule — and it enumerates the fields of every channel item so that a field
+added later cannot carry text past a scan that cannot see it.
 
 ## Retrieval, in one paragraph
 

@@ -15,10 +15,11 @@ live inside the very function whose call site had been deleted.
 switch per worker made a crisis for one person a silent, total memory outage for
 every other person that process was serving.
 
-**No retrieved claim text reaches an outbound message.** Licenses are enforced
-at context construction (AD-18) and that construction is the next story. Until
-it lands the boundary is that nothing retrieved is said, asserted byte-wise on
-what the transport actually sent.
+**No `behave` claim text reaches an outbound message.** No longer the global
+invariant story 4 wrote — `assert` text may now be quoted — but the same
+assertion over the same seeded store, which carries no license field and so
+resolves to `behave` at every rung. The licensed version, including the rung
+whose text *may* be said, lives in ``tests/test_context.py``.
 """
 
 from __future__ import annotations
@@ -389,11 +390,14 @@ def test_a_failing_turn_never_swallows_the_mains_message(tmp_path, monkeypatch):
     assert retried.sent, "the redelivery must be answered"
 
 
-# -- no retrieved belief text may leave --------------------------------------
+# -- no behave belief text may leave -----------------------------------------
 
 @pytest.mark.ad18
-def test_a_turn_that_retrieved_beliefs_says_none_of_them(tmp_path):
-    """Byte-wise on the wire, over a store seeded with distinctive claims."""
+def test_a_turn_that_retrieved_behave_beliefs_says_none_of_them(tmp_path):
+    """Byte-wise on the wire, over a store seeded with distinctive claims.
+
+    ``seed`` writes no license field, so every one of these resolves to
+    `behave` — which is the rung under test, not an accident of the fixture."""
     root = tmp_path / "mains"
     with Store(root / "vidit", prefix=build_prefix) as s:
         seed(s)
@@ -415,7 +419,7 @@ def test_a_turn_that_retrieved_beliefs_says_none_of_them(tmp_path):
 
 
 @pytest.mark.ad18
-def test_the_responder_is_given_the_ranked_beliefs_and_quotes_none_of_them():
+def test_the_responder_is_given_a_behave_belief_and_quotes_none_of_it():
     ranked = _ranked_with(CLAIMS["b_afly"])
     reply = respond(inbound("hello"), ranked)
     assert reply is not None
@@ -427,7 +431,12 @@ def test_the_responder_is_given_the_ranked_beliefs_and_quotes_none_of_them():
 @pytest.mark.ad18
 def test_the_runtime_never_reads_claim_text_off_a_candidate():
     """A behavioural test can only cover the claims it happened to seed. This
-    covers every one: the reply path has no access to a candidate's text."""
+    covers every one: the reply path has no access to a candidate's text.
+
+    Kept unchanged now that the reply *may* quote content, and it is a stronger
+    statement for it. The runtime reaches belief text only through
+    ``half.context``, so there is no route from a candidate to an outbound
+    message that skips the license split (AD-18)."""
     tree = ast.parse((ROOT / "half/actor/runtime.py").read_text(encoding="utf-8"))
     reads = [
         node.attr for node in ast.walk(tree)
@@ -437,9 +446,19 @@ def test_the_runtime_never_reads_claim_text_off_a_candidate():
 
 
 def _ranked_with(claim: str):
+    """One `behave` belief, licensed explicitly.
+
+    The license was previously left off, so the candidate carried an empty
+    belief record and the test passed on the *default* rung rather than on the
+    rule. Stating it means the assertion still means something if the default
+    ever changes — and if it changes, this is one of the tests that should
+    fail."""
     from half.retrieval.port import Candidate, Ranked, RerankSource
 
     return Ranked(
-        beliefs=(Candidate(id="b_afly", claim=claim, prefix="", bm25=-1.0),),
+        beliefs=(
+            Candidate(id="b_afly", claim=claim, prefix="", bm25=-1.0,
+                      belief={"claim": claim, "license": "behave"}),
+        ),
         rerank=RerankSource.ABSENT,
     )

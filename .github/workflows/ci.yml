@@ -64,12 +64,30 @@ jobs:
         # that" — the sentence the spec rejects outright.
         run: uv run --locked --extra dev pytest -q -m ad24
 
-      - name: 'AD-18: no retrieved belief text reaches a reply'
-        # Licenses are enforced at context construction, which is not built
-        # yet. Until it is, the boundary is that nothing retrieved is said.
+      - name: 'AD-18: licenses are enforced at context construction'
+        # The real assertion, replacing story 4's interim ban rather than
+        # deleting it: a `behave` or `ask` belief's claim text appears nowhere
+        # in a constructed context or in a reply, asserted byte-wise over the
+        # whole rendering — while `assert` text may now reach the main.
         # Marker-selected rather than file-selected, so this cannot go green
-        # only because the AD-24 step already ran the same file.
-        run: uv run --locked --extra dev pytest -q -m ad18
+        # only because another step already ran one of the same files.
+        #
+        # The count is asserted because a marker gate has a silent failure
+        # mode a passing run looks identical to: `pytest -m ad99` deselects
+        # everything and exits 0, so a renamed or misspelled marker turns this
+        # step green having asserted nothing. --strict-markers (pyproject)
+        # catches the misspelling; the floor catches the rename, and catches
+        # someone quietly unmarking the cases this gate exists for.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m ad18 -q --collect-only \
+            | grep -c '::' || true)
+          echo "AD-18 cases collected: $collected"
+          if [ "$collected" -lt 40 ]; then
+            echo "::error::the AD-18 gate collected $collected cases; it has stopped asserting"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m ad18
 
       - name: 'AD-5 and AD-30: retrieval degrades, and never writes'
         # The reranker fallback, the salience-is-derived assertions, the
