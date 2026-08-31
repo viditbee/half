@@ -221,7 +221,7 @@ def test_a_prefix_builder_returning_a_non_string_degrades(tmp_path):
         assert "b_1" in store.state().beliefs
 
 
-# -- non-ASCII: this product targets India ----------------------------------
+# -- non-ASCII: Half ships wherever a messaging app does ---------------------
 
 def test_a_devanagari_field_is_indexed_and_findable(beliefs):
     """``[A-Za-z0-9]`` splitting dropped the field entirely, so the belief was

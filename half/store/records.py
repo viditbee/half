@@ -19,6 +19,7 @@ from typing import Any, Final
 
 from half.errors import CorruptLogError, SchemaVersionError, UnknownOpError
 from half.store.ops import SCHEMA_VERSION, Op, parse_op
+from half.text import terms
 
 #: Fields every record must carry.
 REQUIRED: Final[tuple[str, ...]] = ("t", "op", "id")
@@ -154,6 +155,31 @@ def validate_fields(fields: dict[str, Any]) -> None:
                 f"field {name!r} must be {expected.__name__}, "
                 f"got {type(value).__name__}"
             )
+    for value in fields.values():
+        _reject_untokenizable(value)
+
+
+def _reject_untokenizable(value: Any) -> None:
+    """Raise ``TokenGrowthLimitError`` for text the index could not hold whole.
+
+    Scriptio-continua runs are n-grammed, so a long unspaced run multiplies into
+    more terms than ``half.text`` will emit. That has to be refused *here*,
+    before the append: the log is append-only and the derived view is rebuilt
+    after every append, so a record the tokenizer refuses would be durable while
+    every later rebuild — and therefore every later append — raised forever,
+    with the offending line unremovable.
+
+    Nested because a field may be a list of strings (topics, people) and those
+    are tokenized too, as strand labels.
+    """
+    if isinstance(value, str):
+        terms(value)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _reject_untokenizable(item)
+    elif isinstance(value, Mapping):
+        for item in value.values():
+            _reject_untokenizable(item)
 
 
 def make(op: Op, ident: str, t: str, **fields: Any) -> Record:

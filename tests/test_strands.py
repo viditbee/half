@@ -207,7 +207,8 @@ def test_known_strands_include_loops_no_belief_references_yet(store):
 
 def test_a_strand_named_in_a_non_latin_script_can_become_live():
     """``[a-z0-9]+`` found no tokens on either side, so a person or loop named
-    in Devanagari could never be weighted at all. India is the target market."""
+    in Devanagari could never be weighted at all, in any of the scripts most of
+    the world writes in."""
     strands = Strands()
     strands.observe("आशा से बात हुई", {"person:आशा", "loop:buy-farmland"})
     assert strands.weights.get("person:आशा", 0.0) > 0.0

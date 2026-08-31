@@ -19,7 +19,7 @@ from typing import Any, Final
 
 from half.errors import StoreError
 from half.store.fold import State
-from half.text import words
+from half.text import index_text, terms
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ PrefixFn = Callable[[Mapping[str, Any]], str]
 #: discarding it and replaying the log — never by an in-place migration, which
 #: would be a second way for derived state to exist that the log does not
 #: describe.
-DERIVED_VERSION: Final[int] = 2
+DERIVED_VERSION: Final[int] = 3
 
 #: Every object this module owns, in an order safe to drop: the FTS table
 #: references ``beliefs`` as its external content.
@@ -44,24 +44,33 @@ _TABLES: Final[tuple[str, ...]] = (
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS beliefs (
-    id          TEXT PRIMARY KEY,
-    t           TEXT NOT NULL,
-    subject     TEXT,
-    claim       TEXT,
-    prefix      TEXT,
-    ledger      TEXT,
-    license     TEXT NOT NULL DEFAULT 'behave',
-    independent INTEGER NOT NULL DEFAULT 0,
-    data        TEXT NOT NULL
+    id           TEXT PRIMARY KEY,
+    t            TEXT NOT NULL,
+    subject      TEXT,
+    claim        TEXT,
+    prefix       TEXT,
+    claim_terms  TEXT,
+    prefix_terms TEXT,
+    ledger       TEXT,
+    license      TEXT NOT NULL DEFAULT 'behave',
+    independent  INTEGER NOT NULL DEFAULT 0,
+    data         TEXT NOT NULL
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS tensions (id TEXT PRIMARY KEY, data TEXT NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS loops    (id TEXT PRIMARY KEY, data TEXT NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS expunged (id TEXT PRIMARY KEY) STRICT;
 
+-- Indexes the *terms* columns rather than the raw text, because a script
+-- written without word spaces arrives as one unicode61 token and is then
+-- findable only by the whole sentence. ``half.text.index_text`` expands such a
+-- run into its n-grams, and the query builder below expands a query the same
+-- way — an index n-grammed on one side only is worse than the defect it
+-- replaces. The raw ``claim`` and ``prefix`` columns stay beside them: a caller
+-- reads a belief's own words from those, never from what the index holds.
 CREATE VIRTUAL TABLE IF NOT EXISTS belief_fts USING fts5(
-    claim,
-    prefix,
+    claim_terms,
+    prefix_terms,
     content = 'beliefs',
     content_rowid = 'rowid'
 );
@@ -117,6 +126,13 @@ def rebuild(
     every rebuild, so the prefix column is as derived and disposable as the row
     it sits in. Omitting it leaves the column NULL — the FTS index is then claim
     text only, which is correct but loses prefix hits.
+
+    The ``*_terms`` columns hold what the index actually reads: the same text
+    expanded by ``half.text.index_text``, so a query for a word inside an
+    unspaced sentence finds it. Text past the tokenizer's growth ceiling raises
+    ``TokenGrowthLimitError`` rather than being indexed in part — which is why
+    ``Store.append`` refuses such a record before it reaches the log, so this
+    build can never write a line it would then be unable to rebuild.
     """
     with conn:
         # FTS5's own reset command, not ``DELETE FROM belief_fts``. This is an
@@ -131,15 +147,20 @@ def rebuild(
             conn.execute(f"DELETE FROM {table}")
 
         for ident, data in state.beliefs.items():
+            claim = _text_or_none(data.get("claim"))
+            belief_prefix = _prefix_of(data, ident, prefix)
             conn.execute(
-                "INSERT INTO beliefs (id, t, subject, claim, prefix, ledger,"
-                " license, independent, data) VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO beliefs (id, t, subject, claim, prefix,"
+                " claim_terms, prefix_terms, ledger,"
+                " license, independent, data) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     ident,
                     _require_str(data, "t", ident, default=""),
                     _text_or_none(data.get("subject")),
-                    _text_or_none(data.get("claim")),
-                    _prefix_of(data, ident, prefix),
+                    claim,
+                    belief_prefix,
+                    index_text(claim) or None,
+                    index_text(belief_prefix) or None,
                     _text_or_none(data.get("ledger")),
                     _require_str(data, "license", ident, default="behave"),
                     _require_int(data, "independent", ident),
@@ -157,9 +178,9 @@ def rebuild(
             conn.execute("INSERT INTO expunged (id) VALUES (?)", (ident,))
 
         conn.execute(
-            "INSERT INTO belief_fts(rowid, claim, prefix)"
-            " SELECT rowid, claim, prefix FROM beliefs"
-            " WHERE claim IS NOT NULL OR prefix IS NOT NULL"
+            "INSERT INTO belief_fts(rowid, claim_terms, prefix_terms)"
+            " SELECT rowid, claim_terms, prefix_terms FROM beliefs"
+            " WHERE claim_terms IS NOT NULL OR prefix_terms IS NOT NULL"
         )
 
 
@@ -185,9 +206,9 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict[s
     """BM25-ranked search over claim text and contextual prefix.
 
     Lower bm25() is a better match. The query is a main's own words, so FTS5
-    operator characters are ordinary input rather than syntax. It is quoted as
-    a phrase, and a sqlite error is translated to a ``StoreError`` — nothing
-    here leaks a bare sqlite3 exception to a caller.
+    operator characters are ordinary input rather than syntax: each word is
+    quoted as a phrase and the words are OR'd. A sqlite error is translated to
+    a ``StoreError`` — nothing here leaks a bare sqlite3 exception to a caller.
 
     Column weighting is deliberately left at FTS5's default. How much a prefix
     hit is worth relative to a claim hit is ranking policy, and ranking policy
@@ -246,20 +267,32 @@ def read_loops(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
 def _match_expression(query: str) -> str:
     """A main's own words as an FTS5 MATCH expression, or ``""``.
 
-    Each word becomes its own quoted bareword and the words are OR'd. Two
-    consequences, both wanted:
+    **Phrases inside a word, OR between words.** Each term is quoted, and quotes
+    make it a *phrase*: FTS5 re-splits it with the same tokenizer it used on the
+    indexed text, so however ``unicode61`` shatters a word, the query and the
+    index shatter it alike and match. That is what restores precision for every
+    combining-mark script — ``"रात"`` is the two-token phrase र-then-त, which
+    ``यात्रा`` does not contain, while the earlier OR of the shattered pieces
+    matched almost any Devanagari string. The OR stays *between* words, because a
+    whole sentence must still retrieve a belief sharing any one of its words;
+    quoting the sentence as a single phrase meant a conversational turn matched
+    only a belief repeating it verbatim, which is never.
+
+    Two further consequences, both wanted:
 
     * FTS5 operator characters cannot survive tokenization, so ``NEAR(`` and an
-      unbalanced quote are ordinary input rather than syntax — the property the
-      previous phrase-quoting had, kept. ``half.text.words`` is the same split
-      applied to what goes *into* the index, so the two cannot drift apart.
-    * A whole sentence retrieves beliefs matching *any* of its words. Quoting
-      the sentence as one phrase meant a conversational turn matched only a
-      belief that repeated it verbatim, which is never. Which beliefs contain
-      these words is the store's question; how much each match is worth is
-      ranking policy, and that lives in ``half.retrieval``.
+      unbalanced quote are ordinary input rather than syntax.
+    * ``half.text.terms`` is the same expansion applied to what goes *into* the
+      index, so an unspaced run is n-grammed identically on both sides and the
+      two cannot drift apart.
+
+    Which beliefs contain these words is the store's question; how much each
+    match is worth is ranking policy, and that lives in ``half.retrieval``.
+
+    Raises ``TokenGrowthLimitError`` for a query past the tokenizer's ceiling,
+    rather than searching on a silently shortened one.
     """
-    return " OR ".join(f'"{word}"' for word in words(query))
+    return " OR ".join(f'"{term}"' for term in terms(query))
 
 
 def _search(

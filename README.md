@@ -70,7 +70,7 @@ The suite is hermetic — it makes no network calls and needs no bot token.
 | `half/ingest/` | Connectors, secret scrubbing, independence, admission gates |
 | `half/retrieval/` | Strand weighting, contextual prefix, salience, bm25 fusion |
 | `half/context/` | The license split: content, directives, question candidates |
-| `half/text.py` | One unicode-aware tokenizer, shared by index and matcher |
+| `half/text.py` | One script-neutral tokenizer, shared by index and matcher |
 | `half/channel/` | The `Channel` port, reachability, the Telegram adapter |
 | `half/actor/` | One actor per main — an inbox and a mutex — and the wiring |
 | `half/crisis/` | Owns the inbound entrypoint; the assessment lands in story 6 |
@@ -101,6 +101,11 @@ rather than grepping for a call, asserts one main's crisis cannot disable
 another's retrieval, and checks byte-wise that no `behave` claim reaches the
 wire.
 
+`test_scripts.py` runs one belief and one matching query per script — including
+the two-character CJK case that the obvious fix (SQLite's `trigram` tokenizer)
+cannot serve at all — and asserts that a Devanagari query no longer retrieves
+an unrelated Devanagari belief.
+
 `test_context.py` is the AD-18 gate. It scans the rendered context and the
 reply for any *fragment* of a withheld claim — adjacent word pairs,
 concatenated, so a language that does not space its words is covered by the
@@ -119,6 +124,16 @@ weighting can reorder the belief set but can never remove anything from it —
 Half must never be able to say *"I don't have access to that."* A reranker is
 optional, has exactly one method, and when it is missing or misbehaves the
 result carries an explicit no-op annotation rather than degrading silently.
+
+Retrieval works in every script, not only the ones written with spaces. A
+combining mark stays attached to the letter it modifies, so a Devanagari word
+is one word rather than three consonants, and each word goes to FTS5 as a
+phrase with the OR kept *between* words. Scripts with no word spaces —
+Japanese, Chinese, Thai, Lao, Khmer, Korean — are expanded into bounded
+character n-grams on both sides of the index, so a two-character word is
+findable inside a sentence that never spaced it. There is no language
+detection anywhere and no segmentation library: the only distinction Half
+draws is a script class.
 
 ## Architecture
 

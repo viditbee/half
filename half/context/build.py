@@ -52,14 +52,17 @@ ZWNJ, soft hyphen, the bidi marks (Unicode ``Cf``) — are removed rather than
 treated as boundaries, so a zero-width joiner cannot be dropped into the middle
 of a word to slip it past the echo rule in an Indic or Arabic script.
 
-**The comparison unit is deliberately not the index's.** ``half.text.words``
-reproduces SQLite's ``unicode61`` boundaries, which is exactly right for what
-goes *into* the FTS index and exactly wrong here: ``unicode61`` treats a
-Devanagari matra as a separator, so ``यात्रा`` shatters into ``य``, ``त``,
-``र`` — three single consonants that collide with almost any other Devanagari
-string. A drop rule built on that unit would emit no directive for any belief
-written in an Indic script, which is a channel dropping a belief for its
-script. So splitting here keeps marks attached to the letter they belong to.
+**The comparison unit is deliberately not the index's.** SQLite's ``unicode61``
+treats a Devanagari matra as a separator, so ``यात्रा`` shatters into ``य``,
+``त``, ``र`` — three single consonants that collide with almost any other
+Devanagari string. A drop rule built on that unit would emit no directive for
+any belief written in an Indic script, which is a channel dropping a belief for
+its script. So splitting here keeps marks attached to the letter they belong
+to. ``half.text.words`` now does the same, for its own reason — it hands FTS5
+whole words as phrases and lets FTS5 shatter them — but this split stays
+separate: it also removes invisible characters and it is not expanded into
+n-grams, because a *wording* check must not be answered by the terms an index
+happens to hold.
 Folding is then ``half.text.normalize``, which casefolds and strips *non-spacing*
 marks — so ``Café`` and ``cafe`` are one word, and so are ``ज़मीन`` and ``जमीन``,
 because the nukta goes with the accents. Matras survive, which is what keeps

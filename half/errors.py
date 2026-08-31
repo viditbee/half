@@ -9,6 +9,19 @@ class HalfError(Exception):
     """Base for every Half domain failure."""
 
 
+class TokenGrowthLimitError(HalfError):
+    """Text exceeded the bounded growth budget of the shared tokenizer (CAP-9).
+
+    Scriptio-continua runs are n-grammed, which multiplies term counts, so both
+    the input length and the emitted term count carry explicit ceilings. Neither
+    is enforced by dropping the tail: a belief indexed by its first half and
+    unreachable by its second, with nothing recording that it happened, is the
+    silent failure AD-24 exists to prevent. It is raised by ``half.text`` and so
+    belongs to no one layer — the store meets it at index time and retrieval
+    meets it at query time.
+    """
+
+
 class StoreError(HalfError):
     """A fault in the per-main store."""
 

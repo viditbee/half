@@ -17,7 +17,10 @@ behaviourally rather than trusting the comment.
 builder and the store's query builder. This module used to split on
 ``[a-z0-9]+``, so a person or loop named in any non-Latin script could never
 become a live strand — the matcher found no tokens on either side. Comparison
-uses the folded form, so ``Café`` and ``cafe`` are one strand and not two.
+uses the folded form, so ``Café`` and ``cafe`` are one strand and not two, and
+it runs over ``half.text.tokens``, which n-grams a scriptio-continua run: a
+strand named ``転職`` sits unspaced inside ``転職を考えている`` and a matcher
+comparing whole words finds no overlap there at all.
 
 **Exact tokens, never fuzzy.** HippoRAG maps a generated fact back onto its
 candidates with ``difflib.get_close_matches(..., cutoff=0.0)``, and a cutoff of
