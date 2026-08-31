@@ -39,7 +39,14 @@ from half.actor.registry import Actor, ActorRegistry
 from half.channel.port import Channel, Inbound
 from half.context.build import build as build_context
 from half.crisis.gate import CrisisGate
-from half.errors import HalfError, NotReachable, RetrievalDisabled, SendFailed
+from half.errors import (
+    HalfError,
+    NotReachable,
+    QueryTooLargeError,
+    RetrievalDisabled,
+    SendFailed,
+    TokenGrowthLimitError,
+)
 from half.retrieval.port import Ranked, Reranker
 from half.retrieval.rank import Retriever
 from half.retrieval.strands import known_strands
@@ -168,21 +175,34 @@ class Runtime:
         mistakable for an empty ledger — but a main whose retrieval is off is
         usually a main in aftercare, and they must still get an answer. A
         disable degrades what Half knows, never whether Half replies.
+
+        A tokenizer refusal is caught for the same reason and on the same terms.
+        The ceilings in ``half.text`` exist to stop an unbounded expansion, not
+        to end a conversation: a message or a stored strand label past them must
+        cost Half its ranking for that turn, never the main their reply. Both
+        the strand observation and the search can raise it, so both are inside.
         """
         state = actor.store.state()
-        actor.strands.observe(
-            inbound.text, known_strands(state.beliefs.values(), state.loops)
-        )
         retriever = Retriever(
             store=actor.store, reranker=self.reranker, switch=actor.retrieval
         )
         try:
+            actor.strands.observe(
+                inbound.text, known_strands(state.beliefs.values(), state.loops)
+            )
             return retriever.retrieve(inbound.text, now=inbound.t,
                                       strands=actor.strands)
         except RetrievalDisabled:
             # No content, and not even an exception message (AD-22).
             logger.info("retrieval disabled for main=%s; replying without the "
                         "ledger", inbound.main_id)
+            return Ranked()
+        except (TokenGrowthLimitError, QueryTooLargeError):
+            # The type only — never the text that provoked it (AD-22).
+            logger.warning(
+                "retrieval could not tokenize this turn for main=%s; replying "
+                "without the ledger", inbound.main_id
+            )
             return Ranked()
 
 

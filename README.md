@@ -101,10 +101,14 @@ rather than grepping for a call, asserts one main's crisis cannot disable
 another's retrieval, and checks byte-wise that no `behave` claim reaches the
 wire.
 
-`test_scripts.py` runs one belief and one matching query per script — including
-the two-character CJK case that the obvious fix (SQLite's `trigram` tokenizer)
-cannot serve at all — and asserts that a Devanagari query no longer retrieves
-an unrelated Devanagari belief.
+`test_scripts.py` is deliberately **symmetric**: every script that gets a recall
+case gets a precision case beside it, in one store holding every script at once,
+so a query has every other script's beliefs to wrongly match. Its first version
+was not, and the asymmetry hid a live defect — the recall tests passed on noise
+from a scheme that matched almost everything. It also pins each script class and
+each growth ceiling through what retrieval returns, using literal numbers: a
+test written in terms of the constant it guards cannot see that constant being
+wrong.
 
 `test_context.py` is the AD-18 gate. It scans the rendered context and the
 reply for any *fragment* of a withheld claim — adjacent word pairs,
@@ -125,15 +129,18 @@ Half must never be able to say *"I don't have access to that."* A reranker is
 optional, has exactly one method, and when it is missing or misbehaves the
 result carries an explicit no-op annotation rather than degrading silently.
 
-Retrieval works in every script, not only the ones written with spaces. A
-combining mark stays attached to the letter it modifies, so a Devanagari word
-is one word rather than three consonants, and each word goes to FTS5 as a
-phrase with the OR kept *between* words. Scripts with no word spaces —
-Japanese, Chinese, Thai, Lao, Khmer, Korean — are expanded into bounded
-character n-grams on both sides of the index, so a two-character word is
-findable inside a sentence that never spaced it. There is no language
-detection anywhere and no segmentation library: the only distinction Half
-draws is a script class.
+Retrieval works in every script, not only the ones written with spaces, and it
+is one mechanism rather than two: **every word is matched as a phrase**. A
+combining mark stays attached to the letter it modifies, so a Devanagari word is
+one word rather than three consonants, and each word goes to FTS5 quoted, with
+the OR kept *between* words. A script with no word spaces — Japanese, Chinese,
+Thai, Lao, Khmer, Korean — has its runs cut into grapheme clusters on both sides
+of the index, so `転職` is the phrase 転-then-職: findable inside a sentence that
+never spaced it, and *not* matching a belief about `退職金` that merely shares a
+character. Adjacency is what carries word identity when there are no spaces to
+carry it. There is no language detection anywhere and no segmentation library;
+the only distinction Half draws is a script class, read off the Unicode
+character database rather than a table of codepoint ranges.
 
 ## Architecture
 

@@ -17,9 +17,9 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Final
 
-from half.errors import StoreError
+from half.errors import QueryTooLargeError, StoreError, TokenGrowthLimitError
 from half.store.fold import State
-from half.text import index_text, terms
+from half.text import index_text, phrases
 
 logger = logging.getLogger(__name__)
 
@@ -63,11 +63,12 @@ CREATE TABLE IF NOT EXISTS expunged (id TEXT PRIMARY KEY) STRICT;
 
 -- Indexes the *terms* columns rather than the raw text, because a script
 -- written without word spaces arrives as one unicode61 token and is then
--- findable only by the whole sentence. ``half.text.index_text`` expands such a
--- run into its n-grams, and the query builder below expands a query the same
--- way — an index n-grammed on one side only is worse than the defect it
--- replaces. The raw ``claim`` and ``prefix`` columns stay beside them: a caller
--- reads a belief's own words from those, never from what the index holds.
+-- findable only by the whole sentence. ``half.text.index_text`` cuts such a run
+-- into grapheme clusters, and ``_match_expression`` quotes the same clusters as
+-- a phrase — one expansion, used on both sides, or the index and the query
+-- drift apart and the fix is worse than the defect. The raw ``claim`` and
+-- ``prefix`` columns stay beside them and are the only ones a caller reads: a
+-- search result carries the belief's own words, never index text.
 CREATE VIRTUAL TABLE IF NOT EXISTS belief_fts USING fts5(
     claim_terms,
     prefix_terms,
@@ -129,10 +130,19 @@ def rebuild(
 
     The ``*_terms`` columns hold what the index actually reads: the same text
     expanded by ``half.text.index_text``, so a query for a word inside an
-    unspaced sentence finds it. Text past the tokenizer's growth ceiling raises
-    ``TokenGrowthLimitError`` rather than being indexed in part — which is why
-    ``Store.append`` refuses such a record before it reaches the log, so this
-    build can never write a line it would then be unable to rebuild.
+    unspaced sentence finds it. ``Store.append`` refuses a record past the
+    tokenizer's ceiling before it reaches the log, so this build never writes a
+    line it would then be unable to rebuild — but a rebuild must survive text
+    that got past that guard anyway, and two ways exist. A log written before
+    the ceiling existed is one. A *prefix* assembled from three fields that were
+    each legal alone is the other, and it is not preventable at append time
+    because the prefix builder is injected. So each column degrades on its own,
+    exactly as ``_prefix_of`` does and for the same reason: this runs inside the
+    rebuild that follows an append, the log line is already durable by then, and
+    a raise here would abort every later rebuild forever with the offending line
+    unremovable. The belief stays in the fold and stays reachable through the
+    retrieval backstop (AD-24); only its term index is missing, and a warning
+    records that rather than leaving it silent.
     """
     with conn:
         # FTS5's own reset command, not ``DELETE FROM belief_fts``. This is an
@@ -159,8 +169,8 @@ def rebuild(
                     _text_or_none(data.get("subject")),
                     claim,
                     belief_prefix,
-                    index_text(claim) or None,
-                    index_text(belief_prefix) or None,
+                    _terms_of(claim, ident, "claim"),
+                    _terms_of(belief_prefix, ident, "prefix"),
                     _text_or_none(data.get("ledger")),
                     _require_str(data, "license", ident, default="behave"),
                     _require_int(data, "independent", ident),
@@ -203,7 +213,7 @@ def read_state(conn: sqlite3.Connection) -> State:
 
 
 def search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict[str, Any]]:
-    """BM25-ranked search over claim text and contextual prefix.
+    """BM25-ranked search over the claim's terms and the contextual prefix's.
 
     Lower bm25() is a better match. The query is a main's own words, so FTS5
     operator characters are ordinary input rather than syntax: each word is
@@ -278,21 +288,33 @@ def _match_expression(query: str) -> str:
     quoting the sentence as a single phrase meant a conversational turn matched
     only a belief repeating it verbatim, which is never.
 
+    The same quoting is what makes a word in an unspaced script match as a word:
+    ``half.text.phrases`` cuts such a run into the grapheme clusters the index
+    stores, and the phrase then matches only where those clusters are adjacent.
+    ``転職`` is 転-then-職, which ``退職金の話をした`` does not contain. OR-ing the
+    clusters instead — which an earlier version did, along with their 2- and
+    3-grams — meant one shared character retrieved anything, and that is the
+    ``रात``-matches-travel defect one script over.
+
     Two further consequences, both wanted:
 
-    * FTS5 operator characters cannot survive tokenization, so ``NEAR(`` and an
-      unbalanced quote are ordinary input rather than syntax.
-    * ``half.text.terms`` is the same expansion applied to what goes *into* the
-      index, so an unspaced run is n-grammed identically on both sides and the
-      two cannot drift apart.
+    * FTS5 operator characters and operator *words* cannot survive quoting, so
+      ``NEAR(`` and a bare capitalised ``NOT`` are ordinary input rather than
+      syntax. Unquoted, ``NOT sure about the paragliders`` is an fts5 syntax
+      error that reaches the main as silence.
+    * ``half.text.index_text`` is the join of exactly these phrases, so the two
+      sides of the index cannot drift apart.
 
     Which beliefs contain these words is the store's question; how much each
     match is worth is ranking policy, and that lives in ``half.retrieval``.
 
     Raises ``TokenGrowthLimitError`` for a query past the tokenizer's ceiling,
-    rather than searching on a silently shortened one.
+    rather than searching on a silently shortened one. ``_search`` translates it
+    to a ``QueryTooLargeError`` so that nothing but a typed store fault crosses
+    the module boundary — and to one the turn path can tell apart from an index
+    that is genuinely unavailable.
     """
-    return " OR ".join(f'"{term}"' for term in terms(query))
+    return " OR ".join(f'"{phrase}"' for phrase in phrases(query))
 
 
 def _search(
@@ -302,7 +324,15 @@ def _search(
         limit = max(0, int(limit))
         if limit == 0:
             return []
-    expression = _match_expression(query)
+    try:
+        expression = _match_expression(query)
+    except TokenGrowthLimitError as exc:
+        # Typed at the boundary, like every other fault this module can meet.
+        # A caller catching StoreError must not additionally have to know that
+        # the tokenizer exists.
+        raise QueryTooLargeError(
+            f"query exceeds the tokenizer budget: {exc}"
+        ) from exc
     if not expression:
         return []
     try:
@@ -365,6 +395,25 @@ def _prefix_of(
         )
         return None
     return value or None
+
+
+def _terms_of(text: str | None, ident: str, column: str) -> str | None:
+    """The indexed term text for one column, or ``None`` if it cannot be built.
+
+    Degrades rather than raises — see ``rebuild``. Never logs the text itself,
+    only which belief and which column (AD-22).
+    """
+    if text is None:
+        return None
+    try:
+        return index_text(text) or None
+    except TokenGrowthLimitError as exc:
+        logger.warning(
+            "belief %s %s exceeds the tokenizer budget (%s); leaving it out of "
+            "the term index, still reachable through the backstop",
+            ident, column, exc,
+        )
+        return None
 
 
 def _dump(data: dict[str, Any]) -> str:

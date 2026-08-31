@@ -58,11 +58,12 @@ treats a Devanagari matra as a separator, so ``यात्रा`` shatters int
 Devanagari string. A drop rule built on that unit would emit no directive for
 any belief written in an Indic script, which is a channel dropping a belief for
 its script. So splitting here keeps marks attached to the letter they belong
-to. ``half.text.words`` now does the same, for its own reason — it hands FTS5
-whole words as phrases and lets FTS5 shatter them — but this split stays
-separate: it also removes invisible characters and it is not expanded into
-n-grams, because a *wording* check must not be answered by the terms an index
-happens to hold.
+to. ``half.text.words`` now splits identically, for its own reason — it hands
+FTS5 whole words as phrases and lets FTS5 shatter them — and
+``tests/test_scripts.py`` pins the two to the same output rather than merging
+them, because they answer different questions and only one of them is allowed to
+grow a growth ceiling, a cluster expansion, or anything else an index needs.
+A *wording* check must not be answered by the terms an index happens to hold.
 Folding is then ``half.text.normalize``, which casefolds and strips *non-spacing*
 marks — so ``Café`` and ``cafe`` are one word, and so are ``ज़मीन`` and ``जमीन``,
 because the nukta goes with the accents. Matras survive, which is what keeps

@@ -55,6 +55,18 @@ class CorruptLogError(StoreError):
         super().__init__(f"corrupt log line at {path}:{line}: {reason}")
 
 
+class QueryTooLargeError(StoreError):
+    """A query could not be tokenized within the bounded retrieval budget.
+
+    A ``StoreError``, because the store promises that only typed store faults
+    cross its boundary — and a *distinct* one, because the turn path treats the
+    two oppositely. A general ``StoreError`` means the index is unavailable and
+    the turn must fail loudly, so the main's message stays undelivered and
+    redelivery still works. This one means Half was handed more text than it
+    will tokenize: the ranking is lost, the reply is not.
+    """
+
+
 class SchemaVersionError(StoreError):
     """A record declared a schema version this build cannot read."""
 
