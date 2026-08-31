@@ -15,8 +15,8 @@ owns a main, not to the store. (A lock file would need human sign-off per the
 story's Ask First rule, and would duplicate an exclusion the actor model
 already provides.)
 
-Not yet built, deferred to their consuming stories: the SourceStore port
-(AD-13) and the projection renderer (AD-31).
+Layer 1 lives in ``half.store.sources`` and holds receipts rather than message
+bodies (AD-13). The projection renderer (AD-31) is still deferred.
 """
 
 from __future__ import annotations

@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import AsyncIterator, Protocol, runtime_checkable
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class Message:
     """One mail message, normalized away from its provider.
 
@@ -26,6 +26,18 @@ class Message:
     #: ISO-8601, supplied by the provider. Nothing downstream reads a clock.
     t: str
     headers: dict[str, str] = field(default_factory=dict)
+
+    def __repr__(self) -> str:
+        """Never render the body or headers.
+
+        A plain dataclass repr puts the unredacted body into every traceback,
+        `logging.exception`, and frame-locals capture — the exact path CAP-13
+        forbids. `Captured` was defended by a test and this was not.
+        """
+        return (
+            f"Message(external_id={self.external_id!r}, "
+            f"thread_id={self.thread_id!r}, bytes={len(self.body)})"
+        )
 
 
 @runtime_checkable

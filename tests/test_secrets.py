@@ -24,6 +24,7 @@ TOKEN = "1/" + "/0" + "abcdefghijklmnopqrstuvwxyz012345"
 @pytest.fixture
 def layout(tmp_path):
     store_root = tmp_path / "mains" / "vidit"
+    store_root.mkdir(parents=True)
     secrets = FileSecretStore.beside(tmp_path / "mains")
     return tmp_path, store_root, secrets
 
@@ -33,7 +34,64 @@ def all_bytes(root: Path) -> bytes:
 
 
 def test_the_file_store_satisfies_the_port(tmp_path):
-    assert isinstance(FileSecretStore(tmp_path / "c"), SecretStore)
+    store = FileSecretStore(tmp_path / "c", store_root=tmp_path / "mains")
+    assert isinstance(store, SecretStore)
+
+
+def test_store_root_is_required():
+    """It was optional, so the nesting invariant went unchecked whenever a
+    caller omitted it — a guard you can skip by not passing an argument."""
+    with pytest.raises(TypeError):
+        FileSecretStore("/tmp/anywhere")
+
+
+def test_beside_stays_outside_the_tree_holding_every_main(tmp_path):
+    """`beside()` takes the parent of all mains. Passing one main's own root
+    produced a path that was a sibling of that main but a child of the tree
+    holding all of them — and the guard, comparing only against the value
+    passed in, approved it."""
+    mains = tmp_path / "mains"
+    (mains / "vidit").mkdir(parents=True)
+    store = FileSecretStore.beside(mains)
+    assert not store.root.resolve().is_relative_to(mains.resolve())
+
+
+def test_an_existing_loose_directory_is_tightened(tmp_path):
+    """mkdir's mode is ignored when the directory already exists."""
+    loose = tmp_path / "creds"
+    loose.mkdir(mode=0o777)
+    FileSecretStore(loose, store_root=tmp_path / "mains")
+    assert loose.stat().st_mode & 0o077 == 0
+
+
+def test_a_stale_temp_file_cannot_become_the_credential_file(tmp_path):
+    """A pre-existing temp file kept its own mode and was promoted by
+    os.replace, putting a live token in a world-readable file."""
+    import os
+
+    creds = tmp_path / "creds"
+    store = FileSecretStore(creds, store_root=tmp_path / "mains")
+    stale = creds / f"vidit.{os.getpid()}.tmp"
+    stale.write_text("{}", encoding="utf-8")
+    stale.chmod(0o644)
+    store.put("vidit", "gmail", TOKEN)
+    assert (creds / "vidit.json").stat().st_mode & 0o077 == 0
+
+
+def test_a_corrupt_credential_file_raises_a_domain_error(tmp_path):
+    creds = tmp_path / "creds"
+    store = FileSecretStore(creds, store_root=tmp_path / "mains")
+    (creds / "vidit.json").write_text("{not json", encoding="utf-8")
+    with pytest.raises(StoreError):
+        store.get("vidit", "gmail")
+
+
+def test_the_file_is_removed_when_the_last_credential_goes(tmp_path):
+    creds = tmp_path / "creds"
+    store = FileSecretStore(creds, store_root=tmp_path / "mains")
+    store.put("vidit", "gmail", TOKEN)
+    store.delete("vidit", "gmail")
+    assert not (creds / "vidit.json").exists()
 
 
 def test_a_token_round_trips(layout):
@@ -55,6 +113,17 @@ def test_the_store_refuses_to_nest_inside_the_store_tree(tmp_path):
     store_root = tmp_path / "mains"
     with pytest.raises(StoreError):
         FileSecretStore(store_root / SECRETS_DIRNAME, store_root=store_root)
+
+
+def test_source_files_are_not_world_readable(tmp_path):
+    """The mailbox archive deserves the same posture as the credential store
+    beside it — removing every mode from LocalSourceStore used to ship green."""
+    from half.store.sources import LocalSourceStore
+
+    store = LocalSourceStore(tmp_path / "sources")
+    address = store.put(b"a captured message")
+    assert store.root.stat().st_mode & 0o077 == 0
+    assert store._path(address).stat().st_mode & 0o077 == 0
 
 
 def test_a_token_never_appears_in_the_store_tree(layout):

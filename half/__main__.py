@@ -16,6 +16,7 @@ import asyncio
 import logging
 import os
 import sys
+from dataclasses import dataclass
 
 from half.actor.registry import ActorRegistry, validate_main_id
 from half.actor.runtime import Runtime
@@ -23,18 +24,46 @@ from half.channel.telegram import TelegramChannel
 from half.channel.telegram_transport import PTBTransport
 from half.config import TELEGRAM_TOKEN_ENV, Config, load
 from half.errors import HalfError
+from half.secrets import FileSecretStore
+from half.store.sources import LocalSourceStore
 from half.store.store import Store
 
 logger = logging.getLogger("half")
 
 
-def build(config: Config, token: str) -> tuple[TelegramChannel, ActorRegistry]:
-    """Wire the object graph. Separate from ``main`` so it is testable."""
+@dataclass(frozen=True, slots=True)
+class Wiring:
+    """Everything a running Half needs, constructed once."""
+
+    channel: TelegramChannel
+    registry: ActorRegistry
+    secrets: FileSecretStore
+    sources: dict[str, LocalSourceStore]
+
+
+def build(config: Config, token: str) -> Wiring:
+    """Wire the object graph. Separate from ``main`` so it is testable.
+
+    Three stories have now shipped a surface reachable only from tests, so the
+    credential store and the per-main source stores are constructed here even
+    though ingestion is not yet scheduled — an object graph nothing builds is
+    an object graph nobody has run.
+    """
     for main_id in config.mains.values():
         validate_main_id(main_id)
 
     channel = TelegramChannel(transport=PTBTransport(token), mains=dict(config.mains))
     registry = ActorRegistry(config.root)
+
+    # Credentials sit beside the tree holding every main, never inside it, so
+    # export and replay cannot carry them (AD-11).
+    secrets = FileSecretStore.beside(config.root)
+
+    # One source store per main. Bodies are never kept; these hold receipts.
+    sources = {
+        main_id: LocalSourceStore(config.root / main_id / "sources")
+        for main_id in config.mains.values()
+    }
 
     # Restore reachability from each main's log, or a restart reports everyone
     # as never-contacted and nothing unprompted can be sent until they write.
@@ -42,16 +71,16 @@ def build(config: Config, token: str) -> tuple[TelegramChannel, ActorRegistry]:
         with Store(config.root / main_id) as store:
             channel.reach.rebuild_from(main_id, store.log)
 
-    return channel, registry
+    return Wiring(channel=channel, registry=registry, secrets=secrets, sources=sources)
 
 
 async def serve(config: Config, token: str) -> None:
-    channel, registry = build(config, token)
+    wiring = build(config, token)
     logger.info("serving %d main(s) from %s", len(config.mains), config.root)
     try:
-        await Runtime(channel=channel, registry=registry).run()
+        await Runtime(channel=wiring.channel, registry=wiring.registry).run()
     finally:
-        registry.close()
+        wiring.registry.close()
 
 
 def main(argv: list[str] | None = None) -> int:

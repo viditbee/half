@@ -13,8 +13,16 @@ chose.
 from __future__ import annotations
 
 import hashlib
+import os
+import re
 from pathlib import Path
 from typing import Protocol, runtime_checkable
+
+from half.errors import StoreError
+
+#: A content address is a SHA-256 hex digest and nothing else. Validated
+#: because it becomes a path: '../' in an address would escape the shard tree.
+_ADDRESS = re.compile(r"[0-9a-f]{64}")
 
 
 def digest(payload: bytes) -> str:
@@ -26,8 +34,13 @@ def digest(payload: bytes) -> str:
 class SourceStore(Protocol):
     """Where captured sources live."""
 
-    def put(self, payload: bytes) -> str:
-        """Store ``payload`` and return its digest. Idempotent."""
+    def put(self, payload: bytes, *, address: str | None = None) -> str:
+        """Store ``payload``, optionally at an explicit content address.
+
+        An explicit address lets a caller key a record by the digest of the
+        *content it describes* rather than of the record itself — so a receipt
+        whose redaction counts change still resolves to one message.
+        """
         ...
 
     def get(self, address: str) -> bytes | None:
@@ -51,20 +64,37 @@ class LocalSourceStore:
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # mkdir's mode is ignored when the directory already exists, so an
+        # inherited 0755 would silently persist.
+        self.root.chmod(0o700)
 
     def _path(self, address: str) -> Path:
+        if not _ADDRESS.fullmatch(address):
+            raise StoreError(f"not a content address: {address!r}")
         return self.root / address[:2] / address[2:4] / address
 
-    def put(self, payload: bytes) -> str:
-        address = digest(payload)
+    def put(self, payload: bytes, *, address: str | None = None) -> str:
+        address = address or digest(payload)
         path = self._path(address)
         if path.exists():
             return address  # identical bytes; nothing to do
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_bytes(payload)
-        tmp.chmod(0o600)
-        tmp.replace(path)
+        # Unique per process and opened O_EXCL at 0600, so the bytes are never
+        # briefly world-readable and two writers cannot share a temp file.
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                view = memoryview(payload)
+                while view:
+                    view = view[os.write(fd, view):]
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(tmp, path)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
         return address
 
     def get(self, address: str) -> bytes | None:
@@ -75,4 +105,8 @@ class LocalSourceStore:
         return self._path(address).is_file()
 
     def __len__(self) -> int:
-        return sum(1 for p in self.root.rglob("*") if p.is_file())
+        """Stored sources, excluding any orphaned temp file."""
+        return sum(
+            1 for p in self.root.rglob("*")
+            if p.is_file() and not p.name.endswith(".tmp")
+        )

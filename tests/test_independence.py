@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from half.ingest.independence import identity_set, independent_groups
 
 
@@ -33,12 +35,39 @@ def test_two_unrelated_senders_on_unrelated_threads_are_two_supports():
 
 
 def test_collapsing_is_transitive():
-    """a and b share a sender; b and c share a thread; all three are one."""
+    """a and b share a digest; b and c share a thread; all three are one."""
     assert independent_groups([
-        source("a", thread="t1", sender="x@x", dgst="d1"),
-        source("b", thread="t2", sender="x@x", dgst="d2"),
-        source("c", thread="t2", sender="z@z", dgst="d3"),
+        source("a", thread="t1", dgst="SAME"),
+        source("b", thread="t2", dgst="SAME"),
+        source("c", thread="t2", dgst="d3"),
     ]) == 1
+
+
+def test_a_shared_sender_does_not_collapse_distinct_threads():
+    """Unioning on sender is transitive, so anyone appearing in two threads
+    links them — a handful of such people link a whole mailbox and
+    corroboration trends to one group. Tested at a realistic size, which is
+    how three hand-built sources hid it."""
+    mailbox = [
+        source(f"s{i}", thread=f"t{i // 3}", sender="newsletter@acme.test", dgst=f"d{i}")
+        for i in range(30)
+    ]
+    assert independent_groups(mailbox) == 10
+
+
+def test_a_non_string_identity_still_unions():
+    """A provider handing back an integer thread id used to drop the identity
+    silently, counting ten messages in one thread as ten supports."""
+    assert independent_groups([
+        ("a", {"thread_id": 1, "digest": "d1"}),
+        ("b", {"thread_id": 1, "digest": "d2"}),
+    ]) == 1
+
+
+def test_an_empty_source_id_is_refused():
+    """Two sources sharing the empty 'source:' handle would union."""
+    with pytest.raises(ValueError):
+        independent_groups([("", {"digest": "d1"}), ("", {"digest": "d2"})])
 
 
 def test_a_declared_key_collapses_sources_nothing_else_would():

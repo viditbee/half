@@ -41,6 +41,18 @@ SECRET_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
 )
 
 
+def _patterns() -> tuple[tuple[str, re.Pattern[str]], ...]:
+    """Every shape, ingest and export alike.
+
+    Imported lazily because `half.ingest.scrub` imports SECRET_PATTERNS from
+    this module. The two ends of the pipe must ask the same question, or a
+    shape refused on the way in exports clean on the way out.
+    """
+    from half.ingest.scrub import ALL_PATTERNS
+
+    return ALL_PATTERNS
+
+
 def scan_for_secrets(root: Path) -> list[str]:
     """Return a description of every secret-shaped match under ``root``.
 
@@ -60,7 +72,7 @@ def scan_for_secrets(root: Path) -> list[str]:
         except OSError as exc:
             findings.append(f"unreadable file at {_rel(path, root)}: {exc}")
             continue
-        for label, pattern in SECRET_PATTERNS:
+        for label, pattern in _patterns():
             for match in pattern.finditer(text):
                 line = text.count("\n", 0, match.start()) + 1
                 findings.append(f"{label} at {_rel(path, root)}:{line}")

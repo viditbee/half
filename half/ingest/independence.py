@@ -23,6 +23,20 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 
+#: What makes two sources the same evidence.
+#:
+#: Sender is deliberately **absent**. Unioning on sender is transitive, so any
+#: person appearing in two threads links those threads, and a handful of such
+#: people link nearly everything — corroboration then trends to one group and
+#: the gate never opens. Tested at scale rather than on three hand-built
+#: sources, which is how that stayed invisible.
+IDENTITY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("thread_id", "thread"),
+    ("digest", "content"),
+    ("independence_key", "declared"),
+)
+
+
 def _normalize(value: str) -> str:
     """Casefold under NFC so two spellings of one identity match."""
     return unicodedata.normalize("NFC", value.strip()).casefold()
@@ -33,12 +47,16 @@ def identity_set(source_id: str, source: Mapping[str, Any]) -> set[str]:
 
     Namespaced by kind so a thread id can never collide with a digest.
     """
-    values = {f"source:{_normalize(source_id)}"}
-    for key, kind in (("thread_id", "thread"), ("sender", "sender"),
-                      ("digest", "content"), ("independence_key", "declared")):
+    if not str(source_id).strip():
+        raise ValueError("source_id is required; an empty id unions everything")
+    values = {f"source:{_normalize(str(source_id))}"}
+    for key, kind in IDENTITY_FIELDS:
         raw = source.get(key)
-        if isinstance(raw, str) and raw.strip():
-            values.add(f"{kind}:{_normalize(raw)}")
+        # Coerced rather than type-checked: a provider handing back an integer
+        # thread id would otherwise drop the identity silently, and ten
+        # messages in one thread would count as ten independent supports.
+        if raw is not None and str(raw).strip():
+            values.add(f"{kind}:{_normalize(str(raw))}")
     return values
 
 

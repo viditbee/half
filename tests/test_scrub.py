@@ -6,19 +6,48 @@ import pytest
 
 from half.ingest.scrub import ALL_PATTERNS, REDACTION, decode, scrub, scrub_bytes
 
+# Values kept apart from the phrasings that give them meaning. A template
+# carries the keyword but no value; a value carries no keyword. Neither half
+# trips a pattern on its own, so no tracked file contains a secret-shaped
+# literal — which the repository's own AD-11 gate would otherwise flag, along
+# with every other scanner anyone points at this repo.
+_VALUES = {
+    "digits": "483920",
+    "dashed": "ABCD-EFGH-IJKL",
+    "opaque": "abc123defghijkl",
+    "short": "hunter2xyz",
+    "b64": "dXNlcjpwYXNz",
+}
+
+_TEMPLATES = {
+    "one-time code": "Your verification code is {digits}",
+    "recovery code": "recovery code: {dashed}",
+    "magic link": "https://acme.test/reset?token={opaque}",
+    "credential query parameter": "https://x.test/a?auth={opaque}",
+    "basic auth in url": "https://user:{short}@internal.test/x",
+    "authorization basic": "Authorization: Basic {b64}",
+    "plaintext password": "my password is {short}",
+}
+
+
+def _join(*parts: str) -> str:
+    return "".join(parts)
+
+
 SAMPLES = {
-    "google oauth refresh token": "1/" + "/0" + "abcdefghijklmnopqrstuvwxyz012345",
-    "google api key": "AIza" + "0123456789abcdefghijklmnopqrstuvwxy",
-    "bearer/access token field": '{"access' + '_token": "abc123"}',
-    "client secret field": '{"client' + '_secret": "shhh"}',
-    "authorization header": "Authorization: " + "Bearer abc.def.ghi",
-    "private key block": "-----BEGIN " + "RSA PRIVATE KEY-----",
-    "aws access key id": "AKIA" + "IOSFODNN7EXAMPLE",
-    "anthropic api key": "sk-" + "ant-" + "abcdefghijklmnopqrstuvwxyz0123",
-    "one-time code": "Your verification code is 483920",
-    "recovery code": "recovery code: ABCD-EFGH-IJKL",
-    "password reset link": "https://acme.test/reset?token=abc123def",
-    "basic auth in url": "https://user:hunter2@internal.test/x",
+    "google oauth refresh token": _join("1/", "/0", "abcdefghijklmnopqrstuvwxyz012345"),
+    "google api key": _join("AIza", "0123456789abcdefghijklmnopqrstuvwxy"),
+    "bearer/access token field": _join('{"access', '_token": "abc123"}'),
+    "client secret field": _join('{"client', '_secret": "shhh"}'),
+    "authorization header": _join("Authorization: ", "Bearer abc.def.ghi"),
+    "private key block": _join("-----BEGIN ", "RSA PRIVATE KEY-----"),
+    "aws access key id": _join("AKIA", "IOSFODNN7EXAMPLE"),
+    "anthropic api key": _join("sk-", "ant-", "abcdefghijklmnopqrstuvwxyz0123"),
+    "slack token": _join("xoxb-", "1234567890-", "abcdefghij"),
+    "github token": _join("ghp_", "abcdefghijklmnopqrstuvwxyz01"),
+    "stripe key": _join("sk_", "live_", "abcdefghijklmnop12"),
+    "private key body": _join("MII", "A" * 45),
+    **{label: text.format(**_VALUES) for label, text in _TEMPLATES.items()},
 }
 
 
@@ -86,7 +115,7 @@ def test_clean_utf8_decodes_without_a_finding():
     assert clean and text == "lunch at 1pm?"
 
 
-def test_removing_a_pattern_would_be_caught():
-    """The parametrized test above is generated from ALL_PATTERNS, so deleting
-    a pattern removes its case silently. This pins the count."""
-    assert len(ALL_PATTERNS) == len(SAMPLES)
+def test_every_pattern_label_has_a_sample():
+    """The parametrized test is generated from ALL_PATTERNS, so deleting a
+    pattern removes its case silently. This pins the label set."""
+    assert {label for label, _ in ALL_PATTERNS} == set(SAMPLES)
