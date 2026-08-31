@@ -6,12 +6,18 @@ there is nothing downstream to filter and no generated text to inspect. A
 post-generation filter would invert AD-18 exactly: pay for the tokens, then
 trust a classifier to suppress them.
 
-**Fail closed, at every step.** An unknown, missing or malformed license is
-`behave` — never `assert`, and never an exception. A belief pinned by
-quarantine is `behave` regardless of what its license field says. A directive
-whose only available topic echoes the claim is dropped. Every uncertain case
-resolves toward the weakest rung, because the cost of the two mistakes is not
-symmetric: losing a directive costs subtlety, leaking one costs trust.
+**Fail closed, at every step.** Every uncertain case resolves toward the
+weakest rung, because the cost of the two mistakes is not symmetric: losing a
+directive costs subtlety, leaking one costs trust. Which rung a belief lands on
+is the ladder's answer; what this module adds is that a directive whose only
+available topic echoes the claim is dropped rather than degraded.
+
+**The rung rules are the ladder's, and the ceiling is applied here** (AD-28).
+``resolve`` is the single place a license becomes a decision, which is exactly
+why the actor's global ceiling belongs inside it and not beside whatever
+composes a message. What the rungs *require* is not stated here at all —
+``half.governance.ladder`` holds that, and its module docstring is the one
+account of it.
 
 **Directives are assembled, never paraphrased.** AD-18 illustrates a directive
 as *"be gentle if travel comes up"*, which is a paraphrase, and paraphrase needs
@@ -92,6 +98,7 @@ from half.context.channels import (
     Question,
     Topic,
 )
+from half.governance.ladder import Ceiling, permitted
 from half.retrieval.port import Candidate, Ranked, RerankSource
 from half.text import normalize
 
@@ -110,49 +117,48 @@ _TOPICS: Final[str] = "topics"
 _SUBJECT: Final[str] = "subject"
 
 
-def resolve(belief: Mapping[str, Any] | Any) -> License:
-    """The license this belief actually carries, resolved downward only.
+def resolve(belief: Mapping[str, Any] | Any, *, ceiling: Ceiling | None) -> License:
+    """The license this belief actually permits, resolved downward only.
 
-    Absent, misspelled, wrongly typed, or a value from a future schema all
-    resolve to `behave`. A ``belief`` that is not a mapping at all resolves the
-    same way. This never raises, and that is load-bearing rather than tidy: the
-    only caller is on the turn's reply path, ahead of the append that records
-    the main's message, so an exception here costs the main both their answer
-    and their message — the belief is never written and the redelivery is
-    suppressed by the idempotency check.
+    The one place a license becomes a decision, and therefore the one place the
+    actor's global ceiling is applied (AD-28). ``ceiling`` is keyword-only and
+    has **no default**: a caller that forgets it gets a ``TypeError`` rather
+    than a belief resolved as though no cap existed, which is the bypass AD-28
+    is written to prevent. ``None`` is the configured absence — a main with no
+    ceiling set — and resolves to the belief's own license, never above it.
 
-    Quarantine wins over the stated rung, in one direction. A quarantined
-    belief is pinned at `behave` even if its license field says `assert`; the
-    reverse — a quarantine flag promoting anything — is not expressible here.
+    This never raises whatever the belief looks like, and that is load-bearing
+    rather than tidy: the only caller is on the turn's reply path, ahead of the
+    append that records the main's message, so an exception here costs the main
+    both their answer and their message — the belief is never written and the
+    redelivery is suppressed by the idempotency check.
+
+    This function is the door, not the rule set. Which rung a belief has earned
+    is answered by ``half.governance.ladder.permitted``, and answered there
+    only, so that it reads identically to whoever writes a license change and
+    to whoever reads one.
     """
-    if not isinstance(belief, Mapping):
-        return License.BEHAVE
-    if _quarantined(belief):
-        return License.BEHAVE
-    value = belief.get("license")
-    if isinstance(value, str):
-        try:
-            return License(value.strip())
-        except ValueError:
-            # `shout`, `Assert`, `assert ` with a stray character: unknown is
-            # unknown, and the weakest rung is what unknown means.
-            return License.BEHAVE
-    return License.BEHAVE
+    return permitted(belief, ceiling=ceiling)
 
 
-def _quarantined(belief: Mapping[str, Any]) -> bool:
-    """Whether the log pinned this belief at `behave`.
-
-    Anything other than an absent field or an explicit ``False`` counts. A
-    quarantine flag this build cannot interpret is a quarantine flag: the
-    failure mode of misreading it has to be the safe one.
-    """
-    flag = belief.get("quarantined")
-    return flag is not None and flag is not False
-
-
-def build(ranked: Ranked | Iterable[Candidate] | None, *, now: str) -> Context:
+def build(
+    ranked: Ranked | Iterable[Candidate] | None,
+    *,
+    now: str,
+    ceiling: Ceiling | None,
+) -> Context:
     """Split ``ranked`` into the three channels, as of ``now``.
+
+    ``ceiling`` is this main's global cap (AD-28), handed down to every
+    ``resolve`` in one place. Keyword-only and undefaulted, like ``resolve``'s:
+    a scan that catches callers who forget it can only catch the spellings it
+    thought of, and this story's own package re-exports made the uncaught
+    spelling the natural one. ``None`` is still how a caller says *this main has
+    no cap*; what it may not do is say it by omission.
+
+    A capped belief is withheld exactly as an ordinary `behave` belief is: its
+    wording joins the set no other line may echo, so lowering the ceiling
+    cannot leak a claim sideways through somebody else's sentence.
 
     ``now`` is carried, not read: nothing under ``half/context/`` touches a
     clock, so the same ranked set and the same ``now`` build the same bytes.
@@ -171,7 +177,7 @@ def build(ranked: Ranked | Iterable[Candidate] | None, *, now: str) -> Context:
     Rank order is preserved within each channel. Nothing is re-sorted, so no
     collation — and therefore no locale — is involved in the ordering.
     """
-    licensed = tuple((c, resolve(c.belief)) for c in (ranked or ()))
+    licensed = tuple((c, resolve(c.belief, ceiling=ceiling)) for c in (ranked or ()))
 
     # Every wording the context may not carry, as adjacent pairs. `ask` sits
     # here beside `behave`: its material surfaces as a question about a topic,

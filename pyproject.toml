@@ -30,4 +30,5 @@ addopts = "--strict-markers --strict-config"
 markers = [
     "ad18: licenses are enforced at context construction, never by filtering",
     "ad24: retrieval weights and never excludes",
+    "ad28: one license ceiling per actor, applied where licenses are resolved",
 ]

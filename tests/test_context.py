@@ -54,7 +54,7 @@ from half.retrieval.port import Candidate, Ranked, RerankSource
 from half.retrieval.prefix import build_prefix
 from half.store.ops import Op
 from half.store.store import Store
-from tests.conftest import FakeTransport, msg
+from tests.conftest import FakeTransport, msg, seed_belief
 
 ROOT = Path(__file__).resolve().parents[1]
 NOW = "2026-08-31T09:00:00Z"
@@ -76,8 +76,18 @@ def cand(ident: str, claim: str, **belief) -> Candidate:
     ``belief`` is the folded record, and it carries the claim as well — the
     duplication is real, so a builder that reads the claim off the record
     rather than off the candidate is still covered.
+
+    A candidate seeded at `assert` is given the two preconditions story 5a
+    added, unless the case states its own. `assert` is no longer a field
+    anyone can set: without a receipt and without the main already knowing, it
+    resolves to `ask`, and every case in *this* file is about the channel split
+    rather than about the ladder. ``tests/test_ladder.py`` is where the
+    preconditions themselves are the subject, and it seeds them explicitly.
     """
     belief.setdefault("claim", claim)
+    if belief.get("license") == "assert":
+        belief.setdefault("support", ["s_1"])
+        belief.setdefault("known_to_main", True)
     return Candidate(id=ident, claim=claim, prefix="", bm25=None, belief=belief)
 
 
@@ -159,7 +169,7 @@ def test_the_helper_catches_the_leak_the_first_guard_missed():
 @pytest.mark.ad18
 def test_an_assert_belief_becomes_quotable_content():
     """Matrix: `assert` belief -> claim enters the content channel verbatim."""
-    context = build(ranked(cand("b_1", SAID, license="assert")), now=NOW)
+    context = build(ranked(cand("b_1", SAID, license="assert")), now=NOW, ceiling=None)
 
     assert context.quotable() == (SAID,)
     assert SAID in context.render()
@@ -176,7 +186,7 @@ def test_a_behave_belief_becomes_a_directive_and_its_claim_appears_nowhere():
     """
     context = build(
         ranked(cand("b_1", HELD, license="behave", loop="mend-things", subject="self")),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
 
     assert context.quotable() == ()
@@ -189,7 +199,8 @@ def test_a_behave_belief_becomes_a_directive_and_its_claim_appears_nowhere():
 def test_an_ask_belief_becomes_a_question_candidate_and_is_never_quoted():
     """Matrix: `ask` belief -> a question candidate; claim treated as `behave`."""
     context = build(
-        ranked(cand("b_1", ASKED, license="ask", topics=["land"])), now=NOW
+        ranked(cand("b_1", ASKED, license="ask", topics=["land"])), now=NOW,
+        ceiling=None,
     )
 
     assert context.quotable() == ()
@@ -218,9 +229,9 @@ def test_an_ask_belief_becomes_a_question_candidate_and_is_never_quoted():
 def test_an_uncertain_license_resolves_to_behave_and_never_to_assert(belief):
     """Matrix: missing, unknown and malformed licenses. Never raises, never
     `assert` — the weakest rung is the default *and* the failure mode."""
-    assert resolve(belief) is License.BEHAVE
+    assert resolve(belief, ceiling=None) is License.BEHAVE
 
-    context = build(ranked(cand("b_1", HELD, loop="mend-things", **belief)), now=NOW)
+    context = build(ranked(cand("b_1", HELD, loop="mend-things", **belief)), now=NOW, ceiling=None)
     assert context.quotable() == ()
     assert context.directives, "the belief must still inform behaviour"
     assert not context.questions, "an uncertain rung may not become a question"
@@ -235,11 +246,11 @@ def test_a_belief_that_is_not_a_mapping_resolves_to_behave_without_raising(belie
     the append that records the main's message, so a raise here costs them
     both the answer and the message — the belief is never written and the
     idempotency check swallows the redelivery."""
-    assert resolve(belief) is License.BEHAVE
+    assert resolve(belief, ceiling=None) is License.BEHAVE
 
     context = build(
         ranked(Candidate(id="b_1", claim=HELD, prefix="", bm25=None, belief=belief)),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
     assert context.quotable() == ()
     assert_absent(context.render(), HELD)
@@ -252,11 +263,12 @@ def test_a_turn_whose_belief_record_is_malformed_still_replies():
     turn = Inbound(main_id="vidit", address="123", text="hello",
                    external_id="1", t=NOW)
     bad = Candidate(id="b_1", claim=HELD, prefix="", bm25=None, belief="not a mapping")
-    assert respond(turn, ranked(bad)) == "noted."
+    assert respond(turn, ranked(bad), ceiling=None) == "noted."
 
 
 def test_a_valid_license_survives_surrounding_whitespace():
-    assert resolve({"license": " assert "}) is License.ASSERT
+    earned = {"license": " assert ", "support": ["s_1"], "known_to_main": True}
+    assert resolve(earned, ceiling=None) is License.ASSERT
 
 
 @pytest.mark.ad18
@@ -264,9 +276,16 @@ def test_quarantine_pins_downward_and_never_promotes():
     """The glossary's definition: permanently pinned at `behave`, a schema
     field rather than an exception list. Nothing here infers a candidate —
     quarantine is never applied on inference (CAP-10)."""
-    assert resolve({"license": "assert", "quarantined": True}) is License.BEHAVE
-    assert resolve({"license": "behave", "quarantined": False}) is License.BEHAVE
-    assert resolve({"license": "assert", "quarantined": False}) is License.ASSERT
+    earned = {"support": ["s_1"], "known_to_main": True}
+    assert resolve(
+        {"license": "assert", "quarantined": True, **earned}, ceiling=None
+    ) is License.BEHAVE
+    assert resolve(
+        {"license": "behave", "quarantined": False}, ceiling=None
+    ) is License.BEHAVE
+    assert resolve(
+        {"license": "assert", "quarantined": False, **earned}, ceiling=None
+    ) is License.ASSERT
 
 
 # -- withholding is by fragment ----------------------------------------------
@@ -287,7 +306,7 @@ def test_an_assert_claim_carrying_a_withheld_claims_wording_is_dropped(rung):
             cand("b_1", HELD, license=rung, loop="mend-things"),
             cand("b_2", ECHOES_HELD, license="assert"),
         ),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
 
     assert context.quotable() == (), "a withheld claim's wording reached content"
@@ -304,7 +323,7 @@ def test_a_shorter_shared_wording_is_caught_too():
             cand("b_1", "quit swimming", license="behave"),
             cand("b_2", "he told me he quit swimming last year", license="assert"),
         ),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
     assert context.quotable() == ()
 
@@ -320,7 +339,7 @@ def test_a_single_shared_word_is_a_topic_and_does_not_suppress_content():
                  loop="mend-things"),
             cand("b_2", "called his brother on Sunday", license="assert"),
         ),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
     assert context.quotable() == ("called his brother on Sunday",)
     assert context.directives
@@ -334,7 +353,7 @@ def test_a_single_word_withheld_claim_is_withheld_entire():
             cand("b_1", "smallholding", license="behave", loop="land"),
             cand("b_2", "bought a smallholding in March", license="assert"),
         ),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
     assert context.quotable() == ()
 
@@ -348,7 +367,7 @@ def test_a_withheld_wording_cannot_reach_a_directive_either():
             cand("b_1", HELD, license="behave"),
             cand("b_2", "unrelated", license="behave", topics=[HELD]),
         ),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
     assert_absent(context.render(), HELD)
 
@@ -366,7 +385,7 @@ def test_an_unspaced_script_cannot_hide_a_withheld_wording():
             cand("b_1", withheld, license="behave", topics=["仕事"]),
             cand("b_2", "日記に「転職を考えている」と書いた", license="assert"),
         ),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
 
     assert context.quotable() == (), "spacing hid a withheld wording"
@@ -387,7 +406,7 @@ def test_an_invisible_character_cannot_slip_a_wording_past_the_guard(invisible):
             cand("b_2", f"he is avoiding{invisible} the conversation daily",
                  license="assert"),
         ),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
     assert context.quotable() == ()
 
@@ -402,7 +421,7 @@ def test_a_devanagari_claim_and_topic_are_handled_identically():
             cand("b_1", claim, license="behave", topics=["यात्रा"]),
             cand("b_2", "आशा को हर बार तीन मिनट में जवाब देता है", license="assert"),
         ),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
 
     assert [t.name for t in context.directives[0].topics] == ["यात्रा"]
@@ -416,7 +435,7 @@ def test_a_devanagari_topic_that_echoes_its_claim_is_dropped_too():
     context = build(
         ranked(cand("b_1", "आशा से रोज़ बात करता है", license="behave",
                     topics=["आशा"])),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
     assert not context.directives
 
@@ -430,7 +449,7 @@ def test_the_nukta_folds_like_an_accent_and_drops_rather_than_emits():
     context = build(
         ranked(cand("b_1", "ज़मीन के बारे में सोच रहा है", license="behave",
                     topics=["जमीन"])),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
     assert not context.directives, "the nukta must not defeat the echo rule"
 
@@ -443,14 +462,14 @@ def test_the_drop_rule_folds_case_and_accents_like_the_index_does():
     dropped = build(
         ranked(cand("b_1", "les plans du Café sont bloqués",
                     license="behave", loop="cafe-plans")),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
     assert not dropped.directives
 
     kept = build(
         ranked(cand("b_2", "n'a pas volé depuis trois ans",
                     license="behave", loop="cafe-plans")),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
     assert [t.name for t in kept.directives[0].topics] == ["cafe-plans"]
 
@@ -539,7 +558,7 @@ def test_the_rendering_actually_emits_a_line_for_every_channel():
             cand("b_hold", HELD, license="behave", loop="mend-things"),
             cand("b_ask", ASKED, license="ask", topics=["land"]),
         ),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
     lines = context.render().split("\n")
 
@@ -562,7 +581,7 @@ def test_no_claim_or_topic_can_forge_a_line_or_a_channel_label():
                  topics=[forged]),
             cand("b_2", f"a claim{forged}", license="assert"),
         ),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
     lines = context.render().split("\n")
 
@@ -599,7 +618,7 @@ def test_a_mixed_set_lands_each_belief_in_exactly_one_channel():
             cand("b_hold", HELD, license="behave", loop="mend-things"),
             cand("b_ask", ASKED, license="ask", topics=["land"]),
         ),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
 
     assert [c.id for c in context.content] == ["b_say"]
@@ -618,7 +637,7 @@ def test_a_set_of_only_behave_material_has_directives_and_nothing_quotable():
             cand("b_1", HELD, license="behave", loop="mend-things"),
             cand("b_2", ASKED, license="behave", topics=["land"]),
         ),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
 
     assert context.quotable() == ()
@@ -633,7 +652,7 @@ def test_nothing_retrieved_builds_an_empty_context_and_never_says_so(empty):
     """Matrix: nothing retrieved -> empty context, no error, and a rendering
     that states no absence. "No beliefs" and "no access" are one paraphrase
     apart, and the second sentence is the one the spec rejects (AD-24)."""
-    context = build(empty, now=NOW)
+    context = build(empty, now=NOW, ceiling=None)
 
     assert context.empty and len(context) == 0
     assert context.render() == f"now: {NOW}"
@@ -645,8 +664,8 @@ def test_the_retrieval_annotations_survive_the_context_boundary():
     """AD-24: a cap the result does not mention is the shape "I don't have
     access to that" arrives in. An empty context from a truncated ranked set
     must not be indistinguishable from an empty ledger."""
-    capped = build(ranked(truncated=True, rerank=RerankSource.FAILED), now=NOW)
-    plain = build(ranked(), now=NOW)
+    capped = build(ranked(truncated=True, rerank=RerankSource.FAILED), now=NOW, ceiling=None)
+    plain = build(ranked(), now=NOW, ceiling=None)
 
     assert capped.empty and plain.empty
     assert capped.truncated and not plain.truncated
@@ -664,7 +683,7 @@ def test_rank_order_is_preserved_within_every_channel():
             cand("b_a", "apples from the orchard", license="assert"),
             cand("b_m", "mango season started early", license="assert"),
         ),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
     assert [c.id for c in context.content] == ["b_z", "b_a", "b_m"]
 
@@ -684,7 +703,7 @@ def test_a_topic_that_echoes_the_claim_drops_the_whole_directive():
     context = build(
         ranked(cand("b_1", claim, license="behave", loop="mend-things",
                     topics=["brother"])),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
 
     assert not context.directives, "a directive was emitted from claim wording"
@@ -694,7 +713,7 @@ def test_a_topic_that_echoes_the_claim_drops_the_whole_directive():
 @pytest.mark.ad18
 def test_a_behave_belief_with_no_structured_topic_emits_nothing_and_leaks_nothing():
     """Matrix: no structured topic -> silent omission, and still no leak."""
-    context = build(ranked(cand("b_1", HELD, license="behave")), now=NOW)
+    context = build(ranked(cand("b_1", HELD, license="behave")), now=NOW, ceiling=None)
 
     assert context.empty
     assert_absent(context.render(), HELD)
@@ -706,7 +725,7 @@ def test_a_bare_string_where_a_list_was_expected_still_names_a_topic():
     context = build(
         ranked(cand("b_1", "unrelated wording here", license="behave",
                     topics="travel")),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
     assert [t.name for t in context.directives[0].topics] == ["travel"]
 
@@ -717,7 +736,7 @@ def test_an_unordered_topic_shape_is_refused_rather_than_ordered_arbitrarily():
     context = build(
         ranked(cand("b_1", "unrelated wording here", license="behave",
                     loop="mend-things", topics={"a", "b", "c"})),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
     assert [t.name for t in context.directives[0].topics] == ["mend-things"]
 
@@ -728,7 +747,7 @@ def test_a_topic_with_no_comparable_words_keeps_the_belief_s_other_topics():
     context = build(
         ranked(cand("b_1", "unrelated wording here", license="behave",
                     loop="mend-things", topics=["🌾", "land"])),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
     assert [t.name for t in context.directives[0].topics] == [
         "mend-things", "🌾", "land",
@@ -739,7 +758,7 @@ def test_repeated_topics_are_named_once():
     context = build(
         ranked(cand("b_1", "unrelated wording here", license="behave",
                     topics=["Travel", "travel", "travel"])),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
     assert [t.name for t in context.directives[0].topics] == ["Travel"]
 
@@ -751,14 +770,14 @@ def test_subject_is_named_only_when_the_belief_has_nothing_better():
     with_loop = build(
         ranked(cand("b_1", "is self-employed these days", license="behave",
                     loop="mend-things", subject="self")),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
     assert [t.name for t in with_loop.directives[0].topics] == ["mend-things"]
 
     alone = build(
         ranked(cand("b_2", "unrelated wording here", license="behave",
                     subject="self")),
-        now=NOW,
+        now=NOW, ceiling=None,
     )
     assert [t.name for t in alone.directives[0].topics] == ["self"]
 
@@ -774,16 +793,16 @@ def test_the_same_ranked_set_and_now_build_an_identical_context():
         cand("b_2", HELD, license="behave", loop="mend-things"),
         cand("b_3", ASKED, license="ask", topics=["land"]),
     )
-    rendered = {build(source, now=NOW).render() for _ in range(5)}
+    rendered = {build(source, now=NOW, ceiling=None).render() for _ in range(5)}
     assert len(rendered) == 1
-    assert build(source, now=NOW) == build(source, now=NOW)
+    assert build(source, now=NOW, ceiling=None) == build(source, now=NOW, ceiling=None)
 
 
 def test_a_different_now_is_visible_in_the_context():
     """``now`` is part of the context rather than decoration, so the
     determinism assertion above is about the inputs and not about a constant."""
     later = "2026-09-01T09:00:00Z"
-    assert build(None, now=NOW).render() != build(None, now=later).render()
+    assert build(None, now=NOW, ceiling=None).render() != build(None, now=later, ceiling=None).render()
 
 
 #: Anything that would make a context depend on something other than its inputs.
@@ -854,18 +873,28 @@ class Recording:
 
 
 def seeded(root, **extra):
-    """One belief per rung, plus whatever a test adds."""
+    """One belief per rung, plus whatever a test adds.
+
+    Seeded through ``tests.conftest.seed_belief``, which admits each belief at
+    the weakest rung and *promotes* it through the ladder. No test writes a
+    license field itself: since story 5a that would be the very thing the story
+    forbids — `assert` as a field a caller sets — and ``test_ladder.py`` fails
+    the build over it.
+    """
+    t = "2026-06-01T00:00:00Z"
     with Store(root / "vidit", prefix=build_prefix) as s:
-        s.record(Op.ASSERT, "b_say", "2026-06-01T00:00:00Z", subject="self",
-                 claim=SAID, ledger="revealed", license="assert", loop="fly-again")
-        s.record(Op.ASSERT, "b_hold", "2026-06-01T00:00:00Z", subject="self",
-                 claim=HELD, ledger="revealed", license="behave",
-                 loop="mend-things")
-        s.record(Op.ASSERT, "b_ask", "2026-06-01T00:00:00Z", subject="self",
-                 claim=ASKED, ledger="stated", license="ask", loop="buy-land")
+        seed_belief(s, "b_say", t, subject="self", claim=SAID, ledger="revealed",
+                    loop="fly-again", rung=License.ASSERT, support=["s_1"])
+        seed_belief(s, "b_hold", t, subject="self", claim=HELD,
+                    ledger="revealed", loop="mend-things")
+        seed_belief(s, "b_ask", t, subject="self", claim=ASKED, ledger="stated",
+                    loop="buy-land", rung=License.ASK)
         for ident, fields in extra.items():
-            s.record(Op.ASSERT, ident, "2026-06-01T00:00:00Z", subject="self",
-                     ledger="revealed", **fields)
+            fields = dict(fields)
+            rung = fields.pop("license", "behave")
+            support = fields.pop("support", ["s_1"])
+            seed_belief(s, ident, t, subject="self", ledger="revealed",
+                        rung=rung, support=support, **fields)
     return root
 
 
@@ -882,7 +911,8 @@ def context_of(root, query="xyzzy plugh", *, main="vidit"):
     from half.retrieval.rank import Retriever
 
     with Store(root / main, prefix=build_prefix) as s:
-        return build(Retriever(store=s).retrieve(query, now=NOW), now=NOW)
+        ranked_set = Retriever(store=s).retrieve(query, now=NOW)
+        return build(ranked_set, now=NOW, ceiling=None)
 
 
 @pytest.mark.ad18
@@ -960,9 +990,8 @@ def test_a_reply_is_still_produced_when_nothing_is_quotable(tmp_path):
     """Matrix: empty content -> a reply is still produced."""
     root = tmp_path / "mains"
     with Store(root / "vidit", prefix=build_prefix) as s:
-        s.record(Op.ASSERT, "b_hold", "2026-06-01T00:00:00Z", subject="self",
-                 claim=HELD, ledger="revealed", license="behave",
-                 loop="mend-things")
+        seed_belief(s, "b_hold", "2026-06-01T00:00:00Z", subject="self",
+                    claim=HELD, ledger="revealed", loop="mend-things")
 
     recorder = Recording()
     transport, reg = run_turn(root, "xyzzy plugh", reranker=recorder)
@@ -997,8 +1026,10 @@ def test_the_responder_quotes_only_the_content_channel():
     turn = Inbound(main_id="vidit", address="123", text="hello",
                    external_id="1", t=NOW)
 
-    assert respond(turn, ranked(cand("b_1", HELD, license="behave"))) == "noted."
-    assert SAID in (respond(turn, ranked(cand("b_1", SAID, license="assert"))) or "")
-    assert respond(turn, None) == "noted."
+    assert respond(turn, ranked(cand("b_1", HELD, license="behave")),
+                   ceiling=None) == "noted."
+    assert SAID in (respond(turn, ranked(cand("b_1", SAID, license="assert")),
+                            ceiling=None) or "")
+    assert respond(turn, None, ceiling=None) == "noted."
     assert respond(Inbound(main_id="vidit", address="123", text="   ",
-                           external_id="2", t=NOW)) is None
+                           external_id="2", t=NOW), ceiling=None) is None

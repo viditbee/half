@@ -161,7 +161,7 @@ def test_silence_sends_nothing_and_is_not_an_error(tmp_path):
     reg = ActorRegistry(tmp_path / "mains")
     asyncio.run(Runtime(channel=channel, registry=reg).run())
     assert transport.sent == []
-    assert respond(_inbound("   ")) is None
+    assert respond(_inbound("   "), ceiling=None) is None
     reg.close()
 
 

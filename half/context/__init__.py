@@ -12,10 +12,14 @@ permit is never assembled into a quotable field, so there is no generated text
 to inspect afterwards. A post-generation filter is AD-18 inverted: paying for
 the tokens and then trusting a classifier to suppress them.
 
-**The weakest rung is the default and the failure mode.** Unknown, missing and
-malformed licenses resolve to `behave`. Quarantine pins to `behave`. A
-directive whose topic echoes its claim is dropped rather than degraded. Every
-uncertainty resolves downward.
+**The weakest rung is the default and the failure mode.** Every uncertainty
+resolves downward — including a directive whose topic echoes its claim, which
+is dropped rather than degraded.
+
+**The rung rules belong to the ladder, and the ceiling is applied here.**
+``half.governance.ladder`` decides what a rung requires and is the one account
+of it; ``resolve`` is the single place that answer becomes a decision, which is
+why the actor's global ceiling is applied inside it and nowhere else (AD-28).
 
 **No model, no clock, no network (AD-19, AD-30).** A context is a data
 structure this package builds and asserts over, not something sent anywhere.

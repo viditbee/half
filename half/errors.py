@@ -75,6 +75,20 @@ class SecretLeakError(StoreError):
     """Secret material was found somewhere it must never appear (AD-11)."""
 
 
+class LadderError(HalfError):
+    """A license change the ladder refuses (CAP-10).
+
+    Raised only by the *writing* half of ``half.governance.ladder`` — promotion,
+    demotion, quarantine. The *reading* half never raises: resolving a license
+    happens on the turn's reply path, so an exception there would cost the main
+    their answer, and the weakest rung is what an unreadable license means.
+
+    A refusal is loud on purpose. Every path this rejects is a path that would
+    have let Half assert something it has not earned the right to say, and the
+    caller has to notice that rather than discover it in the belief set later.
+    """
+
+
 class RetrievalError(HalfError):
     """A fault in the retrieval layer (CAP-9)."""
 

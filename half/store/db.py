@@ -29,19 +29,30 @@ logger = logging.getLogger(__name__)
 #: close a cycle between the two.
 PrefixFn = Callable[[Mapping[str, Any]], str]
 
+#: The one key the ``governance`` table currently holds.
+CEILING_KEY: Final[str] = "ceiling"
+
 #: Shape of the derived view. Bumped whenever a column or an FTS table changes.
 #: SQLite here is derived and disposable (AD-3), so a mismatch is resolved by
 #: discarding it and replaying the log — never by an in-place migration, which
 #: would be a second way for derived state to exist that the log does not
 #: describe.
-DERIVED_VERSION: Final[int] = 3
+DERIVED_VERSION: Final[int] = 4
 
 #: Every object this module owns, in an order safe to drop: the FTS table
 #: references ``beliefs`` as its external content.
 _TABLES: Final[tuple[str, ...]] = (
-    "belief_fts", "beliefs", "tensions", "loops", "expunged",
+    "belief_fts", "beliefs", "tensions", "loops", "expunged", "governance",
 )
 
+#: There is deliberately no ``license`` column. One existed, materialized from
+#: the record's stated field, and it was a second opinion: since story 5a a
+#: belief stating `assert` without a receipt *resolves* to `ask`, and a column
+#: reading `assert` beside it is the disagreement this story exists to remove.
+#: Nothing read it. The rung a belief is on is answered in exactly one place —
+#: ``half.context.build.resolve`` — from the record in ``data``, under the
+#: actor's ceiling, which is not a property of a belief and could not live in a
+#: belief row anyway.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS beliefs (
     id           TEXT PRIMARY KEY,
@@ -52,7 +63,6 @@ CREATE TABLE IF NOT EXISTS beliefs (
     claim_terms  TEXT,
     prefix_terms TEXT,
     ledger       TEXT,
-    license      TEXT NOT NULL DEFAULT 'behave',
     independent  INTEGER NOT NULL DEFAULT 0,
     data         TEXT NOT NULL
 ) STRICT;
@@ -60,6 +70,11 @@ CREATE TABLE IF NOT EXISTS beliefs (
 CREATE TABLE IF NOT EXISTS tensions (id TEXT PRIMARY KEY, data TEXT NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS loops    (id TEXT PRIMARY KEY, data TEXT NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS expunged (id TEXT PRIMARY KEY) STRICT;
+
+-- Folded governance state that belongs to the main rather than to any one
+-- belief: currently the license ceiling (AD-28). Derived and disposable like
+-- every other table here — the authority is the ``ceiling`` op in the log.
+CREATE TABLE IF NOT EXISTS governance (key TEXT PRIMARY KEY, value TEXT) STRICT;
 
 -- Indexes the *terms* columns rather than the raw text, because a script
 -- written without word spaces arrives as one unicode61 token and is then
@@ -109,7 +124,7 @@ def _discard_if_stale(conn: sqlite3.Connection) -> None:
 
 def is_empty(conn: sqlite3.Connection) -> bool:
     """True when the derived view holds nothing — fresh, or just discarded."""
-    for table in ("beliefs", "tensions", "loops", "expunged"):
+    for table in ("beliefs", "tensions", "loops", "expunged", "governance"):
         if conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None:
             return False
     return True
@@ -153,7 +168,7 @@ def rebuild(
         # prefix is never indexed. ``delete-all`` discards the index outright
         # and consults nothing.
         conn.execute("INSERT INTO belief_fts(belief_fts) VALUES('delete-all')")
-        for table in ("beliefs", "tensions", "loops", "expunged"):
+        for table in ("beliefs", "tensions", "loops", "expunged", "governance"):
             conn.execute(f"DELETE FROM {table}")
 
         for ident, data in state.beliefs.items():
@@ -162,7 +177,7 @@ def rebuild(
             conn.execute(
                 "INSERT INTO beliefs (id, t, subject, claim, prefix,"
                 " claim_terms, prefix_terms, ledger,"
-                " license, independent, data) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                " independent, data) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     ident,
                     _require_str(data, "t", ident, default=""),
@@ -172,12 +187,14 @@ def rebuild(
                     _terms_of(claim, ident, "claim"),
                     _terms_of(belief_prefix, ident, "prefix"),
                     _text_or_none(data.get("ledger")),
-                    _require_str(data, "license", ident, default="behave"),
                     _require_int(data, "independent", ident),
                     json.dumps(data, sort_keys=True, separators=(",", ":"),
                                ensure_ascii=False),
                 ),
             )
+        if state.ceiling is not None:
+            conn.execute("INSERT INTO governance (key, value) VALUES (?,?)",
+                         (CEILING_KEY, state.ceiling))
         for ident, data in state.tensions.items():
             conn.execute("INSERT INTO tensions (id, data) VALUES (?,?)",
                          (ident, _dump(data)))
@@ -209,6 +226,9 @@ def read_state(conn: sqlite3.Connection) -> State:
         state.loops[row["id"]] = json.loads(row["data"])
     for row in conn.execute("SELECT id FROM expunged ORDER BY id"):
         state.expunged.add(row["id"])
+    row = conn.execute("SELECT value FROM governance WHERE key = ?",
+                       (CEILING_KEY,)).fetchone()
+    state.ceiling = row["value"] if row is not None else None
     return state
 
 

@@ -47,6 +47,8 @@ from half.errors import (
     SendFailed,
     TokenGrowthLimitError,
 )
+from half.governance import ladder
+from half.governance.ladder import Ceiling
 from half.retrieval.port import Ranked, Reranker
 from half.retrieval.rank import Retriever
 from half.retrieval.strands import known_strands
@@ -139,7 +141,12 @@ class Runtime:
             if belief_id in actor.store.state().beliefs:
                 return None  # already handled; a redelivery, not a new message
 
-            reply = respond(inbound, self._retrieve(actor, inbound))
+            # The ceiling travels with the actor, so the cap this main is under
+            # is applied wherever this turn resolves a license — never assembled
+            # into the reply and then subtracted from it (AD-28).
+            reply = respond(
+                inbound, self._retrieve(actor, inbound), ceiling=actor.ceiling
+            )
 
             # Recorded last, and this ordering is load-bearing. Recording first
             # meant that anything failing afterwards — retrieval raising because
@@ -155,7 +162,12 @@ class Runtime:
                 subject="self",
                 claim=inbound.text,
                 ledger="stated",
-                license="behave",
+                # The rung comes from the ladder, never from a literal here.
+                # A belief is admitted at the weakest rung and can reach any
+                # other only through a promotion, which is an event involving
+                # the main — so there is no spelling of this call that could
+                # mint an `assert`.
+                **ladder.admitted(),
             )
             return reply
 
@@ -206,7 +218,12 @@ class Runtime:
             return Ranked()
 
 
-def respond(inbound: Inbound, ranked: Ranked | None = None) -> str | None:
+def respond(
+    inbound: Inbound,
+    ranked: Ranked | None = None,
+    *,
+    ceiling: Ceiling | None,
+) -> str | None:
     """Build the turn's context and reply from what its licenses permit.
 
     Still deterministic and still model-free — AD-19's port is unbuilt, so
@@ -227,10 +244,15 @@ def respond(inbound: Inbound, ranked: Ranked | None = None) -> str | None:
     * A context with no content still produces a reply. Empty is an ordinary
       outcome — an empty ledger, or retrieval disabled by a crisis — and is
       never phrased as missing access (AD-24, AD-27).
+
+    ``ceiling`` is this main's global cap and is applied inside the context
+    build, where licenses are resolved. Nothing here inspects it or subtracts
+    anything afterwards: a capped belief simply never reaches the quotable
+    channel (AD-28).
     """
     if not inbound.text.strip():
         return None
-    quotable = build_context(ranked, now=inbound.t).quotable()
+    quotable = build_context(ranked, now=inbound.t, ceiling=ceiling).quotable()
     if not quotable:
         return "noted."
     return f"noted. {quotable[0]}"

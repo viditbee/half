@@ -16,11 +16,11 @@ Your credentials are never in this tree.
 
 ## Status
 
-Stories 1–4b of 12: the store, the Telegram channel, mail ingestion, retrieval,
-and the two-channel context. Half can hold a conversation, remember it, derive
-claims from your mail without keeping the mail, rank what it knows against what
-you just said, and decide which of it may be *said* as opposed to merely acted
-on.
+Stories 1–5a of 12: the store, the Telegram channel, mail ingestion, retrieval,
+the two-channel context, and the license ladder. Half can hold a conversation,
+remember it, derive claims from your mail without keeping the mail, rank what
+it knows against what you just said, and decide which of it may be *said* as
+opposed to merely acted on.
 
 Every belief carries a license, and licenses are enforced when the context is
 **built** rather than by filtering what comes out. A claim licensed `assert`
@@ -29,9 +29,24 @@ topic — its wording appears nowhere, in any channel, and that is asserted
 byte-wise over the rendered context and over the reply. Anything missing,
 unknown or malformed is treated as `behave`.
 
+`assert` is not a field anything can set. It requires two independent things:
+a citation into Half's own evidence, *and* your already knowing Half holds the
+belief — being right is not sufficient, because the danger of assertion is
+being unexpected rather than being wrong. No amount of corroboration promotes a
+belief on its own; promotion is an event involving you, recorded as an append.
+An unsupported claim may be *asked*, never asserted. Quarantine pins a belief
+at `behave` permanently, and the fold carries the pin forward so no later
+record can drop it. Above all of it sits one ceiling per person, applied where
+licenses are resolved rather than where messages are composed, so a new surface
+cannot bypass it by forgetting to check; it lives in the log, so it survives
+eviction and restart, and it can cap but never promote. Both halves are gated
+statically: nothing outside `half/governance/` resolves a license without the
+ceiling, and nothing outside it writes one.
+
 It still cannot decide what is *worth* saying: the responder is a deterministic
-stub because no model is called anywhere yet (story 5). Crisis handling
-(story 6) is still unimplemented.
+stub because no model is called anywhere yet. The trust balance and the unsaid
+and unasked queues are story 5b, and crisis handling — which is what lowers the
+ceiling in production — is story 6.
 
 **Not ready for real use.** In particular the crisis protocol (story 6) is
 unimplemented, and that is a launch gate.
@@ -70,6 +85,7 @@ The suite is hermetic — it makes no network calls and needs no bot token.
 | `half/ingest/` | Connectors, secret scrubbing, independence, admission gates |
 | `half/retrieval/` | Strand weighting, contextual prefix, salience, bm25 fusion |
 | `half/context/` | The license split: content, directives, question candidates |
+| `half/governance/` | The license ladder: rung rules, quarantine, the ceiling |
 | `half/text.py` | One script-neutral tokenizer, shared by index and matcher |
 | `half/channel/` | The `Channel` port, reachability, the Telegram adapter |
 | `half/actor/` | One actor per main — an inbox and a mutex — and the wiring |
@@ -109,6 +125,15 @@ from a scheme that matched almost everything. It also pins each script class and
 each growth ceiling through what retrieval returns, using literal numbers: a
 test written in terms of the constant it guards cannot see that constant being
 wrong.
+
+`test_ladder.py` is the AD-28 gate, and it is symmetric on purpose. Read-side
+enforcement alone would leave `assert` a field anyone can set at the price of
+three fields instead of one, so one static gate proves no caller resolves a
+license without the ceiling — resolving every import spelling through the
+package re-exports, because a gate whose reach depends on which of two
+equivalent import lines you wrote is not a gate — and a second proves no module
+outside the ladder writes a license field at all. Both are checked against
+synthetic bypasses of their own so neither can pass having seen nothing.
 
 `test_context.py` is the AD-18 gate. It scans the rendered context and the
 reply for any *fragment* of a withheld claim — adjacent word pairs,

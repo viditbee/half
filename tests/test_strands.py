@@ -422,7 +422,7 @@ def test_a_turn_that_retrieved_behave_beliefs_says_none_of_them(tmp_path):
 @pytest.mark.ad18
 def test_the_responder_is_given_a_behave_belief_and_quotes_none_of_it():
     ranked = _ranked_with(CLAIMS["b_afly"])
-    reply = respond(inbound("hello"), ranked)
+    reply = respond(inbound("hello"), ranked, ceiling=None)
     assert reply is not None
     for word in CLAIMS["b_afly"].split():
         if len(word) > 6:

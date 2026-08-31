@@ -46,26 +46,28 @@ from __future__ import annotations
 import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
-from enum import StrEnum
 from typing import Final
 
+from half.governance.ladder import License
 from half.retrieval.port import RerankSource
 
-
-class License(StrEnum):
-    """What a belief or tension permits (CAP-10, glossary).
-
-    Ordered weakest first, and the weakest is the default *and* the failure
-    mode: an unknown, missing or malformed value resolves to `BEHAVE`, never
-    upward. See ``half.context.build.resolve``.
-    """
-
-    #: Half acts on it silently. Most beliefs never leave this rung.
-    BEHAVE = "behave"
-    #: Half may raise it as a question.
-    ASK = "ask"
-    #: Half may state it. Rare, and only when the main already knows.
-    ASSERT = "assert"
+#: Re-exported, not redefined. The rungs are the ladder's vocabulary and the
+#: ladder is where they are now enumerated (``half.governance.ladder``), so
+#: that the rules governing a rung sit beside the rung itself rather than one
+#: import away from it. Every existing importer of ``half.context.License`` is
+#: unaffected — this is the same object under both names, so an ``is``
+#: comparison across the two spellings still holds.
+__all__ = [
+    "Content",
+    "Context",
+    "Directive",
+    "Item",
+    "License",
+    "Question",
+    "Topic",
+    "render_line",
+    "sanitize",
+]
 
 
 #: Unicode categories that can end a line or steer a terminal: control

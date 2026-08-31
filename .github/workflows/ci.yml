@@ -89,6 +89,40 @@ jobs:
           fi
           uv run --locked --extra dev pytest -q -m ad18
 
+      - name: 'AD-28: one license ceiling, applied where licenses are resolved'
+        # The ceiling is a single point of enforcement, which is exactly the
+        # kind of invariant that decays quietly: nothing breaks when a new
+        # surface resolves a license without it, the suite stays green, and
+        # aftercare silently stops capping that surface. So this gate names it.
+        #
+        # Marker-selected rather than file-selected, for the same reason the
+        # AD-18 step is: it must not go green because another step happened to
+        # run one of the same files.
+        #
+        # The count is asserted for the reason the AD-18 step gives — a marker
+        # gate that selects nothing exits 0 and looks identical to a passing
+        # one. --strict-markers (pyproject) catches a misspelling; this floor
+        # catches a rename, and catches someone quietly unmarking the cases
+        # the gate exists for.
+        #
+        # The marker is applied case by case rather than file-wide, and the
+        # floor sits just under the count for a reason the first version got
+        # wrong: `pytestmark` marked the whole of test_ladder.py, so the count
+        # included every rung, quarantine and promotion case — CAP-10, not
+        # AD-28 — and every ceiling test could have been deleted with the step
+        # still passing comfortably. 51 selected, 45 required: prune a
+        # redundant case, do not gut the gate.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m ad28 -q --collect-only \
+            | grep -c '::' || true)
+          echo "AD-28 cases collected: $collected"
+          if [ "$collected" -lt 45 ]; then
+            echo "::error::the AD-28 gate collected $collected cases; it has stopped asserting"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m ad28
+
       - name: 'AD-5 and AD-30: retrieval degrades, and never writes'
         # The reranker fallback, the salience-is-derived assertions, the
         # no-clock scan, and the AD-3 discard-and-replay of an older derived

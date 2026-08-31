@@ -26,9 +26,11 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from half.errors import StoreError
+from half.governance.ladder import TOP, Ceiling, License, ceiling_fields
 from half.retrieval.prefix import build_prefix
 from half.retrieval.rank import RetrievalSwitch
 from half.retrieval.strands import Strands
+from half.store.ops import Op
 from half.store.store import Store
 
 #: A main_id becomes a directory name, so it is validated before it can reach
@@ -65,6 +67,19 @@ class Actor:
     #: main's crisis disabled retrieval for every other main the process was
     #: serving, which is a silent, total memory outage for uninvolved people.
     retrieval: RetrievalSwitch = field(default_factory=RetrievalSwitch)
+    #: The one global license cap for *this main* (AD-28). Beside ``strands``
+    #: and ``retrieval`` for the same reason both are here: it is per main, so
+    #: one main's aftercare cannot cap another's, and it belongs to the actor
+    #: that owns them rather than to the worker that happens to host both.
+    #:
+    #: **Unlike those two, it is not volatile.** ``strands`` and ``retrieval``
+    #: are how the main is right now and may be lost on eviction (AD-26); a
+    #: ceiling is a governance decision that runs for thirty days, and eviction
+    #: is routine at any real capacity. So this field is *hydrated from the
+    #: store*, and every change to it goes through ``ActorRegistry`` and into
+    #: the log. Assigning it directly would neither persist nor survive the next
+    #: rehydration, which is why nothing outside the registry does.
+    ceiling: Ceiling = field(default_factory=Ceiling)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     #: Turns holding *or waiting for* the lock. Incremented before the acquire
     #: and decremented after the release, so it is never zero while any turn
@@ -100,16 +115,46 @@ class ActorRegistry:
 
     def _hydrate(self, main_id: str) -> Actor:
         """Open a main's store. Cheap — SQLite open plus a snapshot read, which
-        the work that follows dwarfs."""
+        the work that follows dwarfs.
+
+        The ceiling is read here, from the store, and that is what makes AD-28
+        survive eviction: an actor dropped under memory pressure and rehydrated
+        five minutes later comes back capped, because the cap was never in
+        memory in the first place. A ``Ceiling`` parses its own value
+        fail-closed, so a rung this build cannot read caps at `behave` rather
+        than reading as absent.
+
+        That read makes hydration eager where it used to be lazy — a corrupt
+        log now surfaces here rather than at the first turn. Deliberate, and
+        the cheaper of the two: it is one snapshot read that the turn was going
+        to do anyway, and it happens inside the per-message isolation in
+        ``Runtime.run``, so the failure domain is unchanged. Deferring it would
+        mean a window in which a capped main reads as uncapped.
+        """
         validate_main_id(main_id)
         # The prefix builder is handed to the store here rather than imported
         # by it: ``half.store`` may not depend on ``half.retrieval``. Wiring it
         # at hydration is what makes prefix hits work in the running product
         # and not only where a test remembers to pass it.
+        store = Store(self.root / main_id, prefix=build_prefix)
         actor = Actor(
-            main_id=main_id, store=Store(self.root / main_id, prefix=build_prefix)
+            main_id=main_id, store=store, ceiling=Ceiling(store.state().ceiling)
         )
         self._actors[main_id] = actor
+        return actor
+
+    def _reached(self, main_id: str) -> Actor:
+        """This main's actor, hydrating it and marking it recently used.
+
+        Every door into the registry goes through here. An accessor that
+        hydrates without touching the LRU leaves an actor looking cold the
+        moment it was needed — and one that skips the capacity check lets the
+        registry grow past it for as long as nobody takes a turn.
+        """
+        actor = self._actors.get(main_id)
+        if actor is None:
+            actor = self._hydrate(main_id)
+        self._actors.move_to_end(main_id)
         return actor
 
     def _evict_if_needed(self) -> None:
@@ -131,10 +176,7 @@ class ActorRegistry:
     @asynccontextmanager
     async def acquire(self, main_id: str) -> AsyncIterator[Actor]:
         """Hold ``main_id``'s actor exclusively for the duration of the block."""
-        actor = self._actors.get(main_id)
-        if actor is None:
-            actor = self._hydrate(main_id)
-        self._actors.move_to_end(main_id)
+        actor = self._reached(main_id)
 
         # Claimed before awaiting the lock, so this actor cannot be evicted
         # while this turn is merely queued behind another.
@@ -155,14 +197,75 @@ class ActorRegistry:
         """This main's retrieval switch, hydrating the actor if needed.
 
         The crisis gate runs before the mutex is taken, so it needs a way to
-        reach one main's switch without holding that main's actor. Hydration is
-        a dict entry plus a lazily-opened store, and the switch is volatile
-        state on the actor — so this neither writes nor blocks.
+        reach one main's switch without holding that main's actor. This does not
+        block, and does not write to the log.
         """
-        actor = self._actors.get(main_id)
-        if actor is None:
-            actor = self._hydrate(main_id)
+        actor = self._reached(main_id)
+        self._evict_if_needed()
         return actor.retrieval
+
+    # -- the ceiling (AD-28) -------------------------------------------------
+    #
+    # No caller in ``half/`` lowers a ceiling yet, and that is deliberate rather
+    # than unfinished: this story builds the mechanism and the story's Never
+    # list reserves the *policy* for story 6, which decides when aftercare
+    # begins, how long it runs and how it steps back up. What is finished here
+    # is that a cap, once set, is durable, cannot lift itself, and is applied
+    # everywhere a license is resolved.
+
+    def license_ceiling(self, main_id: str) -> Ceiling:
+        """This main's license ceiling, hydrating the actor if needed.
+
+        The same door ``retrieval_switch`` opens, for the same caller: crisis
+        runs before the mutex is taken (AD-10) and aftercare sets the ceiling
+        (AD-28). The returned ``Ceiling`` is frozen — reading one cannot change
+        one, and there is no setter on it to reach.
+        """
+        actor = self._reached(main_id)
+        self._evict_if_needed()
+        return actor.ceiling
+
+    def lower_ceiling(
+        self, main_id: str, to: License, *, t: str, because: str
+    ) -> Ceiling:
+        """Lower this main's cap, durably. Only ever lowers.
+
+        Appended to the log before the in-memory value moves, so a crash between
+        the two leaves a main *more* capped than the process thought rather than
+        less. ``t`` is supplied by the caller — nothing in this path reads a
+        clock (AD-30).
+        """
+        actor = self._reached(main_id)
+        lowered = actor.ceiling.lowered_to(to)
+        self._record_ceiling(actor, lowered, t=t, because=because)
+        return lowered
+
+    def release_ceiling(
+        self, main_id: str, *, t: str, because: str, to: License = TOP
+    ) -> Ceiling:
+        """Raise this main's cap — aftercare ending, and nothing else.
+
+        Named, reasoned and durable, because raising a ceiling ends a
+        suppression something deliberate put in place. No belief moves: a cap is
+        a minimum against each belief's own license.
+        """
+        actor = self._reached(main_id)
+        released = actor.ceiling.released(to=to, because=because)
+        self._record_ceiling(actor, released, t=t, because=because)
+        return released
+
+    def _record_ceiling(
+        self, actor: Actor, ceiling: Ceiling, *, t: str, because: str
+    ) -> None:
+        if ceiling == actor.ceiling:
+            return  # nothing moved; an append would say something happened
+        actor.store.record(
+            Op.CEILING,
+            f"c_{actor.main_id}_{t}",
+            t,
+            **ceiling_fields(ceiling, because=because),
+        )
+        actor.ceiling = ceiling
 
     @property
     def hydrated(self) -> list[str]:

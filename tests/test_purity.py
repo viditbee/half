@@ -29,7 +29,17 @@ FORBIDDEN_ROOTS = {
 
 #: Modules that must stay pure. The store's façade is excluded: it legitimately
 #: coordinates I/O. fold.py is the function replay actually runs.
-PURE_MODULES = ("half/store/fold.py", "half/store/ops.py", "half/store/records.py")
+#:
+#: The ladder is here rather than carrying its own scan in ``test_ladder.py``.
+#: A second copy of this list is a second, weaker list — the one it replaces
+#: had no alias case, so ``import time as t`` inside the ladder passed the new
+#: gate while failing this one.
+PURE_MODULES = (
+    "half/store/fold.py",
+    "half/store/ops.py",
+    "half/store/records.py",
+    "half/governance/ladder.py",
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 

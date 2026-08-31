@@ -14,7 +14,13 @@ from typing import Final
 
 #: Bumped when the record shape or the op set changes in a way older builds
 #: cannot faithfully fold.
-SCHEMA_VERSION: Final[int] = 1
+#:
+#: v2 added ``ceiling`` (story 5a). A build that predates it would meet the op,
+#: raise ``UnknownOpError`` and refuse to fold — which is the correct outcome
+#: and the reason the bump is not optional: an older build silently folding a
+#: log whose ceiling records it cannot see would resolve every license
+#: uncapped, and a main mid-aftercare would be un-suppressed by a rollback.
+SCHEMA_VERSION: Final[int] = 2
 
 
 class Op(StrEnum):
@@ -32,6 +38,15 @@ class Op(StrEnum):
     TENSION = "tension"
     #: An open loop moved between states.
     LOOP_TRANSITION = "loop_transition"
+    #: The main's global license ceiling moved (AD-28).
+    #:
+    #: In the log rather than in memory, because a ceiling has to survive both
+    #: actor eviction — routine at any real capacity, not exceptional — and a
+    #: process restart. A crisis aftercare cap runs for thirty days; a cap that
+    #: lifts itself when a worker gets busy is worse than no cap, because it
+    #: reads as protection. AD-26 keeps *volatile* state out of the log, and a
+    #: thirty-day governance decision is not volatile.
+    CEILING = "ceiling"
 
 
 #: Frozen membership test. Kept separate from the enum so a lookup never

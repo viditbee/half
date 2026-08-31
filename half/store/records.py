@@ -130,16 +130,68 @@ _ISO_PREFIX = re.compile(r"\d{4}-\d{2}")
 #: fold and the derived view would then key on different values.
 RESERVED: Final[frozenset[str]] = frozenset({"t", "op", "id", "v"})
 
+#: The field that pins a belief at the weakest rung, named here rather than in
+#: ``half.governance`` because two layers need it and only one of them may own
+#: it. The fold carries it forward (see ``STICKY``) and the ladder reads it;
+#: a second spelling in either place is how the pin and the fold stop agreeing.
+QUARANTINED: Final[str] = "quarantined"
+
+#: Fields that, once set on a belief, survive every later append for that
+#: belief. Quarantine is permanent (CAP-10, glossary), and permanence cannot be
+#: the caller's job to remember: an ``assert`` record for a quarantined belief
+#: that simply omits the field is the most ordinary operation there is, and
+#: without this it would unpin the belief and replay would reproduce it
+#: unpinned. Permanence that lasts one record is not permanence.
+STICKY: Final[tuple[str, ...]] = (QUARANTINED,)
+
+
+def pinned(value: object) -> bool:
+    """Whether a sticky field's value counts as set.
+
+    Anything other than absent or an explicit ``False``. A quarantine flag this
+    build cannot interpret is a quarantine flag: the failure mode of misreading
+    it has to be the safe one.
+    """
+    return value is not None and value is not False
+
+
+def carried_forward(previous: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The sticky fields of ``previous`` that a later record cannot drop."""
+    if not previous:
+        return {}
+    return {
+        name: previous[name]
+        for name in STICKY
+        if name in previous and pinned(previous[name])
+    }
+
+
 #: Values the derived view must be able to materialize. Validated before the
 #: append, because the log is append-only: a value SQLite cannot coerce would
 #: otherwise be durable, and every future rebuild would raise forever.
+#:
+#: ``support``, ``known_to_main`` and ``quarantined`` are here for a second
+#: reason as well as that one: they gate a *permission*. ``license`` was always
+#: worth validating at append time, and since story 5a these three decide the
+#: same question — a durable ``known_to_main="yes"`` is a belief whose rung
+#: turns on a value nothing ever checked.
 _TYPED_FIELDS: Final[dict[str, type | tuple[type, ...]]] = {
     "subject": str,
     "claim": str,
     "ledger": str,
     "license": str,
     "independent": int,
+    "support": (list, tuple),
+    "known_to_main": bool,
+    QUARANTINED: bool,
+    "rung": str,
 }
+
+
+def _type_names(expected: type | tuple[type, ...]) -> str:
+    if isinstance(expected, tuple):
+        return " or ".join(t.__name__ for t in expected)
+    return expected.__name__
 
 
 def validate_fields(fields: dict[str, Any]) -> None:
@@ -150,11 +202,20 @@ def validate_fields(fields: dict[str, Any]) -> None:
         value = fields[name]
         if expected is int and isinstance(value, bool):
             raise ValueError(f"field {name!r} must be an int, got bool")
+        if expected is not bool and isinstance(value, bool):
+            # ``True`` is an int and a truthy everything; a bool arriving where
+            # a rung or a support set belongs is a caller error, not a value.
+            raise ValueError(f"field {name!r} must be {_type_names(expected)}, got bool")
         if not isinstance(value, expected):
             raise ValueError(
-                f"field {name!r} must be {expected.__name__}, "
+                f"field {name!r} must be {_type_names(expected)}, "
                 f"got {type(value).__name__}"
             )
+    support = fields.get("support")
+    if isinstance(support, (list, tuple)) and not all(
+        isinstance(item, str) for item in support
+    ):
+        raise ValueError("field 'support' must hold source ids as strings")
     for value in fields.values():
         _reject_untokenizable(value)
 

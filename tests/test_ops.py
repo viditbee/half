@@ -48,7 +48,12 @@ def test_unknown_op_raises_naming_op_and_line_and_is_never_skipped(store):
 
 def test_op_vocabulary_is_closed():
     assert OP_NAMES == {
-        "assert", "retract", "revise", "expunge", "tension", "loop_transition"
+        "assert", "retract", "revise", "expunge", "tension", "loop_transition",
+        # `ceiling` joined the vocabulary in story 5a, with the schema version
+        # bumped alongside it (AD-29): an older build meeting one must refuse
+        # to fold rather than skip it, because a log whose ceiling records go
+        # unseen resolves every license uncapped.
+        "ceiling",
     }
 
 
@@ -210,11 +215,18 @@ def test_search_reflects_removals(store):
 
 def test_state_carries_only_durable_objects(store):
     """AD-26: mood is not a belief. The folded State exposes beliefs, tensions,
-    loops and expunged ids — and deliberately no volatile-state container, so
-    there is nowhere for a mood to be written even if an op tried."""
+    loops, expunged ids and the license ceiling — and deliberately no
+    volatile-state container, so there is nowhere for a mood to be written even
+    if an op tried.
+
+    The ceiling is here rather than in memory and that is not a breach of
+    AD-26: what AD-26 keeps out of the log is *how the main is right now*,
+    overwritten and expiring. A cap that runs for thirty days of aftercare is a
+    governance decision, and one held only in memory lifts itself on the next
+    eviction."""
     store.record(Op.ASSERT, "b_1", "2026-08-01T00:00Z", claim="durable")
     names = {f.name for f in dataclasses.fields(store.state())}
-    assert names == {"beliefs", "tensions", "loops", "expunged"}
+    assert names == {"beliefs", "tensions", "loops", "expunged", "ceiling"}
 
 
 # ── findings from review: gaps the original suite could not observe ─────────

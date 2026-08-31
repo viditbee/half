@@ -19,7 +19,7 @@ from typing import Any
 
 from half.errors import CorruptLogError
 from half.store.ops import Op
-from half.store.records import Record
+from half.store.records import Record, carried_forward
 
 
 @dataclass(slots=True)
@@ -30,6 +30,12 @@ class State:
     tensions: dict[str, dict[str, Any]] = field(default_factory=dict)
     loops: dict[str, dict[str, Any]] = field(default_factory=dict)
     expunged: set[str] = field(default_factory=set)
+    #: The main's global license ceiling, as the log last set it (AD-28), or
+    #: ``None`` when none has ever been set. A raw string: what rung it names is
+    #: the ladder's question, and the fold answers no governance questions.
+    #: Here rather than in memory so that a cap survives eviction and restart —
+    #: losing the store is the only thing that may lose a ceiling.
+    ceiling: str | None = None
 
     def canonical_json(self) -> str:
         """Deterministic serialization — the unit of the byte-identical
@@ -40,6 +46,7 @@ class State:
                 "tensions": self.tensions,
                 "loops": self.loops,
                 "expunged": sorted(self.expunged),
+                "ceiling": self.ceiling,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -62,7 +69,16 @@ def fold(records: Iterable[Record]) -> State:
         match record.op:
             case Op.ASSERT:
                 if record.id not in state.expunged:
-                    state.beliefs[record.id] = copy.deepcopy(dict(record.data))
+                    incoming = copy.deepcopy(dict(record.data))
+                    # A later record replaces the belief, but it may not drop
+                    # what the log pinned. Quarantine is permanent, and the
+                    # most ordinary append there is — re-stating a belief
+                    # without repeating the flag — would otherwise unpin it,
+                    # with replay faithfully reproducing it unpinned. Enforced
+                    # here rather than asked of every writer, because "every
+                    # writer remembered" is not a property anything can check.
+                    incoming.update(carried_forward(state.beliefs.get(record.id)))
+                    state.beliefs[record.id] = incoming
 
             case Op.RETRACT | Op.REVISE:
                 # Both remove the belief from the current view. They differ in
@@ -97,6 +113,19 @@ def fold(records: Iterable[Record]) -> State:
                 for key in ("state", "timescale", "last_movement"):
                     if key in record.data:
                         entry[key] = record.data[key]
+
+            case Op.CEILING:
+                rung = record.data.get("rung")
+                if not isinstance(rung, str) or not rung:
+                    # Fatal, on the same terms as a correction that names no
+                    # target: a ceiling record the fold cannot read would
+                    # otherwise no-op, leaving a main uncapped while the log
+                    # says they were capped.
+                    raise CorruptLogError(
+                        f"{record.op} record {record.id!r} has no 'rung'",
+                        path="<fold>", line=0,
+                    )
+                state.ceiling = rung
 
             case _:  # pragma: no cover - guarded by the closed vocabulary
                 # A new Op added to the enum must not fold to nothing. Silently
