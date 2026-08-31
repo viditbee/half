@@ -1,26 +1,30 @@
-"""Export: a directory copy, not a serializer (CAP-14).
+"""Export: staged, scanned, then moved into place (CAP-14, AD-11).
 
-Export falls out of the log's own format. There is no separate writer to keep
-correct, which is the point of making the log the source of truth rather than
-a database with an export button.
+Export falls out of the log's own format — there is no separate serializer to
+keep correct, which is the point of making the log the source of truth.
 
-The derived SQLite file is excluded deliberately: it is rebuildable from the
-log, and shipping it would imply it carries state the log does not.
+Two rules earned by review:
 
-Every export is scanned for secret material before it is handed over (AD-11).
-Credentials should never be in the tree at all — this asserts that rather than
-assuming it, because the failure is silent and the blast radius is a live token
-in a file the main was told is safe to share.
+*Never destroy anything at the destination.* An earlier version copied into the
+destination and removed it on a secret finding, which deleted whatever was
+already there. Staging into a temp directory and moving only on success means a
+refusal cannot cost the main a single file.
+
+*Fail closed on anything unscannable.* An earlier version skipped files it
+could not decode as UTF-8, so a credential inside a binary blob — the exact
+shape a keyring dump or a pickled token cache takes — exported clean while the
+scan reported success.
 """
 
 from __future__ import annotations
 
 import re
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Final
 
-from half.errors import SecretLeakError
+from half.errors import SecretLeakError, StoreError
 from half.store.store import BELIEFS_DIR, DB_NAME
 
 #: Shapes that must never appear in an export. Deliberately broad: a false
@@ -38,46 +42,87 @@ SECRET_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
 
 
 def scan_for_secrets(root: Path) -> list[str]:
-    """Return a description of every secret-shaped match under ``root``."""
+    """Return a description of every secret-shaped match under ``root``.
+
+    Reads bytes and decodes with ``errors="replace"`` so a single invalid byte
+    cannot disable the scan for a whole file. A file that cannot be read at all
+    is itself reported — unscannable is never treated as clean.
+    """
     findings: list[str] = []
     for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            findings.append(f"symlink (unresolvable, not followed) at {_rel(path, root)}")
+            continue
         if not path.is_file():
             continue
         try:
-            text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
+            text = path.read_bytes().decode("utf-8", errors="replace")
+        except OSError as exc:
+            findings.append(f"unreadable file at {_rel(path, root)}: {exc}")
             continue
         for label, pattern in SECRET_PATTERNS:
             for match in pattern.finditer(text):
                 line = text.count("\n", 0, match.start()) + 1
-                findings.append(f"{label} at {path.relative_to(root)}:{line}")
+                findings.append(f"{label} at {_rel(path, root)}:{line}")
     return findings
 
 
 def export(store_root: Path | str, destination: Path | str) -> Path:
-    """Copy a store into ``destination`` and assert it carries no secrets.
+    """Stage a store copy, scan it, and only then move it to ``destination``.
 
-    Raises ``SecretLeakError`` rather than producing a tainted archive.
+    Raises ``SecretLeakError`` without creating or touching ``destination``.
     """
-    src = Path(store_root)
+    src = Path(store_root).resolve()
     dest = Path(destination)
-    dest.mkdir(parents=True, exist_ok=True)
 
+    if dest.exists() and any(dest.iterdir()):
+        raise StoreError(f"refusing to export into a non-empty destination: {dest}")
+    if dest.resolve(strict=False).is_relative_to(src):
+        raise StoreError("refusing to export into the store being exported")
+
+    staging = Path(tempfile.mkdtemp(prefix="half-export-"))
+    try:
+        _stage(src, staging)
+        findings = scan_for_secrets(staging)
+        if findings:
+            raise SecretLeakError(
+                "refusing to export; secret material found: " + "; ".join(findings)
+            )
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            dest.rmdir()  # empty, checked above
+        shutil.move(str(staging), str(dest))
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return dest
+
+
+def _stage(src: Path, staging: Path) -> None:
+    """Copy the exportable layers into ``staging``.
+
+    Excludes anything whose name starts with the database name — ``half.db``,
+    ``half.db-wal``, ``half.db-shm``. The WAL holds uncheckpointed belief text,
+    so excluding only the exact filename shipped derived state the export
+    documents as excluded. Symlinks are never followed out of the store.
+    """
     beliefs = src / BELIEFS_DIR
     if beliefs.is_dir():
-        shutil.copytree(beliefs, dest / BELIEFS_DIR, dirs_exist_ok=True)
+        shutil.copytree(beliefs, staging / BELIEFS_DIR, symlinks=True, dirs_exist_ok=True)
     for extra in sorted(src.iterdir()):
-        if extra.name in {BELIEFS_DIR, DB_NAME} or extra.name.startswith("."):
+        if extra.name == BELIEFS_DIR or extra.name.startswith(DB_NAME):
             continue
+        if extra.name.startswith("."):
+            continue
+        if extra.is_symlink():
+            raise StoreError(f"refusing to export symlink {extra.name}")
         if extra.is_dir():
-            shutil.copytree(extra, dest / extra.name, dirs_exist_ok=True)
+            shutil.copytree(extra, staging / extra.name, symlinks=True, dirs_exist_ok=True)
         else:
-            shutil.copy2(extra, dest / extra.name)
+            shutil.copy2(extra, staging / extra.name)
 
-    findings = scan_for_secrets(dest)
-    if findings:
-        shutil.rmtree(dest, ignore_errors=True)
-        raise SecretLeakError(
-            "refusing to export; secret material found: " + "; ".join(findings)
-        )
-    return dest
+
+def _rel(path: Path, root: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)

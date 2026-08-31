@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from half.errors import StoreError
 from half.store.fold import State
 
 SCHEMA = """
@@ -45,7 +45,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS belief_fts USING fts5(
 def connect(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = FULL")
+    conn.execute("PRAGMA busy_timeout = 5000")
     conn.executescript(SCHEMA)
+    path.chmod(0o600)  # holds a full copy of every claim
     return conn
 
 
@@ -66,12 +70,12 @@ def rebuild(conn: sqlite3.Connection, state: State) -> None:
                 " independent, data) VALUES (?,?,?,?,?,?,?,?)",
                 (
                     ident,
-                    str(data.get("t", "")),
+                    _require_str(data, "t", ident, default=""),
                     _text_or_none(data.get("subject")),
                     _text_or_none(data.get("claim")),
                     _text_or_none(data.get("ledger")),
-                    str(data.get("license", "behave")),
-                    int(data.get("independent", 0) or 0),
+                    _require_str(data, "license", ident, default="behave"),
+                    _require_int(data, "independent", ident),
                     json.dumps(data, sort_keys=True, separators=(",", ":"),
                                ensure_ascii=False),
                 ),
@@ -110,7 +114,26 @@ def read_state(conn: sqlite3.Connection) -> State:
 
 
 def search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict[str, Any]]:
-    """BM25-ranked search over claim text. Lower bm25() is a better match."""
+    """BM25-ranked search over claim text. Lower bm25() is a better match.
+
+    The query is a main's own words, so FTS5 operator characters are ordinary
+    input rather than syntax. It is quoted as a phrase, and a sqlite error is
+    translated to a ``StoreError`` — nothing here leaks a bare sqlite3
+    exception to a caller.
+    """
+    if not query.strip():
+        return []
+    limit = max(0, int(limit))
+    if limit == 0:
+        return []
+    query = '"' + query.replace('"', '""') + '"'
+    try:
+        return _run_search(conn, query, limit)
+    except sqlite3.Error as exc:
+        raise StoreError(f"search failed: {exc}") from exc
+
+
+def _run_search(conn: sqlite3.Connection, query: str, limit: int) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT b.id, b.claim, bm25(belief_fts) AS score"
         " FROM belief_fts JOIN beliefs b ON b.rowid = belief_fts.rowid"
@@ -126,3 +149,31 @@ def _dump(data: dict[str, Any]) -> str:
 
 def _text_or_none(value: object) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _require_str(data: dict[str, Any], key: str, ident: str, *, default: str) -> str:
+    value = data.get(key, default)
+    if not isinstance(value, str):
+        raise StoreError(
+            f"belief {ident!r} field {key!r} must be a string, "
+            f"got {type(value).__name__}"
+        )
+    return value
+
+
+def _require_int(data: dict[str, Any], key: str, ident: str) -> int:
+    """Raise a StoreError rather than a bare ValueError.
+
+    Records are validated before append now, so this should be unreachable for
+    anything this build wrote — but a log written by another build must still
+    fail as a domain error rather than as an uncaught ValueError.
+    """
+    value = data.get(key, 0)
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise StoreError(
+            f"belief {ident!r} field {key!r} must be an int, "
+            f"got {type(value).__name__}"
+        )
+    return value

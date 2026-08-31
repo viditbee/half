@@ -12,8 +12,10 @@ only useful if an older build cannot quietly drop a newer build's data).
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
-from typing import Any, Final, Mapping
+from collections.abc import Mapping
+from typing import Any, Final
 
 from half.errors import CorruptLogError, SchemaVersionError, UnknownOpError
 from half.store.ops import SCHEMA_VERSION, Op, parse_op
@@ -58,11 +60,6 @@ class Record:
     t: str
     data: Mapping[str, Any] = field(repr=False)
 
-    @property
-    def subject(self) -> str | None:
-        value = self.data.get("subject")
-        return value if isinstance(value, str) else None
-
 
 def decode(line: str, *, path: str, lineno: int) -> Record:
     """Decode one log line, or raise with its exact position.
@@ -84,7 +81,7 @@ def decode(line: str, *, path: str, lineno: int) -> Record:
         )
 
     version = obj.get("v", SCHEMA_VERSION)
-    if not isinstance(version, int) or version > SCHEMA_VERSION:
+    if isinstance(version, bool) or not isinstance(version, int) or not 1 <= version <= SCHEMA_VERSION:
         raise SchemaVersionError(
             f"record schema v{version} at {path}:{lineno} is newer than this build "
             f"(v{SCHEMA_VERSION}); refusing to fold rather than drop what it says"
@@ -97,8 +94,12 @@ def decode(line: str, *, path: str, lineno: int) -> Record:
 
     ident = obj["id"]
     stamp = obj["t"]
-    if not isinstance(ident, str) or not isinstance(stamp, str):
-        raise CorruptLogError("'id' and 't' must be strings", path=path, line=lineno)
+    if not isinstance(ident, str) or not ident:
+        raise CorruptLogError("'id' must be a non-empty string", path=path, line=lineno)
+    if not isinstance(stamp, str) or not _ISO_PREFIX.match(stamp):
+        raise CorruptLogError(
+            "'t' must be an ISO-8601 timestamp starting YYYY-MM", path=path, line=lineno
+        )
 
     return Record(op=op, id=ident, t=stamp, data=obj)
 
@@ -111,13 +112,61 @@ def encode(record: Record) -> str:
     log lines are never rewritten; this is for new appends and round-tripping.
     """
     return json.dumps(
-        record.data, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        record.data,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,  # else encode writes a token its own decoder rejects
     )
+
+
+#: ``t`` drives shard placement and the fold's ordering, so its shape is
+#: validated at decode rather than trusted.
+_ISO_PREFIX = re.compile(r"\d{4}-\d{2}")
+
+#: Field names the record structure owns. A caller passing one through
+#: ``**fields`` would make ``Record.id`` disagree with ``data["id"]``, and the
+#: fold and the derived view would then key on different values.
+RESERVED: Final[frozenset[str]] = frozenset({"t", "op", "id", "v"})
+
+#: Values the derived view must be able to materialize. Validated before the
+#: append, because the log is append-only: a value SQLite cannot coerce would
+#: otherwise be durable, and every future rebuild would raise forever.
+_TYPED_FIELDS: Final[dict[str, type | tuple[type, ...]]] = {
+    "subject": str,
+    "claim": str,
+    "ledger": str,
+    "license": str,
+    "independent": int,
+}
+
+
+def validate_fields(fields: dict[str, Any]) -> None:
+    """Reject a record the derived view could not materialize."""
+    for name, expected in _TYPED_FIELDS.items():
+        if name not in fields or fields[name] is None:
+            continue
+        value = fields[name]
+        if expected is int and isinstance(value, bool):
+            raise ValueError(f"field {name!r} must be an int, got bool")
+        if not isinstance(value, expected):
+            raise ValueError(
+                f"field {name!r} must be {expected.__name__}, "
+                f"got {type(value).__name__}"
+            )
 
 
 def make(op: Op, ident: str, t: str, **fields: Any) -> Record:
     """Build a record for appending. ``t`` is supplied by the caller, never read
     from a clock here — fold and its neighbours stay clock-free (AD-30)."""
-    data: dict[str, Any] = {"t": t, "op": str(op), "id": ident, "v": SCHEMA_VERSION}
+    clashing = RESERVED & fields.keys()
+    if clashing:
+        raise ValueError(f"reserved field(s) may not be passed: {sorted(clashing)}")
+    if not ident:
+        raise ValueError("id must be a non-empty string")
+    if not _ISO_PREFIX.match(t):
+        raise ValueError(f"t must be an ISO-8601 timestamp, got {t!r}")
+    validate_fields(fields)
+    data: dict[str, Any] = {"t": t, "op": op.value, "id": ident, "v": SCHEMA_VERSION}
     data.update(fields)
     return Record(op=op, id=ident, t=t, data=data)

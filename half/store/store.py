@@ -29,7 +29,7 @@ from half.store import db
 from half.store.fold import State, fold
 from half.store.log import BeliefLog
 from half.store.ops import Op
-from half.store.records import Record, make
+from half.store.records import RESERVED, Record, make, validate_fields
 
 BELIEFS_DIR = "beliefs"
 DB_NAME = "half.db"
@@ -40,7 +40,8 @@ class Store:
 
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root)
-        self.root.mkdir(parents=True, exist_ok=True)
+        # 0700: the tree holds every claim Half has about one person.
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.log = BeliefLog(self.root / BELIEFS_DIR)
         self._conn: sqlite3.Connection | None = None
 
@@ -70,7 +71,13 @@ class Store:
     # -- write ---------------------------------------------------------------
 
     def append(self, record: Record) -> None:
-        """Append one record and refresh the derived view."""
+        """Append one record and refresh the derived view.
+
+        Validated first. The log is append-only, so a record the derived view
+        cannot materialize would otherwise be durable, and every later rebuild
+        would raise forever with no path back.
+        """
+        validate_fields({k: v for k, v in record.data.items() if k not in RESERVED})
         self.log.append(record)
         self.rebuild()
 
@@ -91,8 +98,12 @@ class Store:
         belief's text would survive in the log — unacceptable for an erasure
         request and for the secrets rule.
         """
-        self.log.append(make(Op.EXPUNGE, f"x_{target}", t, target=target))
+        # Tombstone bodies first, then append the op. A crash between the two
+        # then leaves text already gone with no op yet — the fold still sees
+        # the tombstone, so state is correct — rather than an op claiming
+        # erasure while the text is still on disk.
         self.log.expunge_bodies({target})
+        self.log.append(make(Op.EXPUNGE, f"x_{target}_{t}", t, target=target))
         self.rebuild()
 
     # -- read ----------------------------------------------------------------

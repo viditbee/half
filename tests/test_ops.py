@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import pytest
 
-from half.errors import CorruptLogError, SchemaVersionError, SecretLeakError, UnknownOpError
-from half.store.export import export, scan_for_secrets
+from half.errors import (
+    CorruptLogError,
+    SchemaVersionError,
+    SecretLeakError,
+    StoreError,
+    UnknownOpError,
+)
+from half.store.export import SECRET_PATTERNS, export, scan_for_secrets
 from half.store.fold import fold
 from half.store.ops import OP_NAMES, SCHEMA_VERSION, Op
 from half.store.records import decode, encode, make
@@ -201,7 +208,210 @@ def test_search_reflects_removals(store):
 
 # -- volatile state ----------------------------------------------------------
 
-def test_no_op_exists_for_volatile_state(store):
-    """AD-26: mood is not a belief. There is deliberately no way to write
-    volatile state into the log."""
-    assert not any("state" == name or "mood" == name for name in OP_NAMES)
+def test_state_carries_only_durable_objects(store):
+    """AD-26: mood is not a belief. The folded State exposes beliefs, tensions,
+    loops and expunged ids — and deliberately no volatile-state container, so
+    there is nowhere for a mood to be written even if an op tried."""
+    store.record(Op.ASSERT, "b_1", "2026-08-01T00:00Z", claim="durable")
+    names = {f.name for f in dataclasses.fields(store.state())}
+    assert names == {"beliefs", "tensions", "loops", "expunged"}
+
+
+# ── findings from review: gaps the original suite could not observe ─────────
+
+# -- export never destroys the destination -----------------------------------
+
+def test_export_leaves_a_pre_existing_destination_untouched_when_it_refuses(
+    store, tmp_path
+):
+    """The earlier version rmtree'd the destination on a secret finding, which
+    deleted whatever was already there."""
+    store.record(Op.ASSERT, "b_1", "2026-08-01T00:00Z", claim="ok")
+    fake = {"refresh" + "_token": "1/" + "/0" + "abcdefghijklmnopqrstuvwxyz012345"}
+    (store.root / "stray.json").write_text(json.dumps(fake), encoding="utf-8")
+
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    precious = dest / "tax_return.pdf"
+    precious.write_text("do not delete me", encoding="utf-8")
+
+    with pytest.raises(StoreError):
+        export(store.root, dest)
+    assert precious.read_text(encoding="utf-8") == "do not delete me"
+
+
+def test_export_refuses_a_non_empty_destination(store, tmp_path):
+    store.record(Op.ASSERT, "b_1", "2026-08-01T00:00Z", claim="ok")
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / "existing.txt").write_text("hello", encoding="utf-8")
+    with pytest.raises(StoreError):
+        export(store.root, dest)
+
+
+def test_export_creates_nothing_when_a_secret_is_found(store, tmp_path):
+    store.record(Op.ASSERT, "b_1", "2026-08-01T00:00Z", claim="ok")
+    fake = {"refresh" + "_token": "1/" + "/0" + "abcdefghijklmnopqrstuvwxyz012345"}
+    (store.root / "stray.json").write_text(json.dumps(fake), encoding="utf-8")
+    dest = tmp_path / "never"
+    with pytest.raises(SecretLeakError):
+        export(store.root, dest)
+    assert not dest.exists()
+
+
+# -- the scan fails closed ---------------------------------------------------
+
+def test_secret_inside_a_non_utf8_file_is_still_caught(store, tmp_path):
+    """A single invalid byte used to disable the scan for the whole file, so a
+    credential in a binary blob exported clean."""
+    store.record(Op.ASSERT, "b_1", "2026-08-01T00:00Z", claim="ok")
+    key = "AKIA" + "IOSFODNN7EXAMPLE"
+    (store.root / "creds.bin").write_bytes(
+        b"\xff\xfe\x00binary junk " + key.encode() + b" more\x00\x80"
+    )
+    with pytest.raises(SecretLeakError):
+        export(store.root, tmp_path / "export")
+
+
+SECRET_SAMPLES = {
+    "google oauth refresh token": "1/" + "/0" + "abcdefghijklmnopqrstuvwxyz012345",
+    "google api key": "AIza" + "0123456789abcdefghijklmnopqrstuvwxy",
+    "bearer/access token field": '{"access' + '_token": "abc123"}',
+    "client secret field": '{"client' + '_secret": "shhh"}',
+    "authorization header": "Authorization: " + "Bearer abc.def.ghi",
+    "private key block": "-----BEGIN " + "RSA PRIVATE KEY-----",
+    "aws access key id": "AKIA" + "IOSFODNN7EXAMPLE",
+    "anthropic api key": "sk-" + "ant-" + "abcdefghijklmnopqrstuvwxyz0123",
+}
+
+
+@pytest.mark.parametrize("label", [label for label, _ in SECRET_PATTERNS])
+def test_every_secret_pattern_has_a_sample_that_trips_it(label, tmp_path):
+    """Seven of the eight patterns were previously never exercised, so a broken
+    regex was undetectable. Parametrizing over the tuple also fails loudly when
+    a pattern is added without a sample."""
+    assert label in SECRET_SAMPLES, f"no sample for pattern {label!r}"
+    (tmp_path / "planted.txt").write_text(SECRET_SAMPLES[label], encoding="utf-8")
+    findings = scan_for_secrets(tmp_path)
+    assert any(f.startswith(label) for f in findings), f"{label} did not trip"
+
+
+def test_derived_database_sidecars_never_reach_an_export(store, tmp_path):
+    """half.db was excluded by exact name, so half.db-wal shipped — and the WAL
+    holds uncheckpointed belief text."""
+    store.record(Op.ASSERT, "b_1", "2026-08-01T00:00Z", claim="uncheckpointed text")
+    for sidecar in ("half.db-wal", "half.db-shm"):
+        (store.root / sidecar).write_text("derived", encoding="utf-8")
+    out = export(store.root, tmp_path / "export")
+    assert [p.name for p in out.rglob("half.db*")] == []
+
+
+# -- a bad record can never become durable -----------------------------------
+
+def test_a_field_the_derived_view_cannot_materialize_is_rejected_before_append(store):
+    """It used to append first and rebuild second, so the bad line was durable
+    and every later rebuild raised forever."""
+    with pytest.raises(ValueError):
+        store.record(Op.ASSERT, "b_1", "2026-08-01T00:00Z", claim="x", independent="many")
+    assert store.log.shards() == []
+    assert store.state().beliefs == {}
+
+
+def test_a_non_string_claim_is_rejected_rather_than_silently_unindexed(store):
+    with pytest.raises(ValueError):
+        store.record(Op.ASSERT, "b_1", "2026-08-01T00:00Z", claim={"nested": "value"})
+
+
+def test_reserved_fields_cannot_be_passed_through(store):
+    with pytest.raises(ValueError):
+        make(Op.ASSERT, "b_1", "2026-08-01T00:00Z", id="different")
+
+
+# -- ranking and limit are actually observed ---------------------------------
+
+def test_better_matches_rank_above_worse_ones(store):
+    store.record(Op.ASSERT, "b_dense", "2026-08-01T00:00Z",
+                 claim="paraglider paraglider paraglider season")
+    store.record(Op.ASSERT, "b_sparse", "2026-08-01T00:01Z",
+                 claim="a paraglider once, long ago, among many other unrelated words")
+    hits = store.search("paraglider")
+    assert [h["id"] for h in hits] == ["b_dense", "b_sparse"]
+
+
+def test_limit_bounds_the_result_set(store):
+    for i in range(5):
+        store.record(Op.ASSERT, f"b_{i}", "2026-08-01T00:00Z", claim="shared term here")
+    assert len(store.search("shared", limit=2)) == 2
+    assert store.search("shared", limit=0) == []
+
+
+def test_a_malformed_query_raises_a_domain_error_not_a_sqlite_one(store):
+    """FTS5 operators are ordinary characters in a main's own words."""
+    store.record(Op.ASSERT, "b_1", "2026-08-01T00:00Z", claim="ok")
+    assert store.search('"unbalanced') == []
+    assert store.search("NEAR(") == []
+    assert store.search("   ") == []
+
+
+# -- correction ops must name what they correct ------------------------------
+
+@pytest.mark.parametrize("op", [Op.RETRACT, Op.REVISE, Op.EXPUNGE])
+def test_a_correction_without_a_target_raises_rather_than_no_opping(store, op):
+    store.record(Op.ASSERT, "b_x", "2026-08-01T00:00Z", claim="still here")
+    store.log.append(make(op, "c_1", "2026-08-02T00:00Z"))
+    with pytest.raises(CorruptLogError):
+        store.rebuild()
+
+
+def test_expunge_removes_a_loop_from_the_derived_view(store):
+    store.record(Op.LOOP_TRANSITION, "l_1", "2026-08-01T00:00Z",
+                 loop="buy-farmland", state="stalled")
+    assert "buy-farmland" in store.state().loops
+    store.record(Op.EXPUNGE, "x_1", "2026-08-02T00:00Z", target="buy-farmland")
+    assert "buy-farmland" not in store.state().loops
+
+
+# -- unicode line separators -------------------------------------------------
+
+def test_a_claim_containing_a_unicode_line_separator_can_still_be_expunged(store):
+    """str.splitlines() breaks on U+2028, which encode() writes raw, so the
+    rewrite used to split one record into two corrupt lines."""
+    store.record(Op.ASSERT, "b_x", "2026-08-01T00:00Z", claim="line one line two")
+    store.expunge("b_x", t="2026-08-02T00:00Z")
+    assert "b_x" in store.state().expunged
+    assert "line two" not in (store.log.root / "2026-08.jsonl").read_text(encoding="utf-8")
+
+
+def test_expunge_aborts_before_mutating_anything_when_a_later_shard_is_bad(store):
+    """Partial erasure has no repair path, so validation happens first."""
+    store.record(Op.ASSERT, "b_x", "2026-08-01T00:00Z", claim="target text")
+    store.record(Op.ASSERT, "b_y", "2026-09-01T00:00Z", claim="later shard")
+    with (store.log.root / "2026-09.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write("{broken\n")
+    with pytest.raises(CorruptLogError):
+        store.log.expunge_bodies({"b_x"})
+    assert "target text" in (store.log.root / "2026-08.jsonl").read_text(encoding="utf-8")
+
+
+def test_expunge_is_idempotent_so_a_resume_completes(store):
+    store.record(Op.ASSERT, "b_x", "2026-08-01T00:00Z", claim="gone")
+    assert store.log.expunge_bodies({"b_x"}) == 1
+    assert store.log.expunge_bodies({"b_x"}) == 0
+
+
+# -- encoder and decoder agree ----------------------------------------------
+
+def test_encode_refuses_to_write_a_token_its_own_decoder_rejects():
+    record = make(Op.ASSERT, "b_1", "2026-08-01T00:00Z")
+    object.__setattr__(record, "data", {**record.data, "n": float("nan")})
+    with pytest.raises(ValueError):
+        encode(record)
+
+
+# -- privacy posture ---------------------------------------------------------
+
+def test_store_directories_and_database_are_not_world_readable(store):
+    store.record(Op.ASSERT, "b_1", "2026-08-01T00:00Z", claim="private")
+    for path in (store.root, store.log.root, store.db_path):
+        mode = path.stat().st_mode & 0o077
+        assert mode == 0, f"{path} is group/world accessible ({oct(path.stat().st_mode)})"

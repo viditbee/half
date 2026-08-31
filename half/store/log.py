@@ -13,6 +13,7 @@ tombstoning rewrite is the single deliberate exception and is handled in
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -24,11 +25,29 @@ from half.store.records import Record, decode, encode
 SHARD_SUFFIX = ".jsonl"
 
 
+#: Shard keys must be exactly ``YYYY-MM``. A looser check let ``abcd-ef-99``
+#: produce ``abcd-ef.jsonl``, which then sorts lexically among real months and
+#: silently reorders the fold — and fold correctness depends on that order.
+_SHARD_KEY = re.compile(r"\d{4}-\d{2}")
+
+
 def _shard_for(timestamp: str) -> str:
     """``2026-08-14T09:12Z`` -> ``2026-08``. Lexical, never a clock read."""
-    if len(timestamp) < 7 or timestamp[4] != "-":
+    if not _SHARD_KEY.fullmatch(timestamp[:7]):
         raise StoreError(f"timestamp {timestamp!r} is not ISO-8601 enough to shard")
     return timestamp[:7]
+
+
+def _fsync_dir(path: Path) -> None:
+    """Persist a directory entry. Without this a newly created shard can be
+    lost on crash even though the file's own fsync succeeded."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass  # not supported on every platform; the file fsync still happened
+    finally:
+        os.close(fd)
 
 
 class BeliefLog:
@@ -36,20 +55,39 @@ class BeliefLog:
 
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     # -- write ---------------------------------------------------------------
 
     def append(self, record: Record) -> None:
-        """Append one record durably. O_APPEND + fsync (AD-1)."""
+        """Append one record durably (AD-1).
+
+        ``os.write`` may write fewer bytes than asked, which would truncate the
+        line and make the log permanently unparseable at that position, so the
+        write loops. A partial write that then fails is truncated back to the
+        pre-write size rather than left as a broken line. The parent directory
+        is fsynced when a new shard is created, or the file's directory entry
+        can be lost on crash despite the file fsync succeeding.
+        """
         path = self.root / f"{_shard_for(record.t)}{SHARD_SUFFIX}"
+        is_new = not path.exists()
         payload = (encode(record) + "\n").encode("utf-8")
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
-            os.write(fd, payload)
+            start = os.lseek(fd, 0, os.SEEK_END)
+            try:
+                view = memoryview(payload)
+                while view:
+                    view = view[os.write(fd, view) :]
+            except OSError:
+                os.ftruncate(fd, start)
+                os.fsync(fd)
+                raise
             os.fsync(fd)
         finally:
             os.close(fd)
+        if is_new:
+            _fsync_dir(self.root)
 
     def expunge_bodies(self, ids: set[str]) -> int:
         """Replace the bodies of ``ids`` with tombstones, in place.
@@ -59,9 +97,18 @@ class BeliefLog:
         satisfy a genuine erasure request or the secrets rule. The record's
         position, timestamp and id survive so replay still accounts for it.
         """
+        # Pass one: decode every shard before mutating any of them. A corrupt
+        # or unknown-op line in a later shard must not abort the run after
+        # earlier shards were already replaced — that leaves a half-erased log
+        # with no repair path, on the one operation where partial failure is
+        # least acceptable.
+        planned: list[tuple[Path, list[str]]] = []
         removed = 0
         for path in self.shards():
-            lines = path.read_text(encoding="utf-8").splitlines()
+            # split on "\n" only: str.splitlines() also breaks on U+2028,
+            # U+2029 and U+0085, which encode() writes raw into claim text,
+            # so a belief containing one would be split into two corrupt lines.
+            lines = path.read_text(encoding="utf-8").split("\n")
             out: list[str] = []
             changed = False
             for lineno, line in enumerate(lines, start=1):
@@ -87,9 +134,24 @@ class BeliefLog:
                 else:
                     out.append(line)
             if changed:
-                tmp = path.with_suffix(path.suffix + ".tmp")
-                tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
-                os.replace(tmp, path)
+                planned.append((path, out))
+
+        # Pass two: nothing below can fail on parsing. Idempotent — a record
+        # already tombstoned is skipped above, so a resume after a partial run
+        # completes the job.
+        for path, out in planned:
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                payload = ("\n".join(out) + "\n").encode("utf-8")
+                view = memoryview(payload)
+                while view:
+                    view = view[os.write(fd, view) :]
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(tmp, path)
+            _fsync_dir(self.root)
         return removed
 
     # -- read ----------------------------------------------------------------
