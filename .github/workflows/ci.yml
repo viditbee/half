@@ -53,15 +53,28 @@ jobs:
         run: uv run --extra dev pytest tests/test_dependencies.py -q
 
       - name: 'AD-11: the committed tree carries no secret material'
+        # Scans exactly what git tracks, rather than the working directory with
+        # a growing list of exclusions. The claim is about what ships, and a
+        # build artefact appearing under a new name should not be able to
+        # weaken the gate or to fail it spuriously.
         run: |
           uv run python - <<'PY'
-          import pathlib, sys
-          from half.store.export import scan_for_secrets
-          findings = [
-              f for f in scan_for_secrets(pathlib.Path("."))
-              if ".venv" not in f and ".git/" not in f and "__pycache__" not in f
-          ]
+          import pathlib, subprocess, sys
+          from half.store.export import SECRET_PATTERNS
+          tracked = subprocess.run(
+              ["git", "ls-files", "-z"], capture_output=True, check=True
+          ).stdout.split(b"\0")
+          findings = []
+          for name in filter(None, tracked):
+              path = pathlib.Path(name.decode())
+              if not path.is_file():
+                  continue
+              text = path.read_bytes().decode("utf-8", errors="replace")
+              for label, pattern in SECRET_PATTERNS:
+                  for match in pattern.finditer(text):
+                      line = text.count("\n", 0, match.start()) + 1
+                      findings.append(f"{label} at {path}:{line}")
           if findings:
-              sys.exit("secret material in the tree:\n  " + "\n  ".join(findings))
-          print("tree scans clean")
+              sys.exit("secret material in tracked files:\n  " + "\n  ".join(findings))
+          print(f"{len(tracked)} tracked files scan clean")
           PY
