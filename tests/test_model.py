@@ -47,6 +47,7 @@ from half.model.anthropic import (
     classify_ceiling,
     render_classify,
     render_generate,
+    render_prompt,
 )
 from half.model.anthropic_transport import MODEL_KEY, SDKTransport, _translate
 from half.model.budget import (
@@ -1264,14 +1265,35 @@ def _module_of(path: Path) -> str:
 
 
 def _imports_of(path: Path) -> set[str]:
+    """Every module ``path`` imports, **including relatively**.
+
+    Round 2's finding: the scan collected ``ast.ImportFrom`` only at
+    ``node.level == 0``, so ``from ..model.port import Prompt`` in
+    ``half/store/fold.py`` passed both AD-30 scans and all 2,316 tests. The
+    non-vacuity case used an absolute import, so it shared the assumption it
+    existed to test — which is the failure this file's own log-scan docstring
+    warns about, one gate over.
+
+    A relative import is resolved against the file's own package, so the two
+    spellings produce the same answer and the scan cannot be walked past by
+    choosing one.
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"))
+    package = path.relative_to(ROOT).with_suffix("").parts[:-1]
     out: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            out.update(a.name for a in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            out.add(node.module)
-            out.update(f"{node.module}.{a.name}" for a in node.names)
+            out.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level:
+                # `.` is this package, `..` its parent, and so on.
+                base = package[: len(package) - (node.level - 1)]
+                module = ".".join([*base, module] if module else list(base))
+            if not module:
+                continue
+            out.add(module)
+            out.update(f"{module}.{alias.name}" for alias in node.names)
     return out
 
 
@@ -1327,11 +1349,54 @@ def test_nothing_under_the_store_imports_the_model_port_at_all():
     assert not offenders, f"the store reaches the model port: {offenders}"
 
 
-def test_the_fold_reachability_scan_sees_an_import_that_was_added(tmp_path):
-    """Non-vacuity: the scan must fail on the thing it forbids."""
-    path = tmp_path / "bypass.py"
-    path.write_text("from half.model.port import Prompt\n", encoding="utf-8")
-    assert any(i.startswith("half.model") for i in _imports_of(path))
+@pytest.mark.ad19_guarantee
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "from half.model.port import Prompt",
+        "import half.model.port",
+        "import half.model.anthropic as m",
+        "from ..model.port import Prompt",
+        "from ..model import port",
+        "from ...half.model.port import Prompt",
+    ],
+    ids=["absolute-from", "absolute-import", "aliased", "relative",
+         "relative-module", "relative-through-the-root"],
+)
+def test_the_fold_reachability_scan_sees_each_spelling_of_the_import(
+    spelling, tmp_path
+):
+    """Non-vacuity, one *spelling* at a time.
+
+    The first version had a single case and it wrote an **absolute** import —
+    the one spelling the scan already handled. A relative import of the port
+    into ``half/store/fold.py`` passed every test in the tree.
+
+    Written at the real path so the relative spellings resolve the way they
+    would in the tree, rather than against a temporary directory that is not a
+    package.
+    """
+    store = tmp_path / "half" / "store"
+    store.mkdir(parents=True)
+    path = store / "bypass.py"
+    path.write_text(spelling + "\n", encoding="utf-8")
+
+    package = path.relative_to(tmp_path).with_suffix("").parts[:-1]
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            found.update(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level:
+                base = package[: len(package) - (node.level - 1)]
+                module = ".".join([*base, module] if module else list(base))
+            if module:
+                found.add(module)
+                found.update(f"{module}.{a.name}" for a in node.names)
+    assert any(i.startswith("half.model") for i in found), (
+        f"the scan does not see: {spelling}"
+    )
 
 
 # ── matrix: secrets and content (AD-11, AD-22) ───────────────────────────────
@@ -1823,11 +1888,43 @@ def test_a_non_latin_estimate_is_at_least_one_token_per_character(script):
     reach requirement is about.
     """
     text = SCRIPTS[script] * 40
-    non_ascii = sum(1 for character in text if not character.isascii())
-    assert tokens_in(text) >= non_ascii, (
-        f"{script}: estimated {tokens_in(text)} tokens for {non_ascii} "
-        f"non-ASCII characters — under a token each is under the real cost"
+    assert tokens_in(text) >= _real_floor(text), (
+        f"{script}: estimated {tokens_in(text)} tokens against a floor of "
+        f"{_real_floor(text)} — under the real cost"
     )
+
+
+def _real_floor(text: str) -> int:
+    """The lowest number of tokens this text can honestly cost.
+
+    Composed per character rather than taken over the non-ASCII subset, which
+    is round 2's correction: the floor used to be the non-ASCII *count*, so a
+    mixed string satisfied a bound named "one token per character" while being
+    under it — ``tokens_in("a私" * 300)`` is 558 for 600 characters. A
+    code-switching main is exactly the reach case these cases are named for.
+
+    Non-ASCII is one token per character; ASCII is four characters per token,
+    which is the friendliest ratio English prose reaches.
+    """
+    non_ascii = sum(1 for character in text if not character.isascii())
+    return non_ascii + -(-(len(text) - non_ascii) // 4)
+
+
+@pytest.mark.ad19_guarantee
+@pytest.mark.parametrize(
+    "mixed",
+    ["a私", "meeting at 3pm 転職について話した ", "план на यात्रा ", "ok ตกลง "],
+    ids=["alternating", "english-japanese", "russian-hindi", "english-thai"],
+)
+def test_a_code_switching_main_is_estimated_at_or_above_the_real_cost(mixed):
+    """The gap the per-subset floor left open.
+
+    A main who writes half a sentence in one script and half in another is the
+    ordinary case for the people this product is for, and it is the case a
+    floor computed over one subset cannot see.
+    """
+    text = mixed * 300
+    assert tokens_in(text) >= _real_floor(text)
 
 
 def test_the_worst_measurement_on_the_table_is_covered():
@@ -2851,47 +2948,78 @@ def test_the_batch_path_uses_the_same_admission_as_a_single_call():
 # ── the model-name scan, widened ─────────────────────────────────────────────
 
 
+def _names_a_model(tree: ast.AST) -> list[str]:
+    """Every place this module writes a model down, in any spelling.
+
+    Stated as *"the ``model`` key may only ever be an attribute of a spec"*
+    rather than as a list of forbidden strings — that covers spellings nobody
+    has invented yet, including the non-Anthropic name the second
+    implementation AD-19 defers will arrive with.
+
+    Four routes, and the fourth is round 2's: a **call**.
+    ``payload.setdefault("model", …)`` is the idiom used two lines from the
+    renderer, and ``create(model=…)`` is what an SDK call site reaches for.
+    Neither is a ``Dict`` or an ``Assign``, and none of the seven spellings the
+    first version was tested against was a call.
+    """
+    found: list[str] = []
+    for node in ast.walk(tree):
+        # `payload["model"] = <anything but spec.model>`
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Subscript)
+                    and isinstance(target.slice, ast.Constant)
+                    and target.slice.value == "model"
+                    and not _is_spec_model(node.value)
+                ):
+                    found.append(f"line {node.lineno}: assigned")
+        # `{"model": <anything but spec.model>}`
+        if isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values):
+                if (
+                    isinstance(key, ast.Constant)
+                    and key.value == "model"
+                    and not _is_spec_model(value)
+                ):
+                    found.append(f"line {node.lineno}: literal")
+        if isinstance(node, ast.Call):
+            # `p.setdefault("model", x)`, `p.__setitem__("model", x)`
+            for position, argument in enumerate(node.args):
+                if (
+                    isinstance(argument, ast.Constant)
+                    and argument.value == "model"
+                    and not all(
+                        _is_spec_model(rest) for rest in node.args[position + 1:]
+                    )
+                ):
+                    found.append(f"line {node.lineno}: call argument")
+            # `create(model=x)`
+            for keyword in node.keywords:
+                if keyword.arg == "model" and not _is_spec_model(keyword.value):
+                    found.append(f"line {node.lineno}: keyword")
+        # any string that looks like a vendor's model id
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if _looks_like_a_model(node.value):
+                found.append(f"line {node.lineno}: {node.value}")
+    return found
+
+
 @pytest.mark.ad19_guarantee
 def test_no_call_site_names_a_model_in_any_spelling():
     """The scan matched ``claude-`` prefixed literals only, so a concatenation,
     an environment lookup, a vendor prefix or any non-Anthropic name passed —
     and a non-Anthropic name is exactly what the second implementation brings.
-
-    So the rule is stated the other way round: outside the tier table, the
-    ``model`` key of a request may only ever be **an attribute of a spec**.
-    That covers every spelling of a literal at once, including the ones that
-    have not been invented yet.
+    Round 2 added the call route.
     """
     offenders: list[str] = []
     for path in sorted((ROOT / "half").rglob("*.py")):
         if path.name == "tier.py" and path.parent.name == "model":
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        where = path.relative_to(ROOT)
-        for node in ast.walk(tree):
-            # `payload["model"] = <anything but spec.model>`
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if (
-                        isinstance(target, ast.Subscript)
-                        and isinstance(target.slice, ast.Constant)
-                        and target.slice.value == "model"
-                        and not _is_spec_model(node.value)
-                    ):
-                        offenders.append(f"{where}:{node.lineno} assigned")
-            # `{"model": <anything but spec.model>}`
-            if isinstance(node, ast.Dict):
-                for key, value in zip(node.keys, node.values):
-                    if (
-                        isinstance(key, ast.Constant)
-                        and key.value == "model"
-                        and not _is_spec_model(value)
-                    ):
-                        offenders.append(f"{where}:{node.lineno} literal")
-            # any string that looks like a vendor's model id
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                if _looks_like_a_model(node.value):
-                    offenders.append(f"{where}:{node.lineno} {node.value}")
+        offenders += [
+            f"{path.relative_to(ROOT)} {where}" for where in _names_a_model(tree)
+        ]
     assert not offenders, (
         f"a model is named outside the tier table: {offenders}. The tier "
         "travels with the main (AD-20)"
@@ -2933,33 +3061,27 @@ def _is_spec_model(node: ast.expr) -> bool:
 )
 def test_the_model_name_scan_sees_each_spelling(bypass, tmp_path):
     """Non-vacuity, one spelling at a time. Four of these walked past the first
-    version of this scan."""
+    version of this scan, and the call route walked past the second."""
     path = tmp_path / "bypass.py"
     path.write_text(bypass + "\n", encoding="utf-8")
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    seen = False
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if (
-                    isinstance(target, ast.Subscript)
-                    and isinstance(target.slice, ast.Constant)
-                    and target.slice.value == "model"
-                    and not _is_spec_model(node.value)
-                ):
-                    seen = True
-        if isinstance(node, ast.Dict):
-            for key, value in zip(node.keys, node.values):
-                if (
-                    isinstance(key, ast.Constant)
-                    and key.value == "model"
-                    and not _is_spec_model(value)
-                ):
-                    seen = True
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if _looks_like_a_model(node.value):
-                seen = True
-    assert seen, f"the scan does not see:\n{bypass}"
+    assert _names_a_model(ast.parse(path.read_text(encoding="utf-8"))), (
+        f"the scan does not see:\n{bypass}"
+    )
+
+
+def test_the_model_name_scan_does_not_fire_on_the_renderer_itself(tmp_path):
+    """The false positive that matters: ``payload["model"] = spec.model`` is
+    the one way a model may reach a request, and a scan that forbade it would
+    have nowhere left to put the tier table's answer."""
+    path = tmp_path / "fine.py"
+    path.write_text(
+        'def f(payload, spec):\n'
+        '    payload["model"] = spec.model\n'
+        '    payload.setdefault("model", spec.model)\n'
+        '    return {"model": spec.model}\n',
+        encoding="utf-8",
+    )
+    assert not _names_a_model(ast.parse(path.read_text(encoding="utf-8")))
 
 
 # ── the wiring that used to be prose (AD-11, AD-20) ──────────────────────────
@@ -3027,3 +3149,516 @@ def test_one_parser_reads_both_halves_of_the_configuration():
     source = (MODEL_DIR / "tier.py").read_text(encoding="utf-8")
     assert "parse_pairs" in source, "the tier table has its own parser again"
     assert "def _split" not in source
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Review round 2. The round-1 fixes interacted to make a new leak, and three
+# guards were checked only where they already agreed with themselves.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+# ── a reservation is released on every path out ──────────────────────────────
+
+
+def _under_the_minimum(main_id=VIDIT, *, spec=None):
+    """A prompt whose stable prefix the tier will silently refuse to cache."""
+    return Prompt(
+        main_id=main_id,
+        system=("short",),
+        turns=(Turn(Role.USER, "hello"),),
+        cache=Breakpoint(1),
+    )
+
+
+@pytest.mark.ad19_guarantee
+def test_a_raise_before_the_request_is_built_does_not_leak_a_reservation():
+    """Three round-1 fixes combining into a fourth defect.
+
+    The cache-minimum refusal raises from the renderer; the renderer was called
+    *after* ``admit`` reserved and outside any handler; and the ledger had just
+    been made durable. Verified before the fix, and monotonic: reserved 524,
+    then 1,048, then 1,572, with ``remaining`` never recovering. A caller
+    retrying a mis-stated breakpoint drains the pass to zero, after which every
+    honest call is refused ``PER_PASS_BUDGET`` with nothing sent.
+
+    A ceiling that binds against money nobody spent is the same defect as one
+    that does not bind, pointing the other way.
+    """
+    p = provider(FakeTransport())
+    start = p._spend.remaining_micro_usd
+
+    for _ in range(5):
+        with pytest.raises(BreakpointError):
+            asyncio.run(p.generate(Generate(prompt=_under_the_minimum())))
+
+    assert p._spend.reserved_micro_usd == 0, "a raise held on to its reservation"
+    assert p._spend.remaining_micro_usd == start, "the pass budget shrank"
+    assert p.ledger().spent_micro_usd == 0
+
+    # And the pass still works afterwards, which is what the leak destroyed.
+    assert isinstance(asyncio.run(p.generate(generate())), Completion)
+
+
+@pytest.mark.ad19_guarantee
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda: ("generate", Generate(prompt=_under_the_minimum())),
+        lambda: ("classify", Classify(prompt=_under_the_minimum(), labels=LABELS)),
+        lambda: ("generate", Generate(prompt=prompt(main_id="nobody"))),
+        lambda: ("generate", Generate(prompt=prompt(), max_tokens=10 ** 9)),
+    ],
+    ids=["cache-minimum-generate", "cache-minimum-classify", "unknown-tier",
+         "output-ceiling"],
+)
+def test_no_raising_path_between_the_call_and_the_send_leaks(make):
+    """Every other round-1 refusal that raises, checked for the same hole.
+
+    The interaction is the lesson, not the single line: any refusal that raises
+    after admission and before the send leaks, and round 1 added three of them.
+    """
+    operation, work = make()
+    p = provider(FakeTransport())
+    start = p._spend.remaining_micro_usd
+    with pytest.raises(ModelError):
+        asyncio.run(getattr(p, operation)(work))
+    assert p._spend.reserved_micro_usd == 0
+    assert p._spend.remaining_micro_usd == start
+
+
+@pytest.mark.ad19_guarantee
+def test_a_raise_partway_through_a_batch_releases_every_earlier_item():
+    """``submit`` was the path that *did* release — and it did so by hand.
+
+    Now all three hold, so the release is the control structure's rather than
+    something each site has to remember. This is the case that fails if the
+    ``ExitStack`` is unwound.
+    """
+    p = provider(FakeTransport())
+    start = p._spend.remaining_micro_usd
+    with pytest.raises(BreakpointError):
+        asyncio.run(p.submit([
+            BatchItem(ref="fine", work=classify()),
+            BatchItem(ref="broken", work=Generate(prompt=_under_the_minimum())),
+        ]))
+    assert p._spend.reserved_micro_usd == 0
+    assert p._spend.remaining_micro_usd == start
+
+
+@pytest.mark.ad19_guarantee
+def test_the_hold_gives_a_reservation_back_on_any_exit():
+    """The mechanism, in one place, so a failure names the cause.
+
+    A handler fixes the sites it is written at; a control structure fixes the
+    class. This is the class.
+    """
+    spend = Spend(Budget(per_call_micro_usd=100, per_pass_micro_usd=100))
+
+    with pytest.raises(RuntimeError):
+        with spend.hold(Estimate(micro_usd=50)) as admitted:
+            assert isinstance(admitted, Reservation)
+            assert spend.reserved_micro_usd == 50
+            raise RuntimeError("anything at all")
+    assert spend.reserved_micro_usd == 0 and spend.spent_micro_usd == 0
+
+    # An early return releases too.
+    def returns_early():
+        with spend.hold(Estimate(micro_usd=50)) as held:
+            return held
+
+    returns_early()
+    assert spend.reserved_micro_usd == 0
+
+    # A settle inside the block is *not* undone on the way out.
+    with spend.hold(Estimate(micro_usd=50)) as held:
+        spend.settle(held, Usage(micro_usd=40))
+    assert spend.spent_micro_usd == 40 and spend.reserved_micro_usd == 0
+
+
+@pytest.mark.ad19_guarantee
+def test_the_single_call_paths_reserve_nothing_until_the_request_is_built():
+    """Structural: in both single-call paths the renderer is called *before*
+    the admission, so the class of bug has nothing left to catch there.
+
+    Read off the syntax tree rather than trusted, because the ordering is
+    invisible in every behavioural test that does not raise.
+    """
+    tree = ast.parse((MODEL_DIR / "anthropic.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+            continue
+        if node.name not in ("classify", "generate"):
+            continue
+        lines = {}
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name):
+                if inner.func.id.startswith("render_"):
+                    lines["render"] = inner.lineno
+            if isinstance(inner, ast.Attribute) and inner.attr == "hold":
+                lines["hold"] = inner.lineno
+        if "render" in lines and "hold" in lines:
+            assert lines["render"] < lines["hold"], (
+                f"{node.name} reserves before it builds the request"
+            )
+
+
+# ── a reservation is exchangeable exactly once, by its issuer ────────────────
+
+
+@pytest.mark.ad19_guarantee
+def test_settling_one_reservation_twice_is_refused():
+    """Measured before the fix on a 100/100 budget: spent 120, calls 2, for one
+    call — and it persisted through ``snapshot()``.
+
+    ``serial`` was documented as making a double settle detectable and was read
+    nowhere in ``half/``; ``_release`` checked the type and clamped the
+    subtraction at zero, which turned every misuse into a silently wrong pass
+    total rather than a loud one.
+    """
+    spend = Spend(Budget(per_call_micro_usd=100, per_pass_micro_usd=100))
+    held = spend.admit(Estimate(micro_usd=50))
+    spend.settle(held, Usage(micro_usd=60))
+    with pytest.raises(BudgetError):
+        spend.settle(held, Usage(micro_usd=60))
+    assert spend.spent_micro_usd == 60 and spend.calls == 1
+
+
+@pytest.mark.ad19_guarantee
+def test_releasing_one_reservation_twice_is_refused():
+    spend = Spend(Budget(per_call_micro_usd=100, per_pass_micro_usd=100))
+    held = spend.admit(Estimate(micro_usd=50))
+    spend.release(held)
+    with pytest.raises(BudgetError):
+        spend.release(held)
+    assert spend.reserved_micro_usd == 0
+
+
+@pytest.mark.ad19_guarantee
+def test_a_reservation_from_another_ledger_is_refused():
+    """It settled clean before — one pass's accounting moved by another's."""
+    mine = Spend(Budget(per_call_micro_usd=100, per_pass_micro_usd=100))
+    theirs = Spend(Budget(per_call_micro_usd=100, per_pass_micro_usd=100))
+    foreign = theirs.admit(Estimate(micro_usd=50))
+    with pytest.raises(BudgetError):
+        mine.settle(foreign, Usage(micro_usd=50))
+    assert mine.spent_micro_usd == 0 and mine.calls == 0
+
+
+@pytest.mark.ad19_guarantee
+def test_a_hand_constructed_reservation_cannot_free_the_ledger():
+    """The worst of the four: ``max(0, …)`` drove the outstanding total to zero
+    and the ledger then admitted 180 committed against a 100 ceiling."""
+    spend = Spend(Budget(per_call_micro_usd=100, per_pass_micro_usd=100))
+    spend.admit(Estimate(micro_usd=90))
+    with pytest.raises(BudgetError):
+        spend.release(Reservation(micro_usd=10 ** 9, serial=999))
+    assert spend.reserved_micro_usd == 90
+    assert spend.admit(Estimate(micro_usd=90)) is Reason.PER_PASS_BUDGET
+
+
+@pytest.mark.ad19_guarantee
+def test_a_reservation_whose_amount_was_altered_is_refused():
+    """The serial is right and the figure is not — a mutated value object. The
+    ledger's own record is the authority."""
+    spend = Spend(Budget(per_call_micro_usd=100, per_pass_micro_usd=100))
+    held = spend.admit(Estimate(micro_usd=50))
+    forged = Reservation(micro_usd=1, serial=held.serial)
+    with pytest.raises(BudgetError):
+        spend.settle(forged, Usage(micro_usd=1))
+    assert spend.reserved_micro_usd == 50, "the real reservation was dropped"
+
+
+def test_the_issuance_record_is_what_reports_the_outstanding_total():
+    spend = Spend(budget())
+    first = spend.admit(Estimate(micro_usd=10))
+    second = spend.admit(Estimate(micro_usd=20))
+    assert spend.reserved_micro_usd == 30
+    spend.release(first)
+    assert spend.reserved_micro_usd == 20
+    spend.settle(second, Usage(micro_usd=5))
+    assert spend.reserved_micro_usd == 0 and spend.spent_micro_usd == 5
+
+
+# ── the cache-minimum refusal, which nothing verified ────────────────────────
+
+
+@pytest.mark.ad19_guarantee
+def test_a_prefix_under_the_tiers_minimum_is_refused_at_the_renderer():
+    """Round 1's own fix, unverified until now.
+
+    ``if False:`` on the condition passed all 2,316 tests, because no test
+    called ``render_prompt`` and every rendering case built its prefix from a
+    helper that is always over the minimum. On the cheap tier that means any
+    prefix under about four thousand tokens is billed at full input price on
+    every call, with no error — the hidden breakpoint AD-19 forbids, wearing
+    the clothes of an honoured one.
+    """
+    cheap = DEFAULT_MODELS[Tier.CHEAP]
+    with pytest.raises(BreakpointError):
+        render_prompt(_under_the_minimum(), cheap)
+
+
+@pytest.mark.ad19_guarantee
+def test_the_same_prefix_caches_on_one_tier_and_is_refused_on_the_other():
+    """The per-tier property the whole design argues for.
+
+    The minimum is **not monotonic across generations** — 512 on the frontier
+    model against 4,096 on the cheap one — so a prompt that caches on one tier
+    silently does not on the other with no code change at all. This is the case
+    that pins it: one prefix, two tiers, two answers.
+    """
+    cheap = DEFAULT_MODELS[Tier.CHEAP]
+    frontier = DEFAULT_MODELS[Tier.FRONTIER]
+
+    # Sized between the two minimums, so it is the *tier* that decides.
+    between = "cacheable prose. " * 500
+    assert frontier.cache_min_tokens <= tokens_in(between) < cheap.cache_min_tokens
+
+    middling = Prompt(
+        main_id=VIDIT, system=(between,), turns=(Turn(Role.USER, "hi"),),
+        cache=Breakpoint(1),
+    )
+    rendered = render_prompt(middling, frontier)
+    assert "cache_control" in rendered["system"][0]
+    with pytest.raises(BreakpointError):
+        render_prompt(middling, cheap)
+
+
+@pytest.mark.ad19_guarantee
+def test_the_refusal_reaches_the_caller_through_the_port_as_well():
+    """Through the operation, not only the helper — and it must not be turned
+    into one of the four outcomes on the way. A breakpoint the provider would
+    ignore is a build mistake, and those raise."""
+    transport = FakeTransport()
+    p = provider(transport)
+    for operation, work in (
+        ("generate", Generate(prompt=_under_the_minimum())),
+        ("classify", Classify(prompt=_under_the_minimum(), labels=LABELS)),
+    ):
+        with pytest.raises(BreakpointError):
+            asyncio.run(getattr(p, operation)(work))
+    assert transport.sent == [], "an unplaceable breakpoint still sent a request"
+
+
+def test_a_prefix_over_the_minimum_renders_the_marker():
+    """The other side of the boundary, so the case above cannot pass by
+    refusing everything."""
+    frontier = DEFAULT_MODELS[Tier.FRONTIER]
+    rendered = render_prompt(
+        Prompt(main_id=ASHA, system=(long_block(frontier),),
+               turns=(Turn(Role.USER, "hi"),), cache=Breakpoint(1)),
+        frontier,
+    )
+    assert rendered["system"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_a_prompt_with_no_breakpoint_is_never_refused_for_being_short():
+    """Nothing is claimed, so nothing is under a minimum."""
+    cheap = DEFAULT_MODELS[Tier.CHEAP]
+    rendered = render_prompt(
+        Prompt(main_id=VIDIT, system=("short",), turns=(Turn(Role.USER, "hi"),)),
+        cheap,
+    )
+    assert all("cache_control" not in block for block in rendered["system"])
+
+
+# ── the wire shape, at the keys that carry the prompt ────────────────────────
+
+
+@pytest.mark.ad19_guarantee
+def test_every_message_matches_the_message_param_the_sdk_declares():
+    """Matrix: *wire shape*, at the key the prompt actually travels in.
+
+    Verified: renaming ``content`` to ``contents`` — a guaranteed 400 on every
+    call the port makes — passed all 2,316 tests, because the scan compared
+    ``set(payload)`` against the top-level parameters and nothing reached
+    ``messages[i]``. The section's own premise is that reading back what the
+    renderer wrote proves nothing about validity; it held precisely where it
+    mattered most.
+    """
+    from anthropic.types import MessageParam
+
+    declared = set(MessageParam.__annotations__)
+    roles = _literals(MessageParam, "role")
+    for spec in DEFAULT_MODELS.values():
+        for payload in (
+            render_generate(generate(main_id=_a_main_on(spec)), spec),
+            render_classify(classify(main_id=_a_main_on(spec)), spec),
+        ):
+            for message in payload["messages"]:
+                undeclared = set(message) - declared
+                assert not undeclared, f"{spec.model}: {sorted(undeclared)}"
+                assert {"role", "content"} <= set(message), sorted(message)
+                assert message["role"] in roles
+                assert isinstance(message["content"], str)
+
+
+@pytest.mark.ad19_guarantee
+def test_every_system_block_matches_the_text_block_param_the_sdk_declares():
+    """The other guaranteed 400: ``{"type": "text", "text": …}`` renamed to
+    ``{"type": "plaintext", "body": …}`` also passed all 2,316 tests.
+
+    This is the block the cached prefix lives in, so a wrong key here is both a
+    rejected call and the end of the free tier's cost model.
+    """
+    from anthropic.types import TextBlockParam
+
+    declared = set(TextBlockParam.__annotations__)
+    types = _literals(TextBlockParam, "type")
+    spec = DEFAULT_MODELS[Tier.FRONTIER]
+    payload = render_generate(
+        Generate(prompt=prompt(main_id=ASHA, system=(long_block(spec), "volatile"),
+                               cache=Breakpoint(1))),
+        spec,
+    )
+    for block in payload["system"]:
+        undeclared = set(block) - declared
+        assert not undeclared, sorted(undeclared)
+        assert {"type", "text"} <= set(block), sorted(block)
+        assert block["type"] in types
+        assert isinstance(block["text"], str)
+
+
+@pytest.mark.ad19_guarantee
+def test_a_batch_items_params_are_checked_as_deeply_as_an_inline_request():
+    """A batch carries the same nested shapes, and a nightly pass is where a
+    wrong key costs a whole night rather than one call."""
+    from anthropic.types import MessageParam, TextBlockParam
+    from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
+
+    transport = FakeTransport()
+    asyncio.run(provider(transport).submit(batch_items()))
+    for request in transport.submitted[0]:
+        params = request["params"]
+        assert set(params) <= set(MessageCreateParamsNonStreaming.__annotations__)
+        for message in params["messages"]:
+            assert set(message) <= set(MessageParam.__annotations__)
+            assert {"role", "content"} <= set(message)
+        for block in params.get("system", []):
+            assert set(block) <= set(TextBlockParam.__annotations__)
+            assert {"type", "text"} <= set(block)
+
+
+# ── the model-name scan, at the call route ───────────────────────────────────
+
+
+@pytest.mark.ad19_guarantee
+@pytest.mark.parametrize(
+    "bypass",
+    [
+        'def f(p, spec): p.setdefault("model", "claude-opus-5")',
+        'def f(p): p.update({"model": "gpt-5"})',
+        'def f(c): c.messages.create(model="claude-opus-5", max_tokens=1)',
+        'def f(p): p.__setitem__("model", "gemini-3-pro")',
+    ],
+    ids=["setdefault", "update", "keyword", "dunder-setitem"],
+)
+def test_the_model_name_scan_sees_the_call_route(bypass, tmp_path):
+    """``payload.setdefault("model", …)`` is the idiom used two lines from the
+    renderer, and none of the seven spellings the scan was tested against was a
+    call. A keyword argument is the other one an SDK call site reaches for."""
+    path = tmp_path / "bypass.py"
+    path.write_text(bypass + "\n", encoding="utf-8")
+    assert _names_a_model(ast.parse(path.read_text(encoding="utf-8"))), (
+        f"the scan does not see:\n{bypass}"
+    )
+
+
+# ── the gate's own floor, which a floor cannot protect ───────────────────────
+
+
+#: The cases every guarantee in this story rests on, by name.
+#:
+#: **A floor is the weakest of the three protections, and round 2 measured it.**
+#: The `ad19_guarantee` gate collected 142 against a floor of 110 — and *every*
+#: case it selects is a guarantee case, so the 32-case slack could only ever be
+#: absorbed by deleting guarantees. Dropping the concurrency-binding case, the
+#: reservation-counted case, both AD-30 fold cases, the narrow-authority
+#: surface case, the seven-case non-Latin floor and the ledger-restart case
+#: left guarantee at 129 and `ad19` at 245, both comfortably green. The step's
+#: own reasoning only covered deleting all 142 at once.
+#:
+#: So the flagship cases are named here, the way `tests/test_loops.py` names
+#: the guards its firewall rests on. Deleting one now fails *by name* rather
+#: than by arithmetic, which is the protection a count cannot give.
+GUARANTEES = (
+    # The four the spec's change log says held under mutation and must keep
+    # holding.
+    "test_a_classify_only_holder_has_no_public_way_to_produce_text",
+    "test_the_classifier_surface_scan_sees_a_generate_being_added",
+    "test_no_failure_ever_carries_a_substituted_answer",
+    "test_the_breakpoint_is_exactly_where_the_caller_put_it",
+    "test_a_breakpoint_past_the_prompt_is_refused_and_never_clamped",
+    # Round 1.
+    "test_the_pass_ceiling_binds_when_calls_overlap",
+    "test_a_reservation_is_counted_the_moment_it_is_taken",
+    "test_a_non_latin_estimate_is_at_least_one_token_per_character",
+    "test_no_log_call_in_the_model_package_can_carry_content",
+    "test_the_log_content_scan_sees_each_way_a_completion_reaches_a_log",
+    "test_the_classify_only_holder_has_no_public_attribute_at_all",
+    "test_a_one_hour_cache_write_is_charged_at_the_one_hour_basis",
+    "test_a_rejected_key_is_not_authorised_and_is_not_a_content_refusal",
+    "test_every_declared_reason_is_produced_by_some_path",
+    "test_every_reason_says_truthfully_whether_it_cost_anything",
+    "test_a_batch_state_this_build_cannot_read_stops_the_polling",
+    "test_the_pass_total_survives_a_restart_the_way_the_submission_does",
+    "test_no_model_call_is_reachable_from_a_fold",
+    "test_nothing_under_the_store_imports_the_model_port_at_all",
+    "test_no_module_outside_the_tier_table_names_a_model",
+    "test_every_stop_reason_the_sdk_declares_is_handled",
+    "test_the_shipped_model_table_is_pinned_to_its_values",
+    # Round 2.
+    "test_a_raise_before_the_request_is_built_does_not_leak_a_reservation",
+    "test_no_raising_path_between_the_call_and_the_send_leaks",
+    "test_the_hold_gives_a_reservation_back_on_any_exit",
+    "test_settling_one_reservation_twice_is_refused",
+    "test_a_reservation_from_another_ledger_is_refused",
+    "test_a_hand_constructed_reservation_cannot_free_the_ledger",
+    "test_a_prefix_under_the_tiers_minimum_is_refused_at_the_renderer",
+    "test_the_same_prefix_caches_on_one_tier_and_is_refused_on_the_other",
+    "test_every_message_matches_the_message_param_the_sdk_declares",
+    "test_every_system_block_matches_the_text_block_param_the_sdk_declares",
+    "test_the_fold_reachability_scan_sees_each_spelling_of_the_import",
+    "test_the_model_name_scan_sees_the_call_route",
+    "test_a_code_switching_main_is_estimated_at_or_above_the_real_cost",
+)
+
+
+@pytest.mark.ad19_guarantee
+@pytest.mark.parametrize("name", GUARANTEES)
+def test_every_guarantee_this_story_rests_on_still_exists(name):
+    """Each named case is present, and still carries the guarantee marker.
+
+    Two assertions, because the cheap way to lose one is not deletion: it is
+    quietly unmarking it, which drops it out of the gate while leaving the
+    function where a reviewer reading the diff would see it.
+    """
+    defined = {
+        node.name: node
+        for node in ast.walk(
+            ast.parse(Path(__file__).read_text(encoding="utf-8"))
+        )
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert name in defined, (
+        f"{name} is gone. It is one of the cases this story's guarantees rest "
+        "on; if it genuinely belongs somewhere else, move the name too"
+    )
+    marks = {
+        decorator.attr
+        for decorator in ast.walk(defined[name])
+        if isinstance(decorator, ast.Attribute)
+    }
+    assert "ad19_guarantee" in marks, f"{name} no longer carries the gate's marker"
+
+
+def test_the_named_guarantees_are_the_gate_and_not_a_subset_of_a_subset():
+    """The list must not itself become decoration.
+
+    Every name in it has to be a real case in this file — a stale name is a
+    guard that passes because nobody noticed it stopped pointing at anything.
+    Asserted by the case above, one name at a time; this one pins that the list
+    is big enough to be worth having and that it has no duplicates.
+    """
+    assert len(set(GUARANTEES)) == len(GUARANTEES)
+    assert len(GUARANTEES) >= 30

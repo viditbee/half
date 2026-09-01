@@ -513,17 +513,17 @@ jobs:
         # another step happened to run one of the same files.
         #
         # **The floor carries margin that is not the cases it protects**, the
-        # rule review has had to establish for four stories running. 258
-        # selected, 200 required — and the 142 guarantee cases are marked
-        # separately and gated below, so deleting them lands on 116 and fails
-        # *twice*: their own gate collects nothing, and this one drops beneath
-        # its floor.
+        # rule review has had to establish for four stories running. 330
+        # selected, 290 required — and the margin is deliberately smaller than
+        # the 120 non-guarantee cases, so the slack cannot be absorbed by
+        # deleting guarantees, which is what review round 2 measured happening
+        # on the gate below.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m ad19 -q --collect-only \
             | grep -c '::' || true)
           echo "AD-19 cases collected: $collected"
-          if [ "$collected" -lt 200 ]; then
+          if [ "$collected" -lt 290 ]; then
             echo "::error::the AD-19 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -565,13 +565,39 @@ jobs:
         #   than against the renderer; every stop reason the SDK declares
         #   handled; and the model table pinned to its absolute values.
         #
-        # 142 selected, 110 required.
+        # And from review round 2, each reproduced before it was fixed:
+        #
+        #   a reservation released on every path out — round 1's own
+        #   cache-minimum refusal raised from the renderer, which sat after
+        #   `admit` and outside any handler, so five retries of a mis-stated
+        #   breakpoint drained the pass and every honest call after it was
+        #   refused with nothing sent; a reservation exchangeable exactly once
+        #   and only by its issuer (a double settle recorded 120 against a 100
+        #   ceiling, a foreign one settled clean, a hand-made one freed the
+        #   ledger through a `max(0, …)` clamp); the cache-minimum refusal
+        #   itself, which `if False:` could disable with all 2,316 tests green;
+        #   the nested message and system-block shapes, where two guaranteed
+        #   400s both passed because the scan read only the top level; a
+        #   relative import of the port into the fold, which passed both AD-30
+        #   scans; and the model-name scan's call route.
+        #
+        # **The floor is no longer the only protection, and round 2 is why.**
+        # Every case this gate selects is a guarantee case, so its margin could
+        # only ever be absorbed by deleting guarantees — measured: dropping
+        # eight of them left both gates green. So the flagship cases are now
+        # named one by one inside the suite
+        # (`test_every_guarantee_this_story_rests_on_still_exists`), the way
+        # `tests/test_loops.py` names the guards its firewall rests on.
+        # Deleting one fails by name; deleting the naming case drops this gate
+        # 36 cases and fails by arithmetic.
+        #
+        # 210 selected, 195 required.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m ad19_guarantee -q --collect-only \
             | grep -c '::' || true)
           echo "AD-19 guarantee cases collected: $collected"
-          if [ "$collected" -lt 110 ]; then
+          if [ "$collected" -lt 195 ]; then
             echo "::error::the AD-19 guarantee gate collected $collected cases; the promises are unguarded"
             exit 1
           fi

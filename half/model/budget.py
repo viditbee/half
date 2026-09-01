@@ -40,7 +40,8 @@ over what it is given.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -306,11 +307,19 @@ class Reservation:
     Held by the caller between ``admit`` and ``settle``. It exists so that the
     figure a *concurrent* call is admitted against includes this one — the
     whole of what review round 1 found missing.
+
+    ``serial`` is what makes a reservation *this ledger's*, and it is read:
+    ``Spend`` keeps the outstanding serials and refuses anything it did not
+    issue or has already exchanged. Round 1 documented that intent and never
+    implemented it — ``_release`` checked the type and then clamped the
+    subtraction at zero, so settling one reservation twice recorded 120 against
+    a 100 ceiling, a reservation from a *different* ledger settled clean, and a
+    hand-constructed one drove the outstanding total to zero through the clamp
+    and let the pass admit past its own ceiling. A value object is not a
+    capability; the issuing ledger's record of it is.
     """
 
     micro_usd: int
-    #: Distinguishes two identical reservations, so a double settle is a
-    #: detectable mistake rather than a silent double release.
     serial: int
 
 
@@ -378,12 +387,15 @@ class Spend:
     and this docstring is where that would be said.
     """
 
-    __slots__ = ("budget", "_spent", "_reserved", "_calls", "_serial")
+    __slots__ = ("budget", "_spent", "_outstanding", "_calls", "_serial")
 
     def __init__(self, budget: Budget, *, spent: int = 0, calls: int = 0) -> None:
         self.budget = budget
         self._spent = max(0, spent)
-        self._reserved = 0
+        #: serial -> the amount that serial is holding. The *record of
+        #: issuance*, which is what makes a reservation exchangeable exactly
+        #: once and only by this ledger.
+        self._outstanding: dict[int, int] = {}
         self._calls = max(0, calls)
         self._serial = 0
 
@@ -416,12 +428,12 @@ class Spend:
 
     @property
     def reserved_micro_usd(self) -> int:
-        return self._reserved
+        return sum(self._outstanding.values())
 
     @property
     def committed_micro_usd(self) -> int:
         """Spent plus reserved — the figure admission is decided against."""
-        return self._spent + self._reserved
+        return self._spent + self.reserved_micro_usd
 
     @property
     def calls(self) -> int:
@@ -445,8 +457,34 @@ class Spend:
         ):
             return Reason.PER_PASS_BUDGET
         self._serial += 1
-        self._reserved += estimate.micro_usd
+        self._outstanding[self._serial] = estimate.micro_usd
         return Reservation(micro_usd=estimate.micro_usd, serial=self._serial)
+
+    @contextmanager
+    def hold(self, estimate: Estimate) -> Iterator["Reservation | Reason"]:
+        """Admit, and give the reservation back on **every** path out.
+
+        This exists because review round 2 found the class of bug the round-1
+        fix left open. Three round-1 changes combined into a fourth defect: the
+        cache-minimum refusal raises from the renderer, the renderer was called
+        after ``admit`` and outside any handler, and the ledger had just been
+        made durable — so a caller retrying a mis-stated breakpoint drained the
+        pass to zero and every honest call after it was refused with nothing
+        sent. A ceiling that binds against money nobody spent is the same
+        defect as one that does not bind, pointing the other way.
+
+        A handler at each call site would have fixed those two sites. The
+        control structure fixes the class: the reservation is released when the
+        block exits unless it was settled inside it, however it exits.
+        """
+        outcome = self.admit(estimate)
+        try:
+            yield outcome
+        finally:
+            if isinstance(outcome, Reservation) and outcome.serial in (
+                self._outstanding
+            ):
+                self.release(outcome)
 
     def settle(self, reservation: Reservation, usage: Usage) -> None:
         """Exchange a reservation for what the call actually cost.
@@ -456,18 +494,44 @@ class Spend:
         slightly over its ceiling. That is unavoidable: money already spent
         cannot be un-spent, and the ceiling's job is to stop the *next* call.
         """
-        self._release(reservation)
+        self._take(reservation)
         self._spent += max(0, usage.micro_usd)
         self._calls += 1
 
     def release(self, reservation: Reservation) -> None:
         """Give back a reservation for a call that never happened."""
-        self._release(reservation)
+        self._take(reservation)
 
-    def _release(self, reservation: Reservation) -> None:
+    def _take(self, reservation: Reservation) -> None:
+        """Remove one outstanding reservation, or refuse loudly.
+
+        **Issuance, not type.** Round 1 checked ``isinstance`` and then clamped
+        the subtraction at zero, which turned every misuse into a silent
+        corruption of the one number CAP-7 rests on. Each of these is a
+        programming mistake with no honest outcome, so each is an exception:
+        a total that is quietly wrong is worse than a call that fails.
+        """
         if not isinstance(reservation, Reservation):
-            raise BudgetError("only a reservation this ledger issued can be settled")
-        self._reserved = max(0, self._reserved - reservation.micro_usd)
+            raise BudgetError(
+                f"{type(reservation).__name__} is not a reservation; only this "
+                "ledger's own can be exchanged"
+            )
+        held = self._outstanding.pop(reservation.serial, None)
+        if held is None:
+            raise BudgetError(
+                "this reservation is not outstanding on this ledger — it was "
+                "issued by another, already exchanged, or constructed by hand. "
+                "Clamping the difference to zero is what made each of those a "
+                "silently wrong pass total rather than a loud one"
+            )
+        if held != reservation.micro_usd:
+            # The serial matched but the amount does not: a forged or mutated
+            # value object. The ledger's own record is the authority.
+            self._outstanding[reservation.serial] = held
+            raise BudgetError(
+                "this reservation's amount does not match what the ledger "
+                "issued under that serial"
+            )
 
     def reset(self) -> None:
         """Begin a new pass.
@@ -477,5 +541,5 @@ class Spend:
         exactly one module in this tree reads a clock (AD-30).
         """
         self._spent = 0
-        self._reserved = 0
+        self._outstanding.clear()
         self._calls = 0

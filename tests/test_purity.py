@@ -74,13 +74,28 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _imported_roots(path: Path) -> set[str]:
+    """Root packages ``path`` imports, relative spellings included.
+
+    A relative import used to be skipped outright, which was safe only by
+    accident: every relative import inside ``half/`` resolves to a root of
+    ``half``, and ``half`` is not forbidden. It stopped being safe the moment
+    somebody added a ``half`` submodule to the list — and story 9b found the
+    identical condition in its own AD-30 scan letting
+    ``from ..model.port import Prompt`` into the fold with every test green.
+    So both resolve now, and the two spellings give one answer.
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    package = path.relative_to(ROOT).with_suffix("").parts[:-1]
     roots: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             roots.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
-            if node.level == 0 and node.module:
+            if node.level:
+                base = package[: len(package) - (node.level - 1)]
+                if base:
+                    roots.add(base[0])
+            elif node.module:
                 roots.add(node.module.split(".")[0])
     return roots
 

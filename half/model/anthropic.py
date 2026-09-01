@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import ExitStack
 from typing import Any
 
 from half.errors import (
@@ -542,22 +543,23 @@ class _Priced:
         self._spend.settle(reservation, usage)
         return reply, usage, None
 
-    def _admit(self, priced: Estimate) -> Reservation | Failure:
-        """Reserve, or say which ceiling refused.
+    def _refusal(self, admitted: "Reservation | Reason") -> Failure | None:
+        """The over-budget failure an admission refused with, or ``None``.
 
         Reserving rather than merely checking is what makes the budget bind
         when calls overlap — verified at eight, the scheduler's own bound.
+        This half only names the refusal; ``Spend.hold`` owns giving the
+        reservation back.
         """
-        outcome = self._spend.admit(priced)
-        if isinstance(outcome, Reason):
-            failure = Failure(Kind.OVER_BUDGET, outcome)
-            # Logged off the constructed failure rather than off the local, so
-            # the two fields are provably the closed enums the AD-22 scan
-            # requires — a bare name it cannot resolve is exactly the shape
-            # that let a completion into a log line before.
-            logger.warning("model call refused: %s/%s", failure.kind, failure.because)
-            return failure
-        return outcome
+        if not isinstance(admitted, Reason):
+            return None
+        failure = Failure(Kind.OVER_BUDGET, admitted)
+        # Logged off the constructed failure rather than off the local, so the
+        # two fields are provably the closed enums the AD-22 scan requires — a
+        # bare name it cannot resolve is exactly the shape that let a
+        # completion into a log line before.
+        logger.warning("model call refused: %s/%s", failure.kind, failure.because)
+        return failure
 
 
 class AnthropicClassifier(_Priced):
@@ -573,20 +575,28 @@ class AnthropicClassifier(_Priced):
     __slots__ = ()
 
     async def classify(self, work: Classify) -> Classified:
-        """Decide, or report which of the four failures happened."""
+        """Decide, or report which of the four failures happened.
+
+        **The request is built before anything is reserved.** Every refusal
+        that needs no network — an unknown tier, a breakpoint the provider
+        would silently ignore — happens here, while the ledger is still
+        untouched. Round 2 found the opposite order leaking a reservation on
+        every such raise; ``hold`` closes the class, and this ordering means
+        the class has nothing left to catch on this path.
+        """
         spec = self._spec(work.prompt.main_id)
+        payload = render_classify(work, spec)
         priced = self._estimate(
             work.prompt, spec, max_output_tokens=classify_ceiling(spec)
         )
-        admitted = self._admit(priced)
-        if isinstance(admitted, Failure):
-            return admitted  # refused before the send; nothing spent
-
-        payload = render_classify(work, spec)
-        reply, usage, failure = await self._send(
-            payload, spec,
-            reservation=admitted, ttl_basis=self._ttl_basis(work.prompt),
-        )
+        with self._spend.hold(priced) as admitted:
+            refusal = self._refusal(admitted)
+            if refusal is not None:
+                return refusal  # refused before the send; nothing spent
+            reply, usage, failure = await self._send(
+                payload, spec,
+                reservation=admitted, ttl_basis=self._ttl_basis(work.prompt),
+            )
         if reply is None:
             return failure or Failure(Kind.MALFORMED, Reason.UNREADABLE)
         return read_decision(reply, work.labels, usage)
@@ -598,18 +608,22 @@ class AnthropicGenerator(_Priced):
     __slots__ = ()
 
     async def generate(self, work: Generate) -> Generated:
+        """Write, or report which of the four failures happened.
+
+        Built before reserved, and held, for the reason ``classify`` gives.
+        """
         spec = self._spec(work.prompt.main_id)
+        payload = render_generate(work, spec)
         ceiling = _output_ceiling(work, spec)
         priced = self._estimate(work.prompt, spec, max_output_tokens=ceiling)
-        admitted = self._admit(priced)
-        if isinstance(admitted, Failure):
-            return admitted
-
-        payload = render_generate(work, spec)
-        reply, usage, failure = await self._send(
-            payload, spec,
-            reservation=admitted, ttl_basis=self._ttl_basis(work.prompt),
-        )
+        with self._spend.hold(priced) as admitted:
+            refusal = self._refusal(admitted)
+            if refusal is not None:
+                return refusal
+            reply, usage, failure = await self._send(
+                payload, spec,
+                reservation=admitted, ttl_basis=self._ttl_basis(work.prompt),
+            )
         if reply is None:
             return failure or Failure(Kind.MALFORMED, Reason.UNREADABLE)
         return read_completion(reply, usage)
@@ -632,8 +646,12 @@ class AnthropicBatcher(_Priced):
         **Whole, or not at all.** A batch where the budget stopped halfway is a
         partial spend with no record of which half went — so every item is
         reserved first, through the same ``Spend.admit`` a single call goes
-        through, and any refusal releases every reservation already taken. Two
-        copies of the ceiling comparison is what this replaces.
+        through, and any refusal gives every reservation already taken back.
+
+        The giving-back is the ``ExitStack``'s, not this method's. Round 2's
+        lesson was that a handler fixes the sites it is written at while the
+        control structure fixes the class, and this path had the handler and
+        the two single-call paths did not. Now all three hold.
         """
         if not items:
             raise ValueError("an empty batch has nothing to submit")
@@ -654,7 +672,8 @@ class AnthropicBatcher(_Priced):
         submitted: list[Submitted] = []
         reservations: list[Reservation] = []
         committed = 0
-        try:
+
+        with ExitStack() as stack:
             for item in items:
                 prompt = item.work.prompt
                 spec = self._spec(prompt.main_id)
@@ -664,24 +683,28 @@ class AnthropicBatcher(_Priced):
                     if classifying
                     else _output_ceiling(item.work, spec)
                 )
-                priced = self._estimate(
-                    prompt, spec, max_output_tokens=ceiling, batched=True
-                )
-                admitted = self._admit(priced)
-                if isinstance(admitted, Failure):
-                    for taken in reservations:
-                        self._spend.release(taken)
-                    return admitted
-                reservations.append(admitted)
-                committed += priced.micro_usd
-                requests.append({
+                # Built before this item is reserved, so a request that cannot
+                # be built never touches the ledger for its own sake — and the
+                # stack gives back what earlier items are holding.
+                request = {
                     "custom_id": item.ref,
                     "params": (
                         render_classify(item.work, spec)
                         if classifying
                         else render_generate(item.work, spec)
                     ),
-                })
+                }
+                priced = self._estimate(
+                    prompt, spec, max_output_tokens=ceiling, batched=True
+                )
+                admitted = stack.enter_context(self._spend.hold(priced))
+                refusal = self._refusal(admitted)
+                if refusal is not None:
+                    return refusal
+
+                reservations.append(admitted)
+                committed += priced.micro_usd
+                requests.append(request)
                 submitted.append(Submitted(
                     ref=item.ref,
                     tier=self._tiers.of(prompt.main_id).value,
@@ -698,8 +721,6 @@ class AnthropicBatcher(_Priced):
             try:
                 created = await self._transport.batch_create(requests)
             except TransportFault as exc:
-                for taken in reservations:
-                    self._spend.release(taken)
                 failure = _transport_failure(exc)
                 logger.warning(
                     "batch submit failed: %s/%s", failure.kind, failure.because
@@ -708,25 +729,20 @@ class AnthropicBatcher(_Priced):
 
             batch_id = created.get("id") if isinstance(created, Mapping) else None
             if not isinstance(batch_id, str) or not batch_id:
-                for taken in reservations:
-                    self._spend.release(taken)
                 return Failure(Kind.MALFORMED, Reason.UNREADABLE)
-        except BaseException:
-            # A refusal returns above; this is the raise path — a bad output
-            # ceiling, an unknown tier, an over-long payload. Every reservation
-            # already taken is given back, because a leaked reservation shrinks
-            # the pass budget for ever.
-            for reservation in reservations:
-                self._spend.release(reservation)
-            raise
 
-        # Settled **here**, at the estimate, and not at collection. A batch is
-        # committed the moment the provider accepts it, and the process that
-        # collects it hours later is routinely not this one (AD-9) — a ledger
-        # that only learned the cost on collection would let one pass submit
-        # unlimited batches and then bill the *next* pass for all of them.
-        for reservation in reservations:
-            self._spend.settle(reservation, Usage(micro_usd=reservation.micro_usd))
+            # Settled **here**, at the estimate, and not at collection. A batch
+            # is committed the moment the provider accepts it, and the process
+            # that collects it hours later is routinely not this one (AD-9) — a
+            # ledger that only learned the cost on collection would let one
+            # pass submit unlimited batches and then bill the *next* pass for
+            # all of them. Settling inside the stack is what stops the stack
+            # from handing them back on the way out.
+            for reservation in reservations:
+                self._spend.settle(
+                    reservation, Usage(micro_usd=reservation.micro_usd)
+                )
+
         logger.info("batch submitted: %d items", len(submitted))
         return Submission(
             batch_id=batch_id,

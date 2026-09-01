@@ -489,6 +489,28 @@ the gate that existed to stop it. The scan is now an allowlist over every
 argument, and every log line must resolve to a count or one of two closed
 enums.
 
+Round two found that those three fixes had combined into a fourth defect. The
+cache-minimum refusal raises from the renderer; the renderer was called after
+the admission and outside any handler; and the ledger had just been made
+durable — so every retry of a mis-stated breakpoint leaked its reservation, and
+a caller could drain a pass to zero and have every honest call after it refused
+with nothing sent. A ceiling that binds against money nobody spent is the same
+defect as one that does not bind, pointing the other way. The request is now
+built before anything is reserved, and admission goes through a `hold` that
+gives the reservation back however the block exits — a handler fixes the sites
+it is written at, and the control structure fixes the class. Round two also
+found three guards that had only ever been checked where they already agreed
+with themselves: the cache-minimum refusal could be disabled outright with
+every test green, because nothing called the renderer directly; two guaranteed
+rejections on the keys that actually carry the prompt passed, because the
+wire-shape scan read only the top level of the request; and a *relative* import
+of the model port into `half/store/fold.py` passed both AD-30 scans, whose
+non-vacuity case used the absolute spelling the scan already handled. Every
+scan in this story now resolves the spelling it used to assume, and the
+flagship cases are named one by one in `GUARANTEES`, because a floor is the
+weakest of the three protections and round two measured its whole margin being
+absorbable by deleting guarantees.
+
 `test_context.py` is the AD-18 gate. It scans the rendered context and the
 reply for any *fragment* of a withheld claim — adjacent word pairs,
 concatenated, so a language that does not space its words is covered by the
