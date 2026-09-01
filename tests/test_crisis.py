@@ -1222,27 +1222,150 @@ def test_an_entitlement_carried_on_the_message_changes_nothing():
     assert one.in_crisis("lapsed") and one.in_crisis("paid")
 
 
+def names_read_by(path: Path) -> set[str]:
+    """Every identifier, attribute, argument and string literal in ``path``.
+
+    Three spellings rather than one — a bare name, an attribute, and a string
+    key — because ``getattr(inbound, "entitlement_ok", True)`` walked past the
+    version that only looked at ``ast.Name``. Case-folded since story 6b, so
+    that a module-level ``REGION`` constant is the same thing to this scan as
+    the field it names; the previous version would have read them as two.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    seen: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            seen.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            seen.add(node.attr)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            seen.add(node.value)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            seen.update(arg.arg for arg in node.args.args)
+            seen.update(arg.arg for arg in node.args.kwonlyargs)
+    return {name.casefold() for name in seen}
+
+
+#: The three modules story 6b added, and the only ones that may hold the word
+#: for where a main is. Everything else in ``half/crisis`` remains as
+#: place-blind as story 6a left it.
+HANDOFF_MODULES = frozenset({"contacts.py", "directory.py", "handoff.py"})
+
+
 def test_no_crisis_module_reads_a_plan_or_a_payment_state():
-    """The scan, now covering three spellings rather than one: a bare name, an
-    attribute, and a string key. ``tier`` is excluded on purpose — it is this
-    subsystem's own word for a row of the companion's table."""
+    """Matrix: tier. ``tier`` is excluded on purpose — it is this subsystem's
+    own word for a row of the companion's table."""
     forbidden = {"subscription", "plan_id", "paid", "premium", "billing",
-                 "entitlement", "entitlement_ok", "quota", "locale", "country",
-                 "region", "is_paid", "tier_of"}
+                 "entitlement", "entitlement_ok", "quota", "is_paid", "tier_of"}
     for path in sorted((ROOT / "half/crisis").rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        seen: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Name):
-                seen.add(node.id)
-            elif isinstance(node, ast.Attribute):
-                seen.add(node.attr)
-            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-                seen.add(node.value)
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                seen.update(arg.arg for arg in node.args.args)
-                seen.update(arg.arg for arg in node.args.kwonlyargs)
+        seen = names_read_by(path)
         assert not seen & forbidden, f"{path.name} reads {sorted(seen & forbidden)}"
+
+
+def test_only_the_handoff_modules_know_that_places_exist():
+    """Matrix: region unknown. Story 6a's rule was *no locale, anywhere*, and
+    6b narrows it rather than dropping it.
+
+    Naming a region is now a thing Half does — but only in the three modules
+    that hold a region the main **told** them, and only there. The switch, the
+    templates and the reply assembly stay exactly as place-blind as 6a left
+    them, which is what keeps every no-locale assertion in this file true: the
+    named line arrives as a datum beside a reviewed paragraph, never inside
+    one.
+
+    ``locale`` and ``country`` stay forbidden everywhere, including in the
+    three. Half has no locale and assumes no country; it has a key a main gave
+    it, and a table that key indexes.
+    """
+    everywhere = {"locale", "country"}
+    handoff_only = {"region", "regions"}
+    for path in sorted((ROOT / "half/crisis").rglob("*.py")):
+        seen = names_read_by(path)
+        assert not seen & everywhere, (
+            f"{path.name} assumes a locale: {sorted(seen & everywhere)}"
+        )
+        if path.name in HANDOFF_MODULES:
+            continue
+        assert not seen & handoff_only, (
+            f"{path.name} is not a handoff module and names a place: "
+            f"{sorted(seen & handoff_only)}"
+        )
+
+
+def test_no_crisis_module_can_infer_where_the_main_is():
+    """Matrix: region inferred. Asserted structurally, which is the only way
+    this rule can be asserted at all: there is no test input that proves a
+    signal was *not* consulted, so what is checked is that no crisis module can
+    see one.
+
+    Every available signal is wrong somewhere. A phone prefix survives
+    emigration, an IP is a VPN, a timezone is a business trip, a language is a
+    preference. A named helpline on the wrong continent is worse than the
+    honest generic line, because it costs a call at the worst possible moment —
+    so the region is told or it does not exist.
+    """
+    inferring = {
+        "timezone", "tz", "time_zone", "utc_offset", "offset_hours",
+        "phone_prefix", "dial_code", "country_code", "calling_code", "msisdn",
+        "ip", "ip_address", "remote_addr", "geoip", "geo", "latitude",
+        "longitude", "lat", "lon", "coordinates", "accept_language",
+        "language", "lang", "currency",
+    }
+    for path in sorted((ROOT / "half/crisis").rglob("*.py")):
+        seen = names_read_by(path)
+        assert not seen & inferring, (
+            f"{path.name} could infer a place from {sorted(seen & inferring)}; "
+            "the region is told, never inferred"
+        )
+
+
+def test_the_place_scans_catch_the_bypasses_they_exist_for(tmp_path):
+    """Non-vacuity for all three scans above — **run through the helper they
+    actually use**, not through a walker written again here.
+
+    That difference is the finding. The previous version re-implemented the
+    walk inline, so ``names_read_by`` itself was observed by nothing: crippling
+    it to a bare ``ast.Name`` scan and then adding
+
+        def _place_of(self, inbound):
+            return inbound.timezone or inbound.phone_prefix
+
+    to ``gate.py`` left ``pytest -m cap12`` passing with 593 cases. A shared
+    engine that no test exercises is three gates resting on nothing.
+    """
+    bypass = tmp_path / "bypass.py"
+    bypass.write_text(
+        "def _place_of(self, inbound):\n"
+        "    country = getattr(inbound, 'entitlement_ok', True)\n"
+        "    return inbound.timezone or inbound.phone_prefix or self.d['locale']\n",
+        encoding="utf-8",
+    )
+    seen = names_read_by(bypass)
+    assert "entitlement_ok" in seen, "the attribute spelling is unwatched"
+    assert "country" in seen, "the bare-name spelling is unwatched"
+    assert "locale" in seen, "the string-key spelling is unwatched"
+    assert {"timezone", "phone_prefix"} <= seen, "inference signals are unwatched"
+
+
+def test_the_place_scan_folds_case_so_a_constant_is_not_a_loophole(tmp_path):
+    """``REGION`` and ``region`` are the same thing to this scan. A module-level
+    constant naming the field is exactly how a place would re-enter a
+    place-blind module without the gate noticing."""
+    source = tmp_path / "constant.py"
+    source.write_text("from half.store.records import REGION\nX = REGION\n",
+                      encoding="utf-8")
+    assert "region" in names_read_by(source)
+
+
+def test_the_place_scan_reads_the_modules_it_claims_to():
+    """A glob that matched nothing would make all three gates vacuous. This
+    asserts the scan is looking at real files with real content in them."""
+    scanned = sorted(p.name for p in (ROOT / "half/crisis").rglob("*.py"))
+    assert {"gate.py", "signals.py", "templates.py", "respond.py"} <= set(scanned)
+    assert HANDOFF_MODULES <= set(scanned), (
+        f"a handoff module was renamed or removed: {sorted(scanned)}"
+    )
+    assert names_read_by(ROOT / "half/crisis/gate.py"), "the scan read nothing"
 
 
 def test_the_entitlement_scan_catches_the_bypass_it_exists_for():

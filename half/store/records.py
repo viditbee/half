@@ -136,6 +136,64 @@ RESERVED: Final[frozenset[str]] = frozenset({"t", "op", "id", "v"})
 #: a second spelling in either place is how the pin and the fold stop agreeing.
 QUARANTINED: Final[str] = "quarantined"
 
+#: The fields that make a belief part of the main's *phone book* rather than a
+#: claim about the main: a person Half may one day offer as a door, and the
+#: place the main told Half they are. Named here for the reason ``QUARANTINED``
+#: is — two layers need the spelling and only one of them may own it. The
+#: crisis handoff reads them (``half.crisis.contacts``) and the registry
+#: narrows a main's records to them (``ActorRegistry.handoff_records``), so
+#: that the one thing crisis mode may look up is the phone book and never the
+#: ledger it has just hard-disabled.
+CONTACT: Final[str] = "contact"
+HANDLE: Final[str] = "handle"
+IS_CLINICIAN: Final[str] = "clinician"
+REGION: Final[str] = "region"
+
+#: The two record kinds the handoff may see. Anything else in a main's log is
+#: invisible to it.
+HANDOFF_FIELDS: Final[tuple[str, ...]] = (CONTACT, REGION)
+
+
+def handoff_record(record: Mapping[str, Any] | Any) -> bool:
+    """Whether ``record`` is phone-book material.
+
+    The narrowing itself, kept here rather than in the registry so that the
+    layer that owns record shapes owns the definition of which shapes the
+    crisis path may reach. A record with neither field is a claim about the
+    main and stays behind the disabled retriever.
+    """
+    if not isinstance(record, Mapping):
+        return False
+    return any(
+        isinstance(record.get(name), str) and record[name].strip()
+        for name in HANDOFF_FIELDS
+    )
+
+
+#: The only fields of a phone-book record that leave the store for the crisis
+#: path: what a door is, and what the ladder needs to decide whether it may be
+#: offered at all. ``id`` travels because an offer has to be stable across two
+#: identical turns.
+HANDOFF_VISIBLE: Final[tuple[str, ...]] = (
+    "id", CONTACT, HANDLE, IS_CLINICIAN, REGION,
+    "license", "support", "known_to_main", QUARANTINED,
+)
+
+
+def handoff_projection(record: Mapping[str, Any]) -> dict[str, Any]:
+    """``record`` reduced to what the handoff may see.
+
+    **Whole records were the hole.** A belief carrying a contact field *and* a
+    claim about the main — the most ordinary shape there is once a person is
+    also a subject — brought that claim into the crisis path, which is the one
+    place ledger retrieval is hard-disabled (CAP-12, build requirement 3).
+    Narrowing by record was not narrowing; this narrows by field, so what the
+    mode can reach is a name, a place, and the ladder's own evidence for
+    whether either may be named.
+    """
+    return {name: record[name] for name in HANDOFF_VISIBLE if name in record}
+
+
 #: Fields that, once set on a belief, survive every later append for that
 #: belief. Quarantine is permanent (CAP-10, glossary), and permanence cannot be
 #: the caller's job to remember: an ``assert`` record for a quarantined belief
@@ -185,6 +243,15 @@ _TYPED_FIELDS: Final[dict[str, type | tuple[type, ...]]] = {
     "known_to_main": bool,
     QUARANTINED: bool,
     "rung": str,
+    # The phone book, validated at the append for the reason the four fields
+    # above are: the log is append-only, so a durable ``clinician="maybe"`` is
+    # a contact whose place in a crisis offer turns on a value nothing ever
+    # looked at, and a ``contact`` that is not a string is a name nothing can
+    # render.
+    CONTACT: str,
+    HANDLE: str,
+    IS_CLINICIAN: bool,
+    REGION: str,
 }
 
 

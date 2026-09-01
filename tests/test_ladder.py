@@ -1296,7 +1296,16 @@ def test_only_the_context_builder_decides_a_rung():
         for name in ("permitted", "own_rung", "rung_of", "has_receipt",
                      "known_to_main", "quarantined", "cap", "weaker")
     }
-    allowed = {"half/context/build.py"}
+    #: ``half/crisis/contacts.py`` reads ``known_to_main`` and nothing else in
+    #: that set. It is not deciding a rung — it asks the one question this gate
+    #: exists to keep single-answered: *has the main confirmed that Half holds
+    #: this?* Story 6b may offer only a confirmed contact, and the alternative
+    #: to reusing the primitive is a second reader of the same field with its
+    #: own idea of what counts, which is exactly the drift this gate prevents.
+    #: Reusing it means a contact cannot become offerable by a path a belief
+    #: could not take. Nothing else about a rung is read there, and the writer
+    #: gate below still forbids it spelling the field into a record.
+    allowed = {"half/context/build.py", "half/crisis/contacts.py"}
     offenders: list[str] = []
     for module, path in source_modules():
         relative = str(path.relative_to(ROOT))

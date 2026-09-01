@@ -39,6 +39,7 @@ from half.actor.registry import Actor, ActorRegistry
 from half.channel.port import Channel, Inbound
 from half.context.build import build as build_context
 from half.crisis.gate import CrisisGate
+from half.crisis.handoff import Desk
 from half.errors import (
     HalfError,
     NotReachable,
@@ -80,8 +81,15 @@ class Runtime:
         # and the mode it opens survives eviction and restart (AD-28, CAP-12).
         # A gate built without it holds the mode in memory and writes nothing,
         # which is why the runtime never builds one that way.
+        # The handoff desk reads this main's phone book from the registry and
+        # turns a chosen contact into a link through the channel's own
+        # ``draft_link`` — the only route to a third party there is (AD-25).
+        # It is wired here rather than left to a test, because a surface
+        # reachable only from a test is a surface nobody has run.
         self._gate = self.gate or CrisisGate(
-            pipeline=self._pipeline, store=self.registry
+            pipeline=self._pipeline,
+            store=self.registry,
+            desk=Desk(held=self.registry, drafter=self.channel),
         )
 
     async def run(self) -> None:

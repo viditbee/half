@@ -17,6 +17,7 @@ production implementation is a thin `python-telegram-bot` wrapper.
 from __future__ import annotations
 
 import datetime as _dt
+import re
 import time
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Protocol
@@ -25,6 +26,13 @@ from urllib.parse import quote
 from half.channel.port import Inbound, Reachability, SendResult
 from half.channel.window import LatchRule, ReachabilityTracker
 from half.errors import ForbiddenRecipient, NotReachable, SendFailed
+
+#: A Telegram username: letters, digits and underscores. Deliberately narrower
+#: than the platform's own rule, because this decides where a deep link points
+#: and the safe failure is the share sheet rather than a cleverly escaped
+#: guess. Anything with a slash, a dot, a query or a fragment in it is not a
+#: username — it is a path, and a path retargets the link.
+_USERNAME = re.compile(r"[A-Za-z0-9_]{1,64}")
 
 #: Telegram rejects messages over 4096 UTF-16 code units — not characters.
 #: Measured with :func:`utf16_len`, because an emoji is one character and two
@@ -126,9 +134,23 @@ class TelegramChannel:
         sheet so the main picks. An earlier version put the recipient in the
         share sheet's ``url`` parameter, which is the shared *link* rather than
         an addressee — it neither targeted anyone nor was discarded.
+
+        **The recipient is validated, not merely escaped.** ``quote`` leaves
+        ``/`` safe by default, so a stored handle containing a slash or a dot
+        segment — ``asha/../someone``, ``asha/joinchat/xxxx`` — built a link
+        that opened a *different* conversation while the offer beside it still
+        showed the named person's name. That is the worst shape this function
+        can take: a door labelled with somebody the main trusts that leads
+        somewhere else. A handle that is not a plain Telegram username is not
+        escaped into safety — it falls back to the share sheet, where the main
+        picks the conversation themselves and cannot be misdirected.
+
+        An all-``@`` handle used to strip to nothing and link to Telegram's
+        home page; ``_USERNAME`` refuses it for the same reason.
         """
-        if to:
-            return f"https://t.me/{quote(to.lstrip('@'))}?text={quote(text)}"
+        target = to.lstrip("@") if to else ""
+        if target and _USERNAME.fullmatch(target):
+            return f"https://t.me/{quote(target, safe='')}?text={quote(text)}"
         return f"https://t.me/share/url?url=&text={quote(text)}"
 
     # -- port: capability_query ---------------------------------------------

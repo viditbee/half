@@ -32,6 +32,7 @@ from half.retrieval.prefix import build_prefix
 from half.retrieval.rank import RetrievalSwitch
 from half.retrieval.strands import Strands
 from half.store.ops import CRISIS_ENTERED, CRISIS_REVERSED, Op
+from half.store.records import handoff_projection, handoff_record
 from half.store.store import Store
 
 #: A main_id becomes a directory name, so it is validated before it can reach
@@ -236,6 +237,36 @@ class ActorRegistry:
         actor = self._reached(main_id)
         self._evict_if_needed()
         return actor.retrieval
+
+    def handoff_records(self, main_id: str) -> tuple[dict[str, Any], ...]:
+        """This main's phone book: people they named, and where they said they
+        are (CAP-12, story 6b).
+
+        The same door ``retrieval_switch`` and ``license_ceiling`` open, for
+        the same caller and for the same reason: the crisis gate runs before
+        the mutex is taken (AD-10). It does not block and does not write.
+
+        **Narrowed by field, not by record.** Crisis mode hard-disables ledger
+        retrieval, so the warm handoff must not become the route by which the
+        ledger comes back. ``handoff_record`` selects which records are phone
+        book at all, and ``handoff_projection`` then keeps only the fields a
+        door is made of plus the ones the ladder needs to decide whether it may
+        be offered. Returning whole records was not narrowing: a belief
+        carrying both a contact field and a claim about the main — the most
+        ordinary shape there is once a person is also a subject — handed that
+        claim to the crisis path. Both live in ``half.store.records``, because
+        the layer that owns record shapes owns which shapes leave this method.
+
+        Ordered by id so the same phone book produces the same offer twice.
+        """
+        actor = self._reached(main_id)
+        self._evict_if_needed()
+        beliefs = actor.store.state().beliefs
+        return tuple(
+            handoff_projection(record)
+            for _, record in sorted(beliefs.items())
+            if handoff_record(record)
+        )
 
     # -- the ceiling (AD-28) -------------------------------------------------
     #

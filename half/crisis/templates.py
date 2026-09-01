@@ -36,8 +36,20 @@ here.
 **No locale, anywhere.** Half ships world-wide and assumes nothing about where
 the main is: no phone number, no short code, no country, no service name, no
 opening hours. A line says *"a crisis line where you live"* and stops there.
-The referral directory is data, versioned and refreshable without a release,
-and it is story 6b — not a literal in this file.
+The referral directory is data, versioned and refreshable without a release —
+``half.crisis.directory`` and ``data/crisis-lines.json`` — never a literal in
+this file. Story 6b names a service only by carrying a *datum* beside a
+template line, never by putting one inside one, which is why every assertion
+in this file still holds after the handoff exists: no template names a place,
+a number or a service, and none ever will.
+
+**The offer and the draft lines are here for the reason the rest are.** The
+handoff is the moment's other half — Half writes the hardest message a person
+will ever send, and the main presses send (AD-25). That message is a reviewed
+paragraph like every other, not a composition: it does not greet the recipient
+by name, does not quote the main, and says the same thing to a brother as to a
+therapist, because the alternative is a generator pointed at the worst sentence
+anybody ever writes.
 
 **Rushing to fix reads as minimising.** The tone here is patient rather than
 fixing: present, unhurried, and explicit that Half is not going to resolve this
@@ -218,6 +230,81 @@ OTHER_CLOSE: Final = Line(
 )
 
 
+# -- the handoff: the offer ---------------------------------------------------
+#
+# Offered *after* the opener and never instead of it. Words first, then a door
+# — a build that leads with a list of numbers has answered a disclosure with
+# logistics, which is the "rushing to fix" the companion says reads as
+# minimising.
+#
+# **Nothing here names anyone or anywhere.** The names sit beside these lines
+# as data from the main's own confirmed list and from the versioned directory;
+# these paragraphs are the frame around them. That split is what lets the
+# no-locale assertions above stay true while a main in any country is handed a
+# line that exists where they live.
+
+OFFER_OPEN: Final = Line(
+    "offer-open",
+    "There are a few ways to reach a person from here. Take whichever one you "
+    "want, or none of them — I am not going to pick for you.",
+)
+
+OFFER_DRAFT: Final = Line(
+    "offer-draft",
+    "Where it is a person, I have written the message already, because that is "
+    "the part I can do. Change any of it you like. Nothing goes anywhere unless "
+    "you send it yourself.",
+)
+
+OFFER_LINES: Final = Line(
+    "offer-lines",
+    "The ones that are not a person are lines you can call or message where you "
+    "are. You do not have to be in danger to reach one.",
+)
+
+OFFER_CLOSE: Final = Line(
+    "offer-close",
+    "And whichever of those you do or do not do, I am still here.",
+)
+
+#: When the main has told Half where they are and the directory holds nothing
+#: for there. Said out loud rather than swallowed: silently nothing reads as
+#: Half having decided they were not worth a line, and the gap is Half's rather
+#: than the world's. It names no place — the place is the main's own answer,
+#: and repeating it back adds nothing but a chance to have heard it wrong.
+OFFER_UNLISTED: Final = Line(
+    "offer-unlisted",
+    "I do not have a line listed for where you told me you are. That is a gap "
+    "in what I hold rather than in what exists — there is one where you live, "
+    "and it will talk to you.",
+)
+
+
+# -- the handoff: the draft ---------------------------------------------------
+#
+# The message the main sends, not one Half sends (AD-25). Written in the main's
+# voice and in no one's particular voice: no greeting, no name, no detail, and
+# nothing carried over from what the main just typed. A draft with a hole in it
+# is the hole the crisis comes back out of.
+
+DRAFT_PERSON: Final = Line(
+    "draft-person",
+    "I am not okay, and I have not known how to say it. I am telling you "
+    "because I trust you and I did not want to be on my own with it. Can we "
+    "talk?",
+)
+
+DRAFT_CLINICIAN: Final = Line(
+    "draft-clinician",
+    "I am not okay, and I would like to talk before our next appointment. I am "
+    "telling you now rather than sitting with it on my own.",
+)
+
+#: The two drafts, so ``half.crisis.handoff`` chooses between them by kind
+#: rather than by spelling one of them again.
+DRAFT_LINES: Final[tuple[Line, ...]] = (DRAFT_PERSON, DRAFT_CLINICIAN)
+
+
 #: Every line, in one place. A test asserts that every reply Half can produce
 #: is made only of these, so "no method content, in any phrasing" is a closed
 #: set rather than a filter over an open one.
@@ -241,6 +328,13 @@ LINES: Final[tuple[Line, ...]] = (
     OTHER_LIMIT,
     OTHER_RESOURCE,
     OTHER_CLOSE,
+    OFFER_OPEN,
+    OFFER_DRAFT,
+    OFFER_LINES,
+    OFFER_CLOSE,
+    OFFER_UNLISTED,
+    DRAFT_PERSON,
+    DRAFT_CLINICIAN,
 )
 
 TEXTS: Final[frozenset[str]] = frozenset(line.text for line in LINES)
@@ -261,7 +355,18 @@ def _check_lines() -> None:
     for line in LINES:
         if not line.text.strip():
             raise CrisisError(f"template {line.id!r} is empty; that is silence")
-    for group in (MACHINE_LINES, THANKS_LINES):
+        if not line.text.isprintable():
+            # A reviewed paragraph is one printable line, and the guard over
+            # everything a main receives depends on it: ``half.crisis.rows``
+            # takes a reply apart on newlines, which is only total while no
+            # template contains one. A line break in here would make a
+            # paragraph split into halves that match nothing, and the whole
+            # closed-set check would start rejecting Half's own words.
+            raise CrisisError(
+                f"template {line.id!r} carries a line break or a control "
+                "character; every reviewed paragraph is one printable line"
+            )
+    for group in (MACHINE_LINES, THANKS_LINES, DRAFT_LINES):
         for line in group:
             if line not in LINES:
                 raise CrisisError(f"template {line.id!r} is grouped but unregistered")

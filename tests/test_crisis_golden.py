@@ -82,7 +82,16 @@ def constant_rendering() -> list[str]:
 # -- the pins -----------------------------------------------------------------
 
 SAFE_WORD = "lantern hour"
-TEMPLATES = "b0d16d4e9cf2d8be4304c01a48cb1379"
+# Re-pinned for story 6b, which *added* seven lines and changed none: the four
+# that frame the offer, the two the main sends, and — from review round 1 — the
+# one that says out loud that a told region matched nothing, because silently
+# nothing reads as Half having decided the main was not worth a line. Every
+# earlier line is byte-identical, so the corpus a reviewer read is still in
+# here whole; what needs review is the addition. The directory of crisis lines
+# is deliberately **not** pinned here: it is data, and build requirement 5 says
+# it must be refreshable without a release, which a digest would forbid. Its
+# own gate is ``reviewed``, which the shipped file sets to false.
+TEMPLATES = "967269e10bf585f93ad711669932c44c"
 PLANS = "bff98dbf54f79dde63156fd8aa128fec"
 ACTIONS = "82218c538a9a409b87c4a8b72e464f11"
 CONSTANTS = "7579d7e37990280768f4e627b2fda8ad"

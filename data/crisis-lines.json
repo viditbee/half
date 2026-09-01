@@ -1,0 +1,125 @@
+{
+  "version": "2026-09-01",
+  "reviewed": false,
+  "note": "reviewed is false and MUST stay false until a qualified reviewer has verified every entry against the operator's own source. While it is false Half names no line at all and 6a's generic wording stands — that is deliberate. These entries were written from memory: they are the right shape and their truth is unverified, and a helpline number that is right in shape and wrong in fact is the most dangerous thing in this repository. The crisis subsystem's clinical review (companion build requirement 6) covers this file, not only the code that reads it. Do not add regions from memory: that increases the surface without increasing the truth.",
+  "shape": "regions maps a region key the main themselves told Half to an ordered list of lines; order is the curator's judgement and is preserved. aliases maps what a person actually calls a place to one of those keys. reach is whatever the person actually does — a short code, a number, an instruction to text a word somewhere — because the shapes differ by country and a schema that modelled them would drop the ones it had not met. No value may contain a newline, a control character, ' - ' with spaces around an em dash, or ' . ' with spaces around a middle dot: those are the separators a rendered row is joined from. No region is privileged; Half has no default.",
+  "aliases": {
+    "united kingdom": "gb",
+    "uk": "gb",
+    "britain": "gb",
+    "great britain": "gb",
+    "england": "gb",
+    "scotland": "gb",
+    "wales": "gb",
+    "northern ireland": "gb",
+    "united states": "us",
+    "usa": "us",
+    "america": "us",
+    "the states": "us",
+    "india": "in",
+    "bharat": "in",
+    "ireland": "ie",
+    "eire": "ie",
+    "éire": "ie",
+    "australia": "au",
+    "new zealand": "nz",
+    "aotearoa": "nz",
+    "canada": "ca",
+    "germany": "de",
+    "deutschland": "de",
+    "france": "fr",
+    "netherlands": "nl",
+    "the netherlands": "nl",
+    "holland": "nl",
+    "nederland": "nl",
+    "spain": "es",
+    "españa": "es",
+    "italy": "it",
+    "italia": "it",
+    "brazil": "br",
+    "brasil": "br",
+    "south africa": "za",
+    "singapore": "sg",
+    "japan": "jp",
+    "nihon": "jp",
+    "mexico": "mx",
+    "méxico": "mx",
+    "kenya": "ke",
+    "argentina": "ar"
+  },
+  "regions": {
+    "ar": [
+      {"id": "ar-cas", "name": "Centro de Asistencia al Suicida", "reach": "135", "note": "Buenos Aires and greater Buenos Aires; from elsewhere (011) 5275-1135."},
+      {"id": "ar-salud-mental", "name": "Salud Mental Responde", "reach": "0800 999 0091", "note": "National, free."}
+    ],
+    "au": [
+      {"id": "au-lifeline", "name": "Lifeline", "reach": "13 11 14", "note": "24/7, phone and text."},
+      {"id": "au-beyond-blue", "name": "Beyond Blue", "reach": "1300 22 4636", "note": "24/7."}
+    ],
+    "br": [
+      {"id": "br-cvv", "name": "CVV (Centro de Valorização da Vida)", "reach": "188", "note": "24/7, free, phone and chat."}
+    ],
+    "ca": [
+      {"id": "ca-988", "name": "Suicide Crisis Helpline", "reach": "988", "note": "24/7, phone and text, English and French."},
+      {"id": "ca-kids-help", "name": "Kids Help Phone", "reach": "1-800-668-6868", "note": "24/7; text CONNECT to 686868."}
+    ],
+    "de": [
+      {"id": "de-telefonseelsorge", "name": "Telefonseelsorge", "reach": "0800 111 0 111", "note": "24/7, free, anonymous; second line 0800 111 0 222."}
+    ],
+    "es": [
+      {"id": "es-024", "name": "Línea de atención a la conducta suicida", "reach": "024", "note": "24/7, free."},
+      {"id": "es-esperanza", "name": "Teléfono de la Esperanza", "reach": "717 003 717", "note": "24/7."}
+    ],
+    "fr": [
+      {"id": "fr-3114", "name": "Numéro national de prévention du suicide", "reach": "3114", "note": "24/7, free."},
+      {"id": "fr-sos-amitie", "name": "SOS Amitié", "reach": "09 72 39 40 50", "note": "24/7."}
+    ],
+    "gb": [
+      {"id": "gb-samaritans", "name": "Samaritans", "reach": "116 123", "note": "24/7, free."},
+      {"id": "gb-shout", "name": "Shout", "reach": "text SHOUT to 85258", "note": "24/7, text only."}
+    ],
+    "ie": [
+      {"id": "ie-samaritans", "name": "Samaritans", "reach": "116 123", "note": "24/7, free."},
+      {"id": "ie-text-about-it", "name": "Text About It", "reach": "text HELLO to 50808", "note": "24/7, text only."}
+    ],
+    "in": [
+      {"id": "in-tele-manas", "name": "Tele-MANAS", "reach": "14416", "note": "24/7, free, English and 20 regional languages."},
+      {"id": "in-kiran", "name": "KIRAN", "reach": "1800-599-0019", "note": "24/7, free, 13 languages."},
+      {"id": "in-aasra", "name": "AASRA", "reach": "+91 9820466726", "note": "24/7."}
+    ],
+    "it": [
+      {"id": "it-telefono-amico", "name": "Telefono Amico Italia", "reach": "02 2327 2327", "note": "Daily; chat also available."},
+      {"id": "it-samaritans-onlus", "name": "Samaritans Onlus", "reach": "06 77208977", "note": "Daily, afternoon and evening."}
+    ],
+    "jp": [
+      {"id": "jp-yorisoi", "name": "よりそいホットライン (Yorisoi Hotline)", "reach": "0120-279-338", "note": "24/7, free; several languages."},
+      {"id": "jp-tell", "name": "TELL Lifeline", "reach": "03-5774-0992", "note": "English-language support; chat also available."}
+    ],
+    "ke": [
+      {"id": "ke-befrienders", "name": "Befrienders Kenya", "reach": "+254 722 178 177", "note": "Phone and email."},
+      {"id": "ke-red-cross", "name": "Kenya Red Cross counselling line", "reach": "1199", "note": "Toll-free counselling and psychosocial support."}
+    ],
+    "mx": [
+      {"id": "mx-linea-de-la-vida", "name": "Línea de la Vida", "reach": "800 911 2000", "note": "24/7, free."},
+      {"id": "mx-saptel", "name": "SAPTEL", "reach": "55 5259 8121", "note": "24/7."}
+    ],
+    "nl": [
+      {"id": "nl-113", "name": "113 Zelfmoordpreventie", "reach": "113", "note": "24/7; free on 0800 0113; chat at 113.nl."}
+    ],
+    "nz": [
+      {"id": "nz-1737", "name": "Need to talk?", "reach": "1737", "note": "24/7, free, call or text."},
+      {"id": "nz-lifeline", "name": "Lifeline Aotearoa", "reach": "0800 543 354", "note": "24/7; text HELP to 4357."}
+    ],
+    "sg": [
+      {"id": "sg-sos", "name": "Samaritans of Singapore", "reach": "1767", "note": "24/7; CareText messaging on 9151 1767."}
+    ],
+    "us": [
+      {"id": "us-988", "name": "988 Suicide and Crisis Lifeline", "reach": "988", "note": "24/7, call or text; Spanish and ASL available."},
+      {"id": "us-crisis-text", "name": "Crisis Text Line", "reach": "text HOME to 741741", "note": "24/7, text only."}
+    ],
+    "za": [
+      {"id": "za-suicide-crisis", "name": "Suicide Crisis Helpline", "reach": "0800 567 567", "note": "24/7."},
+      {"id": "za-sadag", "name": "SADAG", "reach": "0800 121 314", "note": "24/7; text 31393 for a call back."}
+    ]
+  }
+}

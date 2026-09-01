@@ -18,6 +18,15 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["half"]
 
+# The crisis-line directory ships inside the package as well as sitting at the
+# project root, so an installed Half has lines to offer out of the box.
+# ``half.crisis.directory.default_path`` walks up from its own module looking
+# for ``data/crisis-lines.json``, which finds the repository copy here and this
+# copy there — one search, both shapes. An operator replaces either file and
+# the next crisis turn uses it: data, refreshable without a release.
+[tool.hatch.build.targets.wheel.force-include]
+"data/crisis-lines.json" = "half/data/crisis-lines.json"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # --strict-markers so a misspelled or renamed marker is an error rather than a
@@ -33,4 +42,5 @@ markers = [
     "ad28: one license ceiling per actor, applied where licenses are resolved",
     "cap12: the crisis mode — the switch, the moment, and the never-list",
     "cap12_durable: crisis state that must survive eviction, restart and a full disk",
+    "cap12_handoff: the warm handoff — the confirmed list, the versioned directory, the draft",
 ]

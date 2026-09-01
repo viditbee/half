@@ -60,6 +60,27 @@ That is an operator action with a stated reason that outlives whoever typed it.
 It is not a mode-exit policy and must never be automated — see
 ``ActorRegistry.reverse_crisis``.
 
+**The opener first, then the door.** Story 6b adds the warm handoff: two or
+three ways to reach a human, offered *after* the reply and never instead of it.
+Leading with a list of numbers answers a disclosure with logistics, which is
+the rushing-to-fix the companion says reads as minimising. The ordering is
+structural — ``respond.reply_for`` is called first and its text is the prefix
+of what returns — and the handoff is assembled by a desk that never raises, so
+a missing directory or an unreadable log costs a tap and never the reply.
+
+When there is no door to offer — nobody confirmed, nowhere told, a file that
+would not parse — nothing is appended and 6a's reply is returned byte for byte.
+Its wording already points at both a person the main trusts and a crisis line
+where they live, so the fallback is the honest generic sentence rather than
+silence or a guessed continent.
+
+The door is offered only on a turn that *enters* the mode. Not on the asking
+turn — three paragraphs and a question is the whole of the cheap action, and
+handing somebody a list of crisis lines because they mentioned a film is the
+sensationalising the templates module refuses on the same grounds. And not on
+the third-party path, which surfaces a resource the main can share and stops:
+no contact, no draft aimed at anyone, unchanged from 6a.
+
 **Nothing may cost the main their reply.** Every durable step is inside one
 broad ``except``: a corrupt log, a full disk, a refactored signature, anything.
 The suspension is best-effort and the reply is not. An earlier version let a
@@ -82,7 +103,9 @@ from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Protocol, runtime_checkable
 
 from half.channel.port import Inbound
+from half.crisis import handoff
 from half.crisis import respond
+from half.crisis.handoff import Desk
 from half.crisis.signals import (
     Action,
     Assessment,
@@ -147,10 +170,19 @@ class CrisisGate:
     """Every inbound message crosses this before anything else sees it."""
 
     def __init__(
-        self, pipeline: Pipeline, store: CrisisStore | None = None
+        self,
+        pipeline: Pipeline,
+        store: CrisisStore | None = None,
+        *,
+        desk: Desk | None = None,
     ) -> None:
         self._pipeline = pipeline
         self._store: CrisisStore = store if store is not None else VolatileCrisisStore()
+        # The handoff. A desk with nothing wired offers nothing, which is the
+        # same outcome as a main who has confirmed nobody — so a gate built
+        # without one behaves exactly as it did before story 6b rather than
+        # failing on the path where failing is the catastrophe.
+        self._desk: Desk = desk if desk is not None else Desk()
         # Mains this process suspended, kept beside the durable record rather
         # than instead of it. If the append failed — a full disk, a corrupt log
         # — the main is still in the mode for as long as this worker lives, and
@@ -214,12 +246,18 @@ class CrisisGate:
     async def _respond_to_crisis(
         self, inbound: Inbound, *, decision: Assessment | None = None
     ) -> str:
-        """The reply, assembled from templates (CAP-12).
+        """The reply, assembled from templates, then the door (CAP-12).
 
         The tier chooses a plan; the plan is a tuple of template lines. The
         main's text reaches nothing here — ``respond.reply_for`` takes the
         assessment — so no phrasing of a method request can produce method
         content, and no reply is ever empty.
+
+        The handoff is appended after that text and never woven into it, which
+        is what makes *"opener first, handoff after"* a property of this
+        function rather than a convention about the templates. An offer with
+        fewer than two doors appends nothing at all, so a main with nobody
+        confirmed and nowhere told receives exactly 6a's reply.
         """
         found = decision if decision is not None else self._decide(inbound)
         if not found.enters:
@@ -227,7 +265,45 @@ class CrisisGate:
             # mode being open rather than raising: an exception here would cost
             # the main their reply.
             found = Assessment(Tier.HELD, Action.ENTER, scored=False)
-        return respond.reply_for(found)
+        opener = respond.reply_for(found)
+        return opener + self._door(inbound.main_id)
+
+    def _door(self, main_id: str) -> str:
+        """The handoff, as text to append to the opener, or nothing.
+
+        Never raises. ``Desk.offer`` swallows its own failures, and this
+        swallows the rendering's — broad for the reason ``_suspend`` is broad:
+        on the one path where going quiet is a documented catastrophic failure,
+        the set of exceptions worth losing a reply over is empty. A door is a
+        thing to add to a reply, never a thing that can subtract one.
+
+        The closed-set check runs here, on the production path, for the reason
+        ``respond.reply_for`` runs its own: a rendering that stopped being made
+        of reviewed lines and reconstructible rows must break a real reply
+        rather than only a test's. A failed check drops the door and keeps the
+        opener, because the generic line is always a safe answer and an
+        unreviewed sentence never is.
+        """
+        try:
+            offer = self._desk.offer(main_id)
+            if not offer.speaks:
+                return ""
+            rendered = handoff.render(offer)
+            if not handoff.is_offer_templated(rendered, offer):
+                logger.error(
+                    "the handoff rendering for main=%s was not made of "
+                    "reviewed lines and its own options; offering the generic "
+                    "line instead", main_id,
+                )
+                return ""
+            return respond.SEPARATOR + rendered
+        except Exception:
+            # No content, no name, no message text (AD-22). The opener stands.
+            logger.exception(
+                "the handoff could not be rendered for main=%s; the generic "
+                "line stands", main_id
+            )
+            return ""
 
     # -- deciding -------------------------------------------------------------
 

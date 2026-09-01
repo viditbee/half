@@ -102,6 +102,16 @@ def tier_change_log(tmp_path):
                  rung="behave", because="crisis mode entered (CAP-12)")
         s.record(Op.CRISIS, "cr_tiered_2", "2026-08-05T09:30Z",
                  state="reversed", because="false positive, confirmed")
+        # The phone book (story 6b). Here for the reason the crisis records
+        # are: the replay test is what proves the new fields fold, round-trip
+        # through SQLite and reproduce byte-identically. A contact whose
+        # confirmation did not survive a rebuild is a contact Half stops
+        # offering after a restart, which is a silent regression on the one
+        # path where silence is the failure.
+        seed_belief(s, "b_contact", "2026-08-06T10:00Z", rung=License.ASSERT,
+                    support=["s_9"], contact="आशा", handle="asha")
+        seed_belief(s, "b_place", "2026-08-06T10:01Z", rung=License.ASSERT,
+                    support=["s_9"], region="in")
         yield s
 
 

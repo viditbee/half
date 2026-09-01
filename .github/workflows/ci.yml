@@ -148,7 +148,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap12 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-12 cases collected: $collected"
-          if [ "$collected" -lt 390 ]; then
+          if [ "$collected" -lt 700 ]; then
             echo "::error::the CAP-12 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -173,11 +173,44 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap12_durable -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-12 durability cases collected: $collected"
-          if [ "$collected" -lt 26 ]; then
+          if [ "$collected" -lt 32 ]; then
             echo "::error::the durability gate collected $collected cases; the mode may no longer be durable"
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap12_durable
+
+      - name: 'CAP-12: the warm handoff — confirmed, offered, drafted, never sent'
+        # A third gate over a third subset, for the reason the durability gate
+        # exists: a floor on the superset cannot stop the handoff being
+        # hollowed out. The CAP-12 count is large enough that every one of
+        # these cases could be deleted and that step would still pass
+        # comfortably — and the half of the story that would go with them is
+        # the half where a mistake reaches a third party.
+        #
+        # These are the cases for the confirmed list (an inferred candidate is
+        # never offered, and neither is a quarantined one — offerability is the
+        # ladder's whole answer), the two-or-three rule, the clinician door,
+        # the region told and never inferred, the versioned directory and every
+        # way it can degrade, the templated draft, the pinned row format, the
+        # guard that splits the way the renderer joins, and the structural
+        # assertion — globbed over the package, so a module written next year
+        # is covered — that no crisis module has a send to a third party to
+        # reach at all.
+        #
+        # **This gate is not clinical review**, and here that covers the data
+        # as well as the code: build requirement 6 governs every entry in
+        # `data/crisis-lines.json`, and a number that is right in shape and
+        # wrong in fact passes every case below.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap12_handoff -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-12 handoff cases collected: $collected"
+          if [ "$collected" -lt 290 ]; then
+            echo "::error::the handoff gate collected $collected cases; it has stopped asserting"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap12_handoff
 
       - name: 'AD-5 and AD-30: retrieval degrades, and never writes'
         # The reranker fallback, the salience-is-derived assertions, the
