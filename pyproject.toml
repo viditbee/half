@@ -58,6 +58,7 @@ markers = [
     "cap12_aftercare: coming back — the thirty-day floor, the steps, the main's answer, the held plan",
     "cap12_aftercare_property: the single-case structural rules aftercare and the safety plan rest on",
     "cap12_classifier: the second opinion — the label set, the two costs, uncertain against unavailable, and what leaves the machine",
+    "cap12_classifier_property: the structural rules the second opinion rests on — the import-time refusal, the narrow holder, the sealed surface, the log scan",
     "ad9: the due-time queue — per-main due times, jitter, the file lock, bounded isolated work, and a missed window that sends nothing",
     "ad9_guarantee: the promises inside the queue — no catch-up on any path, the lock, the bound, isolation, the durable write that stops a pass, and the window across every zone",
     "one_clock: exactly one module reads a clock, everything below it takes an injected now, and no signal is consulted to guess a zone",

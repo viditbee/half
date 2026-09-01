@@ -241,9 +241,11 @@ def load(path: Path | str | None = None) -> Directory:
         # otherwise cost the whole file: the BOM lands in front of the opening
         # brace and JSON refuses it. Plain UTF-8 decodes identically.
         raw = blob.decode("utf-8-sig")
-    except Exception:
-        logger.exception("crisis directory at %s could not be read; the "
-                         "generic line stands", target)
+    except Exception as exc:
+        # The class and the path, never the exception's own text: a parse
+        # failure quotes the document it failed on (story 6d, AD-22).
+        logger.warning("crisis directory at %s could not be read (%s); the "
+                       "generic line stands", target, type(exc).__name__)
         return EMPTY
     return parse(raw, origin=str(target))
 

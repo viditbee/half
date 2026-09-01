@@ -342,12 +342,14 @@ class Holder:
         """
         try:
             return await self._receive(main_id, text, t=t)
-        except Exception:
+        except Exception as exc:
             # Content-free and subject-free (AD-22): nothing here names the
-            # main and nothing repeats a line of what they sent.
-            logger.exception(
-                "a safety plan could not be taken; saying so rather than "
-                "claiming to hold one"
+            # main and nothing repeats a line of what they sent — including
+            # the exception's own text, which on this path would be a line of
+            # the document the main just sent (story 6d, review round 1).
+            logger.warning(
+                "a safety plan could not be taken (%s); saying so rather than "
+                "claiming to hold one", type(exc).__name__
             )
             return templates.PLAN_UNREADABLE.text
 
@@ -376,13 +378,14 @@ class Holder:
         """
         try:
             return self._produce(main_id)
-        except Exception:
+        except Exception as exc:
             # Content-free and subject-free (AD-22): nothing here names the
             # main, so an ordinary log cannot be read backwards into who asked
-            # for a safety plan.
-            logger.exception(
-                "a held safety plan could not be produced; saying so rather "
-                "than showing part of one"
+            # for a safety plan — and the class only, never the exception's
+            # own text, which here could quote the plan (story 6d).
+            logger.warning(
+                "a held safety plan could not be produced (%s); saying so "
+                "rather than showing part of one", type(exc).__name__
             )
             return templates.PLAN_UNREADABLE.text
 

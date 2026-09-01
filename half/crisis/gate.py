@@ -376,19 +376,34 @@ class CrisisGate:
             return decision
         if inbound.main_id in self._asked:
             return decision
+        if is_plan_intake(inbound.text) or is_plan_request(inbound.text):
+            # A turn already carrying what Half asked them for. A safety plan
+            # is dictated by the main and names a clinician, the people they
+            # would ring, their numbers, and — step six — the means they have
+            # agreed to put out of reach. Classifying it would send all of that
+            # out of the machine to decide something it cannot change: a plan
+            # turn produces the held document either way, and the phrase table
+            # already read it. The egress test guards a contact in the *store*;
+            # this is the route that would put one in a payload.
+            return decision
         try:
             verdict = await self._second.consult(
                 inbound.text, main_id=inbound.main_id
             )
-        except Exception:
+        except Exception as exc:
             # ``consult`` answers with a verdict rather than raising, so this
             # is unreachable through it — and broad for the reason ``_suspend``
             # is broad: on the one path where going quiet is a documented
             # catastrophic failure, the set of exceptions worth losing a reply
-            # over is empty. No content, no message text (AD-22).
-            logger.exception(
-                "the second opinion could not be taken for main=%s; the phrase "
-                "table's answer stands", inbound.main_id
+            # over is empty.
+            #
+            # The class only, never the exception's own text: a provider quotes
+            # the request it rejected, so a traceback here is the main's own
+            # message in a log line (AD-22, story 6d review round 1).
+            logger.warning(
+                "the second opinion could not be taken for main=%s (%s); the "
+                "phrase table's answer stands",
+                inbound.main_id, type(exc).__name__,
             )
             return decision
         if not verdict.asks:
@@ -413,11 +428,13 @@ class CrisisGate:
                 return await self._holder.receive(
                     inbound.main_id, inbound.text, t=inbound.t
                 )
-        except Exception:
-            # No content, no plan text, no message text (AD-22).
-            logger.exception(
-                "a safety plan could not be taken for main=%s; the rest of the "
-                "reply stands", inbound.main_id
+        except Exception as exc:
+            # No content, no plan text, no message text — and the class of the
+            # fault rather than its own text, which on this path would quote a
+            # line of the document the main just sent (AD-22, story 6d).
+            logger.warning(
+                "a safety plan could not be taken for main=%s (%s); the rest "
+                "of the reply stands", inbound.main_id, type(exc).__name__,
             )
             return ""
         return self._wants_plan(inbound)
@@ -439,11 +456,12 @@ class CrisisGate:
             if not is_plan_request(inbound.text):
                 return ""
             return self._holder.produce(inbound.main_id)
-        except Exception:
-            # No content, no plan text, no message text (AD-22).
-            logger.exception(
-                "a safety plan could not be produced for main=%s; the rest of "
-                "the reply stands", inbound.main_id
+        except Exception as exc:
+            # No content, no plan text, no message text, and the class of the
+            # fault rather than its own text (AD-22, story 6d).
+            logger.warning(
+                "a safety plan could not be produced for main=%s (%s); the "
+                "rest of the reply stands", inbound.main_id, type(exc).__name__,
             )
             return ""
 
@@ -550,11 +568,13 @@ class CrisisGate:
                 )
                 return ""
             return respond.SEPARATOR + rendered
-        except Exception:
-            # No content, no name, no message text (AD-22). The opener stands.
-            logger.exception(
-                "the handoff could not be rendered for main=%s; the generic "
-                "line stands", main_id
+        except Exception as exc:
+            # No content, no name, no message text, and the class of the fault
+            # rather than its own text — which on this path could carry a
+            # contact's name (AD-22, story 6d). The opener stands.
+            logger.warning(
+                "the handoff could not be rendered for main=%s (%s); the "
+                "generic line stands", main_id, type(exc).__name__,
             )
             return ""
 
@@ -598,11 +618,12 @@ class CrisisGate:
             return True
         try:
             return self._store.crisis_open(main_id)
-        except Exception:
-            # No content, no message text (AD-22). The main still gets a reply.
-            logger.exception(
-                "could not read crisis state for main=%s; treating the mode as "
-                "closed for this turn", main_id
+        except Exception as exc:
+            # No content, no message text, and the class of the fault rather
+            # than its own text (AD-22, story 6d). The main still gets a reply.
+            logger.warning(
+                "could not read crisis state for main=%s (%s); treating the "
+                "mode as closed for this turn", main_id, type(exc).__name__,
             )
             return False
 
@@ -666,12 +687,14 @@ class CrisisGate:
                 # mode still appends one record rather than one per turn.
                 fresh=renewed is not None,
             )
-        except Exception:
+        except Exception as exc:
             # Loud, because a suspension that did not persist is a main who
-            # comes back uncapped and out of the mode. Content-free (AD-22).
-            logger.exception(
-                "crisis suspension did not persist for main=%s; held in memory "
-                "only for the life of this process", inbound.main_id
+            # comes back uncapped and out of the mode. Content-free, and the
+            # class of the fault rather than its own text (AD-22, story 6d).
+            logger.error(
+                "crisis suspension did not persist for main=%s (%s); held in "
+                "memory only for the life of this process",
+                inbound.main_id, type(exc).__name__,
             )
 
     # -- introspection --------------------------------------------------------

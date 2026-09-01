@@ -498,12 +498,71 @@ TOPIC_SOURCE: Final[tuple[str, ...]] = (
 
 # -- answers to Half's own question ------------------------------------------
 
+#: How a main says *yes* to Half's own direct question — the one table on the
+#: entering path that a main reaches by answering rather than by disclosing.
+#:
+#: **Widened past English in story 6d, because recall and confirmation have to
+#: move together.** The classifier asks in every script; this decides whether
+#: the answer was a yes. While it held nine English spellings and nothing else,
+#: a main who was asked in Hindi, answered ``हाँ``, was not understood, had the
+#: question abandoned, and was asked again the next turn — for ever. They never
+#: reached ``ENTER``, so the warm handoff, the crisis-line door, the ceiling
+#: drop and aftercare never arrived, for exactly the population the classifier
+#: exists to reach. Half noticed their distress, asked about it repeatedly, and
+#: did nothing.
+#:
+#: **Why this is a table when detection is a model.** The ways a person says
+#: *I want to die* are not enumerable — that is the whole argument for a
+#: classifier. The ways a person says *yes* very nearly are: it is one word in
+#: most languages, and it is the answer to a question Half itself just asked,
+#: so the space of plausible replies is tiny. And this table is on the
+#: **entering** path, which must be decided offline with the provider down —
+#: the safe word, an explicit disclosure and a confirmation are the three ways
+#: into the mode and none of them may wait on a network. Handing confirmation
+#: to the model would put a durable thirty-day cap behind an outage and behind
+#: a mislabel; it is an Ask-First change, not an implementation detail.
+#:
+#: **The Latin-script entries are the ones chosen carefully.** A non-Latin
+#: word cannot collide with an English sentence, so those are added freely; a
+#: Latin one can, and this table's failure costs a durable cap rather than a
+#: question. So ``da``, ``ano``, ``igen`` and ``ewe`` are deliberately absent —
+#: each is a yes in one language and an ordinary word in another or in English
+#: — while ``sim`` is present and is the closest call in the set, because
+#: Portuguese is too large to drop over a SIM card.
+#:
+#: **This is a first widening and not a finished one.** Coverage was chosen by
+#: speaker count, not by a native speaker of each language; extending it is a
+#: clinical-review item with the label set and the templates, and the hedges
+#: below are deliberately thinner than the English ones.
 AFFIRMATIVE_SOURCE: Final[tuple[str, ...]] = (
+    # English, as story 6a left it. Every entry below is an addition.
     "yes", "yeah", "yeh", "yep", "yup", "ya", "yea", "ye", "aye",
     "i am", "i do", "i have", "i was", "sometimes", "often", "a lot",
     "kind of", "sort of", "a bit", "a little", "maybe", "i think so",
     "i guess", "i guess so", "mhm", "uh huh", "mm", "correct", "true",
     "yes i am", "yes i do", "sadly yes", "unfortunately yes", "pretty much",
+    # Romance
+    "si", "claro", "por supuesto", "a veces", "supongo", "un poco",
+    "sim", "certo", "as vezes", "um pouco",
+    "oui", "ouais", "parfois", "un peu",
+    # Germanic and Nordic
+    "ja", "manchmal", "ein bisschen",
+    # Slavic and Baltic
+    "да", "ага", "иногда", "tak",
+    # Turkish, Greek, Hebrew
+    "evet", "tabii", "bazen", "ναι", "μερικες φορες", "כן", "לפעמים",
+    # Arabic and Persian
+    "نعم", "ايوه", "أحيانا", "بله", "اره", "گاهی",
+    # South Asia
+    "हाँ", "हां", "जी हाँ", "haan", "कभी कभी", "थोड़ा",
+    "ਹਾਂ", "હા", "হ্যাঁ", "అవును", "ஆம்", "ஆமா", "ಹೌದು", "होय", "അതെ",
+    # East and South-East Asia
+    "はい", "うん", "ええ", "たまに",
+    "네", "예", "응", "가끔",
+    "是", "是的", "对", "嗯", "有时",
+    "iya", "vâng", "ใช่", "ครับ",
+    # Africa and the Philippines
+    "ndiyo", "ndio", "oo", "opo",
 )
 
 NEGATIVE_SOURCE: Final[tuple[str, ...]] = (

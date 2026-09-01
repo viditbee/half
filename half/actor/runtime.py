@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from half.actor.registry import Actor, ActorRegistry
@@ -62,6 +63,105 @@ logger = logging.getLogger(__name__)
 
 #: Backoff between retries of a retryable send, in seconds.
 RETRY_DELAYS = (1.0, 4.0, 15.0)
+
+#: Turns one main may have waiting before the inbound loop waits with them.
+#: Bounded so a flood costs that main their own backlog rather than the
+#: process's memory, and generous enough that an ordinary conversation never
+#: reaches it — a main would have to send thirty-two messages faster than Half
+#: answers one.
+QUEUE_DEPTH = 32
+
+
+class _Turns:
+    """One main's turns, in order, one at a time.
+
+    An inbox and a worker — the actor shape (AD-8) applied to the *inbound*
+    path, where until story 6d there was one queue for everybody. It exists so
+    that a main whose turn is waiting on a provider is the only main waiting.
+
+    Ordering and serialization per main are exactly what a single loop gave:
+    the queue is FIFO and the worker awaits one turn before taking the next, so
+    two messages from one person can never overtake each other or reach that
+    main's store at once.
+    """
+
+    __slots__ = ("_queue", "_task")
+
+    def __init__(self, handle: "Callable[[Inbound], Awaitable[None]]") -> None:
+        self._queue: asyncio.Queue[Inbound | None] = asyncio.Queue(QUEUE_DEPTH)
+        self._task = asyncio.create_task(self._work(handle))
+
+    @property
+    def finished(self) -> bool:
+        """Whether this worker has stopped — cancelled, or drained and closed.
+
+        Read before a turn is handed over, so a worker that was cancelled
+        mid-call costs that main one turn and not their whole conversation.
+        """
+        return self._task.done()
+
+    async def accept(self, inbound: Inbound) -> None:
+        await self._queue.put(inbound)
+
+    async def _work(self, handle) -> None:
+        while True:
+            inbound = await self._queue.get()
+            if inbound is None:
+                return  # everything before the sentinel has been handled
+            try:
+                await handle(inbound)
+            except asyncio.CancelledError:
+                # **Whose cancellation is this?** ``cancelling()`` counts the
+                # cancel requests made *against this task*, so a shutdown — the
+                # drain below, or the task group above — is non-zero and is
+                # re-raised, while a ``CancelledError`` that came out of the
+                # turn itself is zero and costs one turn.
+                #
+                # Swallowing both would break shutdown; swallowing neither cost
+                # this main every message still queued behind the one that was
+                # cancelled, which is the whole backlog of the person Half was
+                # in the middle of a conversation with.
+                task = asyncio.current_task()
+                if task is None or task.cancelling():
+                    raise
+                logger.error(
+                    "a turn was cancelled for main=%s; continuing with the "
+                    "rest of their queue", inbound.main_id,
+                )
+
+    def close(self) -> None:
+        """Ask the worker to stop once its queue is empty."""
+        if not self._task.done():
+            try:
+                self._queue.put_nowait(None)
+            except asyncio.QueueFull:
+                # A full queue at shutdown: the backlog is drained by the
+                # cancel below rather than by a sentinel nobody can enqueue.
+                self._task.cancel()
+
+    async def wait(self) -> None:
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            if self._task.cancelled():
+                return  # this worker was cancelled, not us
+            raise
+        except Exception:  # noqa: BLE001 - a worker fault is not a shutdown fault
+            logger.error("a turn worker ended unexpectedly")
+
+
+async def _drain(workers: "dict[str, _Turns]") -> None:
+    """Let every worker finish what it has, then let go.
+
+    Called on the way out of ``run`` — including the ordinary way out, when the
+    channel's own generator ends, which is how every test and every self-host
+    restart gets here. Draining rather than cancelling is what makes a queued
+    turn a turn that still happens.
+    """
+    for worker in workers.values():
+        worker.close()
+    for worker in workers.values():
+        await worker.wait()
 
 
 @dataclass(slots=True)
@@ -118,21 +218,66 @@ class Runtime:
     async def run(self) -> None:
         """Consume inbound messages until cancelled.
 
-        Nothing a single message does can end this loop.
+        Nothing a single message does can end this loop, and **nothing one main
+        does can hold another main up.**
+
+        *Why this stopped being one sequential loop* (story 6d, review round 1).
+        The crisis gate now waits on a provider, and a single `await` per
+        message made that wait everyone's: measured, a hanging classifier
+        answered a second main's **safe word** ten seconds late, behind two
+        turns that were not theirs. Story 6a's guarantee is that the safe word
+        is decided offline with the provider down — which was true only for the
+        message at the head of the queue. A degraded provider throttled the
+        whole deployment to one message per bound, for every main, with nothing
+        saying so.
+
+        So a turn is dispatched to its own main's worker and the loop goes back
+        to polling. Per main it is exactly what it was: one worker, a FIFO
+        queue, one turn at a time, in arrival order, through the same actor
+        mutex (AD-1). Across mains they no longer touch.
+
+        *The cost, stated rather than discovered.* The transport commits its
+        offset when this loop asks for the next update, so at-least-once now
+        means *accepted for its main* rather than *finished*. A hard crash can
+        lose what is queued — at most ``QUEUE_DEPTH`` turns per main, because
+        the queue is bounded and a full one makes this loop wait, which is
+        backpressure on that main and not on the others. The alternative was
+        keeping a guarantee about crashes at the price of a guarantee about the
+        safe word, and the safe word is the one somebody's life is on.
+
+        *A worker that dies does not take the loop with it.* Each turn is
+        isolated; a worker cancelled mid-call ends that worker and nothing else,
+        and the next message from that main starts a fresh one.
         """
-        async for inbound in self.channel.receive():
-            try:
-                await self._handle(inbound)
-            except asyncio.CancelledError:
-                raise  # shutdown is not a message failure
-            except Exception:
-                # Content is never logged — it is the most intimate data the
-                # product holds (AD-22).
-                logger.exception(
-                    "turn failed for main=%s message=%s; continuing",
-                    inbound.main_id,
-                    inbound.external_id,
-                )
+        workers: dict[str, _Turns] = {}
+        try:
+            async for inbound in self.channel.receive():
+                worker = workers.get(inbound.main_id)
+                if worker is None or worker.finished:
+                    worker = _Turns(self._isolated)
+                    workers[inbound.main_id] = worker
+                # Bounded: a main who sends faster than Half can answer waits
+                # on their own backlog rather than growing memory.
+                await worker.accept(inbound)
+        finally:
+            await _drain(workers)
+
+    async def _isolated(self, inbound: Inbound) -> None:
+        """One turn, whatever it does. Never raises to the worker loop."""
+        try:
+            await self._handle(inbound)
+        except asyncio.CancelledError:
+            raise  # shutdown is not a message failure
+        except Exception as exc:
+            # Content is never logged — it is the most intimate data the
+            # product holds — and the class of the fault rather than its own
+            # text, which can quote a request a provider rejected (AD-22).
+            logger.error(
+                "turn failed for main=%s message=%s (%s); continuing",
+                inbound.main_id,
+                inbound.external_id,
+                type(exc).__name__,
+            )
 
     async def _handle(self, inbound: Inbound) -> None:
         reply = await self._gate.handle(inbound)

@@ -448,12 +448,15 @@ class Desk:
         """
         try:
             return self._offer(main_id)
-        except Exception:
+        except Exception as exc:
             # Content-free *and* subject-free — see ``_record``. Nothing here
             # names the main, so an ordinary log cannot be read backwards into
-            # who was in crisis. The main still gets the opener, whole.
-            logger.exception(
-                "a handoff could not be assembled; the generic line stands"
+            # who was in crisis, and the class crosses rather than the
+            # exception's own text, which on this path could carry a contact's
+            # name (story 6d). The main still gets the opener, whole.
+            logger.warning(
+                "a handoff could not be assembled (%s); the generic line "
+                "stands", type(exc).__name__
             )
             return NONE_OFFERED
 

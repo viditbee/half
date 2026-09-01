@@ -147,16 +147,16 @@ jobs:
         # and the label set and the instructions it is given are on the
         # reviewer's list beside the templates.
         #
-        # The floor moved from 950 to 1150 for story 6d, which added just over
-        # two hundred cases. It is deliberately above the count that would
-        # remain if every classifier case were deleted, so hollowing that half
-        # out fails twice — here, and at its own gate below.
+        # The floor moved from 950 to 1240 across story 6d and its first
+        # review round. It is deliberately above the count that would remain if
+        # every classifier case were deleted, so hollowing that half out fails
+        # twice — here, and at its own gates below.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap12 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-12 cases collected: $collected"
-          if [ "$collected" -lt 1150 ]; then
+          if [ "$collected" -lt 1240 ]; then
             echo "::error::the CAP-12 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -310,12 +310,15 @@ jobs:
         # that the escalating red-team suite is green with the classifier
         # present *and* absent.
         #
-        # **The floor is above the count without the structural cases.** That
-        # is story 6c's lesson applied on the day rather than a story later:
-        # the guarantee block here — the import-time refusals, the narrow
-        # holder, the module that cannot name the mode, the log scan — is
-        # around twenty cases out of two hundred, so a floor set at the
-        # behavioural count would let every one of them be deleted green.
+        # **The structural cases have their own marker and their own gate**,
+        # below. Review round 1 found that this floor's entire margin was the
+        # twelve mutation-guard cases: deleting them, plus the ENTER/SURFACE
+        # branch of ``_check_labels``, left this gate at exactly its floor and
+        # ``cap12`` above its own — both green, with nothing left to refuse a
+        # future label mapped to entering the mode. That is ``cap12_aftercare``
+        # 's finding, one story on, so it gets the same fix: a subset marker
+        # with a floor of its own, and this floor set above the count without
+        # them.
         #
         # **This gate is not clinical review**, and here that covers the model
         # as well as the code: the label set, what each label permits, and the
@@ -327,11 +330,38 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap12_classifier -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-12 classifier cases collected: $collected"
-          if [ "$collected" -lt 190 ]; then
+          if [ "$collected" -lt 270 ]; then
             echo "::error::the classifier gate collected $collected cases; the second opinion is unguarded"
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap12_classifier
+
+      - name: 'CAP-12: the structural rules the second opinion rests on'
+        # The guarantee cases, gated apart from the behavioural ones they sit
+        # beside, for the reason ``cap12_aftercare_property`` exists: a floor on
+        # the suite they belong to cannot protect them, and review round 1
+        # showed exactly that — the classifier floor's whole margin *was* these
+        # cases, so they could be deleted together with the import-time check
+        # that stops a model entering the mode, with every gate green.
+        #
+        # Each is a single case asserting something no amount of behaviour can
+        # show: that a label mapped to ENTER or SURFACE is a *load* failure and
+        # stays one under ``python -O``; that the holder is refused unless its
+        # only public method is ``classify`` and it is not itself callable;
+        # that the object holding it is sealed, so a wider one cannot be
+        # assigned past the check; that a fallback that asks cannot be
+        # constructed; that no module under ``half/crisis`` logs a traceback;
+        # and that no log argument on this path can carry content.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap12_classifier_property -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-12 classifier property cases collected: $collected"
+          if [ "$collected" -lt 28 ]; then
+            echo "::error::the property gate collected $collected cases; the second opinion's structural rules are unguarded"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap12_classifier_property
 
       - name: 'CAP-6: the open-loop ledger — the vocabulary, the timescale, the silence'
         # The ledger is the ranking function for everything Half does, and

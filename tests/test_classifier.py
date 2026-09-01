@@ -47,9 +47,14 @@ from half.crisis import classifier as clf
 from half.crisis import respond, templates
 from half.crisis.classifier import (
     ACTION_FOR_LABEL,
+    ALARM_AFTER,
+    ALARM_RATE,
+    ALLOWED_METHODS,
     ANOTHER_AT_RISK,
     BOUND_SECONDS,
-    FORBIDDEN_METHODS,
+    BREAK_AFTER,
+    BREAK_FOR,
+    CLASSIFY_TIER,
     INSTRUCTIONS,
     LABELS,
     MAIN_AT_RISK,
@@ -59,6 +64,7 @@ from half.crisis.classifier import (
     UNSURE,
     SecondOpinion,
     Tally,
+    Verdict,
     prompt_for,
 )
 from half.crisis.gate import CrisisGate
@@ -79,6 +85,8 @@ from half.model.port import (
 )
 from half.model.tier import DEFAULT_MODELS, Tier as ModelTier
 from half.store.store import Store
+from half.__main__ import build
+from half.config import MAINS_ENV, ROOT_ENV, load
 from tests.conftest import FakeTransport, msg, seed_belief
 from tests.test_crisis import MEANS_WORDS, Pipeline, inbound, words_of
 
@@ -86,6 +94,25 @@ pytestmark = [pytest.mark.cap12, pytest.mark.cap12_classifier]
 
 ROOT = Path(__file__).resolve().parents[1]
 MAIN = "vidit"
+#: Epoch seconds the fake transport stamps a turn with.
+AT = 1_788_256_800
+
+
+class TimedTransport(FakeTransport):
+    """``FakeTransport``, plus when each reply actually reached the wire.
+
+    The concurrency row cannot be asserted any other way: *not delayed* is a
+    statement about time, and the finding it exists for was a measurement.
+    """
+
+    def __init__(self, updates=None):
+        super().__init__(updates)
+        self.timed: list[tuple[str, str, float]] = []
+
+    async def send_message(self, chat_id: str, text: str) -> str:
+        result = await super().send_message(chat_id, text)
+        self.timed.append((chat_id, text, time.monotonic()))
+        return result
 
 #: Messages the phrase table returns nothing at all for. **Checked, not
 #: assumed** — ``test_the_gap_this_story_exists_for_is_real`` asserts the table
@@ -120,19 +147,23 @@ class Holder:
     """
 
     def __init__(self, answer: object = None, *, sleep: float = 0.0) -> None:
-        self.answer = answer
-        self.sleep = sleep
+        # Private, because ``SecondOpinion`` now refuses a holder with any
+        # public callable but ``classify`` — and an ``answer`` that is a lambda
+        # is a public callable. The double is held to the same shape as the
+        # real thing, which is the point of the check.
+        self._answer = answer
+        self._sleep = sleep
         self.seen: list[Classify] = []
 
     async def classify(self, work: Classify) -> Classified:
         self.seen.append(work)
-        if self.sleep:
-            await asyncio.sleep(self.sleep)
-        if isinstance(self.answer, BaseException):
-            raise self.answer
-        if callable(self.answer):
-            return self.answer(work)
-        return self.answer
+        if self._sleep:
+            await asyncio.sleep(self._sleep)
+        if isinstance(self._answer, BaseException):
+            raise self._answer
+        if callable(self._answer):
+            return self._answer(work)
+        return self._answer
 
 
 class Exploding:
@@ -843,6 +874,7 @@ LOG_METHODS = frozenset({
 ALLOWED_LOG_NAMES = frozenset({
     "kind", "because", "value", "main_id",
     "consulted", "answered", "fell_back", "asked", "bound_exceeded", "raised",
+    "unreadable", "skipped",
 })
 CLOSED_ENUMS = frozenset({"Kind", "Reason", "Action"})
 
@@ -855,8 +887,27 @@ def _content_free(argument: ast.expr) -> bool:
     if isinstance(argument, ast.Call) and isinstance(argument.func, ast.Name):
         return argument.func.id == "len"
     if isinstance(argument, ast.Name):
-        return argument.id in ALLOWED_LOG_NAMES
+        if argument.id in ALLOWED_LOG_NAMES:
+            return True
+        # A module constant that really is a number. Resolved against the
+        # module rather than listed here, so adding a name to the source
+        # cannot quietly add it to the allowlist — a constant holding a string
+        # is refused exactly like a local would be.
+        value = getattr(clf, argument.id, None)
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
     if isinstance(argument, ast.Attribute):
+        # ``type(exc).__name__`` — the class of a fault, and the *only* part of
+        # an exception that may cross. This exact expression rather than any
+        # ``__name__``: the whole finding was that a provider's error text
+        # quotes the request it rejected, so the message is content and the
+        # class is not.
+        if (
+            argument.attr == "__name__"
+            and isinstance(argument.value, ast.Call)
+            and isinstance(argument.value.func, ast.Name)
+            and argument.value.func.id == "type"
+        ):
+            return True
         root = argument
         while isinstance(root, ast.Attribute):
             root = root.value
@@ -866,6 +917,7 @@ def _content_free(argument: ast.expr) -> bool:
     return False
 
 
+@pytest.mark.cap12_classifier_property
 def test_no_log_call_on_this_path_can_carry_content():
     """Matrix: logs. *No message text, no completion, no label rationale.*
 
@@ -889,6 +941,7 @@ def test_no_log_call_on_this_path_can_carry_content():
                 )
 
 
+@pytest.mark.cap12_classifier_property
 def test_the_log_scan_catches_the_spellings_it_exists_for(tmp_path):
     """Non-vacuity. Each of these is a way a completion or a message actually
     reaches a log, and each must be rejected."""
@@ -932,6 +985,7 @@ def test_a_real_turn_logs_no_word_of_what_was_said(caplog):
 # =============================================================================
 
 
+@pytest.mark.cap12_classifier_property
 def test_no_label_may_permit_more_than_a_question():
     """The story's centre, as a property of the table rather than of a branch:
     every value is ``ASK`` or ``NONE``. ``ENTER`` carries a durable thirty-day
@@ -963,6 +1017,7 @@ def test_no_label_may_permit_more_than_a_question():
     ids=["enter", "surface", "widens-nothing", "undefined-label",
          "no-instructions", "labels-undescribed"],
 )
+@pytest.mark.cap12_classifier_property
 def test_the_import_time_check_refuses_each_of_these(mutation):
     """The invariants are raises rather than bare asserts, so ``python -O``
     cannot delete them — and each is exercised, because a check nothing runs is
@@ -979,6 +1034,7 @@ def test_the_import_time_check_refuses_each_of_these(mutation):
         assert "CrisisError" in done.stderr
 
 
+@pytest.mark.cap12_classifier_property
 def test_the_holder_the_crisis_path_takes_cannot_produce_text():
     """Acceptance: *the classifier's holder has no way to produce text.*
 
@@ -997,19 +1053,47 @@ def test_the_holder_the_crisis_path_takes_cannot_produce_text():
         SecondOpinion({MAIN: Provider()})
 
 
-@pytest.mark.parametrize("method", sorted(FORBIDDEN_METHODS))
+#: Ways a wider object arrives. The first six were a denylist this build once
+#: carried; the rest are what review round 1 walked through it — a holder that
+#: classifies *and* chats, invokes, runs, or is simply callable.
+WIDENING_METHODS = (
+    "generate", "submit", "collect", "complete", "message", "stream",
+    "chat", "invoke", "run", "predict", "ask", "__call__",
+)
+
+
+@pytest.mark.cap12_classifier_property
+@pytest.mark.parametrize("method", WIDENING_METHODS)
 def test_every_widening_method_is_refused_one_at_a_time(method):
+    """An **allowlist**, which is the correction: a denylist of six names let
+    ``chat``, ``invoke``, ``run`` and a callable object straight through, and
+    each of those is a way to produce text."""
+    if method == "__call__":
+        class Callable_:
+            async def classify(self, work): ...
+            def __call__(self): ...
+
+        with pytest.raises(CrisisError, match="callable"):
+            SecondOpinion({MAIN: Callable_()})
+        return
     holder = Holder(labelled(NO_RISK))
     setattr(holder, method, lambda *a, **k: None)
     with pytest.raises(CrisisError, match=method):
         SecondOpinion({MAIN: holder})
 
 
+@pytest.mark.cap12_classifier_property
+def test_the_allowlist_is_the_one_method_the_port_promises():
+    assert ALLOWED_METHODS == {"classify"}
+
+
+@pytest.mark.cap12_classifier_property
 def test_an_object_that_cannot_classify_is_refused_too():
     with pytest.raises(CrisisError, match="classify"):
         SecondOpinion({MAIN: object()})
 
 
+@pytest.mark.cap12_classifier_property
 def test_the_real_narrow_classifier_is_accepted():
     """The other direction: what the port actually hands back must pass. A
     guard that refused the shipped holder would be a guard nobody could use."""
@@ -1033,6 +1117,7 @@ def test_the_real_narrow_classifier_is_accepted():
         SecondOpinion({MAIN: provider})
 
 
+@pytest.mark.cap12_classifier_property
 def test_the_holder_is_not_reachable_through_the_object_that_holds_it():
     """A narrow output is half of a narrow holder; the other half is narrow
     authority. Nothing public here hands back the classifier, its transport or
@@ -1040,12 +1125,32 @@ def test_the_holder_is_not_reachable_through_the_object_that_holds_it():
     in review round 1."""
     second, holder = opinion(labelled(NO_RISK))
     public = [name for name in dir(second) if not name.startswith("_")]
-    assert sorted(public) == ["consult", "holds", "tally"]
+    assert sorted(public) == ["consult", "flush", "holds", "tally"]
     assert not hasattr(second, "__dict__"), "slots keep the surface closed"
     for name in public:
         assert getattr(second, name) is not holder
 
 
+@pytest.mark.cap12_classifier_property
+def test_a_second_opinion_is_sealed_after_construction():
+    """The check that every holder is the narrow one is worth what it costs to
+    walk around it. Rebinding the mapping afterwards was that walk-around, and
+    the class docstring claimed the holders were not reachable."""
+    second, _ = opinion(labelled(NO_RISK))
+
+    class Wide:
+        async def classify(self, work): ...
+        async def generate(self, work): ...
+
+    for name, value in (("_holders", {MAIN: Wide()}), ("_bound", 900.0),
+                        ("_tally", Tally())):
+        with pytest.raises(CrisisError, match="sealed"):
+            setattr(second, name, value)
+    with pytest.raises(TypeError):
+        second._holders[MAIN] = Wide()  # the mapping itself is read-only
+
+
+@pytest.mark.cap12_classifier_property
 def test_nothing_in_the_classifier_module_names_the_mode_at_all():
     """Structural, and the strongest form of *the classifier widens ASK, never
     ENTER*: there is no expression in the module that could produce an entering
@@ -1062,6 +1167,7 @@ def test_nothing_in_the_classifier_module_names_the_mode_at_all():
     assert "Tier" not in named and "Assessment" not in named
 
 
+@pytest.mark.cap12_classifier_property
 def test_the_gate_reads_only_whether_the_verdict_asks():
     """The other side of the same seam. The gate's own second-opinion method
     consults a verdict's ``asks`` and builds an ``INFERENCE`` assessment — there
@@ -1080,6 +1186,7 @@ def test_the_gate_reads_only_whether_the_verdict_asks():
     assert "ENTER" not in attributes and "enters" not in attributes
 
 
+@pytest.mark.cap12_classifier_property
 def test_the_bound_is_a_number_this_build_will_accept():
     assert 0 < BOUND_SECONDS <= 30
     for bad in (0, -1, None, "5"):
@@ -1096,7 +1203,18 @@ def test_the_running_counts_are_written_out_on_the_failing_path_too(caplog):
     import logging
 
     caplog.set_level(logging.INFO)
-    second, _ = opinion(Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED))
+    # Failing every other call, so the run never reaches the breaker and the
+    # hundredth consultation actually happens — the summary has to be reachable
+    # from the fallback path, which is the whole point of the case.
+    answers = [Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED),
+               labelled(NO_RISK)]
+    calls = {"n": 0}
+
+    def alternate(work):
+        calls["n"] += 1
+        return answers[calls["n"] % 2]
+
+    second = SecondOpinion({MAIN: Holder(alternate)})
     for _ in range(clf.REPORT_EVERY):
         consulted(second, ORDINARY)
 
@@ -1104,12 +1222,13 @@ def test_the_running_counts_are_written_out_on_the_failing_path_too(caplog):
         record.getMessage() for record in caplog.records
         if "crisis classifier:" in record.getMessage()
     ]
-    assert len(summaries) == 1, summaries
-    assert f"{clf.REPORT_EVERY} consulted" in summaries[0]
-    assert f"{clf.REPORT_EVERY} fell back" in summaries[0]
-    assert second.tally.fallback_rate == 1.0
+    assert summaries, "the counts were never written out"
+    assert f"{clf.REPORT_EVERY} consulted" in summaries[-1]
+    assert "50 fell back" in summaries[-1]
+    assert second.tally.fallback_rate == 0.5
 
 
+@pytest.mark.cap12_classifier_property
 def test_the_tally_holds_counts_and_nothing_else():
     """AD-22. Every field is an integer or a mapping of closed keys to
     integers, so there is nowhere on this object for a word to live."""
@@ -1148,3 +1267,677 @@ def test_a_model_that_answers_with_a_method_cannot_put_it_in_a_reply():
     reply = handled(one, UNSEEN[0]) or ""
     assert reply == "ordinary"
     assert not words_of(reply) & MEANS_WORDS
+
+
+# =============================================================================
+# review round 1: the story widened noticing and left acting in English
+# =============================================================================
+#
+# The finding, in one sentence: the classifier asked in every script and
+# ``is_affirmative`` recognised nine English spellings, so a main asked in
+# their own language answered in it, was not understood, had the question
+# abandoned, and was asked again the next turn — for ever. They never reached
+# ``ENTER``, so the warm handoff, the crisis-line door, the ceiling drop and
+# aftercare never arrived, for exactly the population this story exists for.
+#
+# Nothing in the suite could see it, because no case drove a non-English
+# answer. These do.
+
+#: A yes in the languages the widened table covers, including two hedges —
+#: because a hedged yes is a yes and treating it as a no is the hedge that
+#: makes asking pointless.
+ANSWERS_IN_THEIR_OWN_LANGUAGE = (
+    "हाँ", "はい", "네", "是的", "да", "نعم", "כן", "sí", "sim", "oui",
+    "ja", "evet", "ναι", "vâng", "ใช่", "ndiyo", "oo", "tak", "ஆம்",
+    "হ্যাঁ", "అవును", "haan", "claro", "a veces", "कभी कभी", "有时",
+)
+
+
+@pytest.mark.parametrize("answer", ANSWERS_IN_THEIR_OWN_LANGUAGE)
+def test_a_main_asked_in_their_own_language_can_answer_in_it(answer):
+    """Matrix: answer in any language. *Recognised — confirmation follows
+    recall.*
+
+    The whole sequence, because the halves only fail together: the model reads
+    a message the table cannot, Half asks, and the main's own word in their own
+    script is what enters. The mode is still opened by a person, by the table,
+    offline."""
+    one, holder, _ = gate(labelled(MAIN_AT_RISK))
+    asked = handled(one, UNSEEN[0], external_id="m0")
+    assert templates.ASK.text in asked
+    assert not one.in_crisis(MAIN)
+
+    entered = handled(one, answer, external_id="m1")
+    assert one.in_crisis(MAIN), answer
+    assert templates.OPEN_CONFIRMATION.text in entered
+    assert respond.is_templated(entered)
+    assert len(holder.seen) == 1, "the answer was sent to a model"
+
+
+@pytest.mark.parametrize("answer", ANSWERS_IN_THEIR_OWN_LANGUAGE)
+def test_confirmation_needs_no_network_in_any_language(answer):
+    """The half that matters most. Entering is the table's decision in every
+    script, so it survives the outage the classifier does not: with the
+    provider down at every step, the question is the table's and so is the
+    yes."""
+    from half.crisis.signals import is_affirmative
+
+    assert is_affirmative(answer), answer
+
+    one, _, _ = gate(Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED))
+    handled(one, "whats the point of any of it", external_id="m0")
+    handled(one, answer, external_id="m1")
+    assert one.in_crisis(MAIN), answer
+
+
+def test_the_widened_answers_do_not_fire_on_an_ordinary_reply():
+    """The other direction, and the reason four candidates were dropped. A yes
+    in twenty scripts must not turn an ordinary sentence into a durable
+    thirty-day cap: ``जी`` is a yes *and* a Hindi honorific, so ``नहीं जी`` —
+    "no, sir" — read as a yes; ``так`` is Ukrainian for yes and Russian for
+    "so"; ``أجل`` is a formal yes and an everyday "for the sake of"; ``jo`` is
+    a Nordic yes and an English name."""
+    from half.crisis.signals import AFFIRMATIVE_SOURCE, is_affirmative
+
+    for absent in ("जी", "так", "أجل", "jo", "da", "ano", "igen", "ewe"):
+        assert absent not in AFFIRMATIVE_SOURCE, absent
+    for ordinary in ("नहीं जी", "मैं अब और नहीं जी सकता", "так что я не знаю",
+                     "من أجل ذلك", "jo said hello", "leonardo da vinci",
+                     "again and again", "i finished the report",
+                     "what do you mean", "please stop", "why do you ask"):
+        assert not is_affirmative(ordinary), ordinary
+
+
+def test_the_classifier_never_reads_the_answer_to_halfs_own_question():
+    """*Letting a model decision reach ENTER* is Ask-First, and this is where
+    it would arrive by the back door. The turn that enters the mode is decided
+    by the table alone: with a standing question, no message is sent anywhere,
+    whatever the model would have said."""
+    for answer in ANSWERS_IN_THEIR_OWN_LANGUAGE[:6]:
+        one, holder, _ = gate(labelled(MAIN_AT_RISK))
+        handled(one, "whats the point of any of it", external_id="a0")
+        handled(one, answer, external_id="a1")
+        assert one.in_crisis(MAIN), answer
+        assert holder.seen == [], answer
+
+
+# =============================================================================
+# matrix: a slow model, and everybody else
+# =============================================================================
+
+
+def test_a_hanging_provider_does_not_delay_another_mains_safe_word(tmp_path):
+    """Matrix: slow model, other mains. *No other main's turn is delayed; a
+    safe word is immediate.*
+
+    The measurement that found this: a hanging holder, three messages, two
+    mains — replies at +5.01s, +10.01s and +10.01s, with a **safe word**
+    answered ten seconds late behind two turns that were not that main's.
+    Story 6a's guarantee is that the safe word is decided offline with the
+    provider down, and one sequential inbound loop made that true only for the
+    message at the head of the queue.
+    """
+    registry = ActorRegistry(tmp_path / "mains")
+    second = SecondOpinion({"vidit": Holder(labelled(NO_RISK), sleep=5.0)},
+                           bound_seconds=0.5)
+    transport = TimedTransport([
+        msg(text=ORDINARY, message_id="r0", chat_id="123", date=AT),
+        msg(text=ORDINARY, message_id="r1", chat_id="123", date=AT),
+        msg(text=SAFE_WORD, message_id="r2", chat_id="456", date=AT),
+    ])
+    channel = TelegramChannel(
+        transport=transport, mains={"123": "vidit", "456": "asha"}
+    )
+    started = time.monotonic()
+    asyncio.run(Runtime(channel=channel, registry=registry, second=second).run())
+    asha_open = registry.crisis_open("asha")
+    registry.close()
+
+    by_main: dict[str, float] = {}
+    for chat, _, at in transport.timed:
+        by_main.setdefault(chat, at - started)
+    assert set(by_main) == {"123", "456"}, transport.timed
+    assert asha_open, "the safe word did not enter the mode"
+    assert by_main["456"] < 0.3, (
+        f"a safe word waited {by_main['456']:.2f}s behind another main's "
+        "classifier; the offline floor is only offline for whoever is first "
+        "in the queue"
+    )
+    assert transport.timed[0][0] == "456", (
+        "the main whose turn needed no network was answered second"
+    )
+    # And the main who *is* being classified still pays their own bound, twice,
+    # one turn after the other — per main it is exactly what it was.
+    assert transport.timed[-1][2] - started >= 0.9, transport.timed
+
+
+def test_one_mains_turns_still_happen_one_at_a_time_and_in_order(tmp_path):
+    """The half of the sequential loop that had to survive. Per main it is
+    unchanged: a FIFO queue and one worker, so two messages from one person
+    cannot overtake each other or reach that main's store at once (AD-1)."""
+    order: list[str] = []
+
+    class Watching:
+        def __init__(self) -> None:
+            self.seen: list[Classify] = []
+            self.inflight = 0
+
+        async def classify(self, work: Classify) -> Classified:
+            self.seen.append(work)
+            self.inflight += 1
+            order.append(f"start-{len(self.seen)}")
+            if self.inflight > 1:
+                raise AssertionError("two turns for one main overlapped")
+            await asyncio.sleep(0.01)
+            self.inflight -= 1
+            order.append(f"end-{len(self.seen)}")
+            return labelled(NO_RISK)
+
+    registry = ActorRegistry(tmp_path / "mains")
+    drive(registry, SecondOpinion({MAIN: Watching()}),
+          [(f"message {i}", AT) for i in range(4)])
+    registry.close()
+    assert order == ["start-1", "end-1", "start-2", "end-2",
+                     "start-3", "end-3", "start-4", "end-4"], order
+
+
+def test_a_cancelled_turn_does_not_end_the_inbound_loop(tmp_path):
+    """Matrix: cancellation. *The loop survives — never ends the inbound loop.*
+
+    ``CancelledError`` is a ``BaseException`` and ``consult`` deliberately does
+    not catch it: swallowing a cancellation is how a shutdown stops working.
+    What keeps one turn's cancellation from ending everybody's conversation is
+    that turns are dispatched per main and each worker asks *whose*
+    cancellation it is — a shutdown is re-raised, and a turn that cancelled
+    itself costs one turn.
+    """
+    class Cancelling:
+        def __init__(self) -> None:
+            self.seen: list[Classify] = []
+
+        async def classify(self, work: Classify) -> Classified:
+            self.seen.append(work)
+            if len(self.seen) == 1:
+                raise asyncio.CancelledError()
+            return labelled(NO_RISK)
+
+    holder = Cancelling()
+    registry = ActorRegistry(tmp_path / "mains")
+    replies = drive(registry, SecondOpinion({MAIN: holder}),
+                    [(ORDINARY, AT), (ORDINARY, AT), (SAFE_WORD, AT)])
+    opened = registry.crisis_open(MAIN)
+    registry.close()
+
+    assert len(holder.seen) == 2, "the loop stopped classifying after a cancel"
+    assert opened, "the safe word never arrived; the queue died with the turn"
+    assert len(replies) >= 2, replies
+
+
+# =============================================================================
+# matrix: a provider's own error text
+# =============================================================================
+
+
+#: What a provider says when it rejects a request: the request, quoted back.
+#: This exact shape is why nothing on this path calls ``logger.exception`` —
+#: the traceback carries it, and neither log guard saw it, because the AST scan
+#: reads the *arguments* and a behavioural test built from a ``Failure`` value
+#: never raises at all.
+QUOTING_FAULT = "400 bad_request: messages.0.content: 'मैं अब और नहीं जी सकता'"
+
+
+def test_a_provider_error_that_quotes_the_request_does_not_reach_a_log(caplog):
+    """Matrix: provider error text. *The class only reaches the log — never the
+    main's words.*"""
+    import logging
+
+    caplog.set_level(logging.DEBUG)
+    one, _, _ = gate(RuntimeError(QUOTING_FAULT))
+    assert handled(one, UNSEEN[0]) == "ordinary"
+
+    emitted = "\n".join(
+        record.getMessage() + (record.exc_text or "") for record in caplog.records
+    )
+    assert "मैं अब और नहीं जी सकता" not in emitted, emitted
+    assert QUOTING_FAULT not in emitted
+    assert "RuntimeError" in emitted, "the class of the fault must still cross"
+
+
+def test_the_same_holds_when_the_gate_itself_is_the_one_that_catches(caplog):
+    """The gate's own handler, which is the second place a traceback would be
+    written. ``consult`` answers rather than raising, so this needs a broken
+    second opinion to reach — and it must be as quiet as the first."""
+    import logging
+
+    class Detonating:
+        def holds(self, main_id):
+            return True
+
+        async def consult(self, text, *, main_id):
+            raise RuntimeError(QUOTING_FAULT)
+
+    caplog.set_level(logging.DEBUG)
+    one = CrisisGate(pipeline=Pipeline(), second=Detonating())
+    assert handled(one, UNSEEN[0]) == "ordinary"
+    emitted = "\n".join(
+        record.getMessage() + (record.exc_text or "") for record in caplog.records
+    )
+    assert "मैं अब और नहीं जी सकता" not in emitted
+    assert "RuntimeError" in emitted
+
+
+@pytest.mark.cap12_classifier_property
+def test_no_crisis_module_logs_a_traceback_at_all():
+    """The structural half, over the whole package rather than the two modules
+    this story wrote. A traceback is the exception's own text, and on these
+    paths that text is a rejected request, a line of a safety plan, or a
+    contact's name. So the rule is mechanical: nothing under ``half/crisis``
+    calls ``logger.exception`` or passes ``exc_info``, and a caught fault
+    contributes its class name and nothing else.
+    """
+    offenders: list[str] = []
+    for path in sorted((ROOT / "half/crisis").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)):
+                continue
+            if node.func.attr == "exception":
+                offenders.append(f"{path.name}:{node.lineno} logger.exception")
+            if node.func.attr in LOG_METHODS and any(
+                kw.arg == "exc_info" for kw in node.keywords
+            ):
+                offenders.append(f"{path.name}:{node.lineno} exc_info")
+    assert not offenders, offenders
+
+
+# =============================================================================
+# matrix: the safety-plan turn
+# =============================================================================
+
+
+#: A plan the way a main dictates one, carrying exactly what a plan carries:
+#: the people they would ring, a clinician, a number, and step six.
+PLAN_TURN = (
+    "here is my safety plan\n"
+    "Ring आशा on 98765 43210, she knows.\n"
+    "Dr Rao takes messages on Tuesdays.\n"
+    "Give the spare keys and the tablets to my brother."
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [PLAN_TURN, "can you show me my safety plan", "whats my safety plan again"],
+    ids=["intake", "request", "request-2"],
+)
+def test_a_safety_plan_turn_is_not_classified_and_not_sent(text):
+    """Matrix: safety-plan turn. *Not classified, not sent — already sensitive
+    by design.*
+
+    ``test_only_the_message_text_leaves_the_machine`` proves a contact in the
+    *store* does not go. This is the route that would actually put a named
+    person and a phone number in a payload: the main typing one. A
+    classification could not change what a plan turn does, so it is not made.
+    """
+    one, holder, _ = gate(labelled(MAIN_AT_RISK))
+    handled(one, text)
+    assert holder.seen == [], "a safety-plan turn was sent to a provider"
+
+
+def test_the_plan_turn_still_does_everything_it_did(tmp_path):
+    """Skipping the classification changes nothing else about that turn: the
+    document is taken, and it comes back whole when it is asked for."""
+    root = tmp_path / "mains"
+    (root / MAIN).mkdir(parents=True)
+    registry = ActorRegistry(root)
+    replies = drive(registry, SecondOpinion({MAIN: Holder(labelled(NO_RISK))}),
+                    [(PLAN_TURN, AT), ("can you show me my safety plan", AT)])
+    registry.close()
+    assert "Ring आशा on 98765 43210, she knows." in replies[-1]
+
+
+# =============================================================================
+# matrix: the oversized message
+# =============================================================================
+
+
+class Counting:
+    """A transport that counts, so *refused before the transport is touched* is
+    asserted at the wire rather than from below.
+
+    It answers rather than raising, because a raise would be swallowed into a
+    fallback and the case would pass whether or not the call was made.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def message(self, payload):
+        self.calls += 1
+        return {
+            "content": [{"type": "text", "text": '{"label": "no_risk"}'}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 100, "output_tokens": 5},
+        }
+
+    async def batch_create(self, requests): ...
+    async def batch_status(self, batch_id): ...
+    def batch_results(self, batch_id): ...
+
+
+def _real_classifier(transport):
+    from half.model.anthropic import AnthropicProvider
+    from half.model.tier import Tiers
+
+    return AnthropicProvider(
+        transport, tiers=Tiers.parse({MAIN: CLASSIFY_TIER}),
+        budget=Budget(per_call_micro_usd=PER_CALL_MICRO_USD,
+                      per_pass_micro_usd=PER_PASS_MICRO_USD),
+    ).classifier()
+
+
+def test_a_message_past_the_ceiling_is_refused_before_the_transport():
+    """Matrix: oversized message. *Refused before the transport is touched,
+    counted as a fallback.*
+
+    The ceiling was pinned only from below, so it could be loosened five
+    thousand-fold with the suite green — after which a megabyte of somebody's
+    text goes over the wire whole. This drives the real provider over a
+    transport that counts.
+    """
+    transport = Counting()
+    second = SecondOpinion({MAIN: _real_classifier(transport)})
+    verdict = consulted(second, "मैं " * 400_000)
+
+    assert transport.calls == 0, "an oversized message reached the provider"
+    assert verdict.fell_back and not verdict.asks
+    assert second.tally.failures == {"over-budget/per-call-budget": 1}
+    assert second.tally.fallback_rate == 1.0
+
+
+def test_an_ordinary_message_does_reach_the_transport():
+    """Non-vacuity for the row above: a ceiling that refused everything would
+    pass it while removing the classifier entirely."""
+    transport = Counting()
+    second = SecondOpinion({MAIN: _real_classifier(transport)})
+    verdict = consulted(second, ORDINARY)
+    assert transport.calls == 1, "an ordinary message never reached the provider"
+    assert not verdict.fell_back and verdict.label == NO_RISK
+
+
+# =============================================================================
+# matrix: the wiring, by value
+# =============================================================================
+
+
+def test_serve_hands_the_runtime_the_classifier_build_made(tmp_path, monkeypatch):
+    """Matrix: wiring. *The runtime holds the classifier ``build`` made — by
+    value, not by keyword.*
+
+    The previous version asserted that a keyword called ``second`` appeared in
+    the call, which passes with ``second=None`` in it. That is
+    ``test_schedule.py``'s own documented grep bug in AST clothing, one story
+    on. This runs ``serve`` and reads the object the runtime was given.
+    """
+    import half.__main__ as entrypoint
+
+    captured: dict[str, object] = {}
+    made: dict[str, object] = {}
+
+    class Recording:
+        def __init__(self, *, channel, registry, second=None):
+            captured["second"] = second
+
+        async def run(self):
+            return None
+
+    real_build = entrypoint.build
+
+    def build_and_remember(config, token):
+        wiring = real_build(config, token)
+        made["wiring"] = wiring
+        return wiring
+
+    monkeypatch.setattr(entrypoint, "build", build_and_remember)
+    monkeypatch.setattr(entrypoint, "Runtime", Recording)
+
+    config = load({ROOT_ENV: str(tmp_path), MAINS_ENV: "123:vidit"})
+    asyncio.run(entrypoint.serve(config, "123:fake"))
+
+    assert isinstance(captured["second"], SecondOpinion)
+    assert captured["second"] is made["wiring"].second
+
+
+# =============================================================================
+# matrix: the corrupt credential
+# =============================================================================
+
+
+def test_a_corrupt_credential_file_leaves_the_process_running(tmp_path):
+    """Matrix: corrupt credential. *That main is unequipped; the process
+    starts — never a dead safe word.*
+
+    This is the first read of the secret store at boot. ``FileSecretStore.get``
+    raises ``StoreError`` on an unreadable file, which is a ``HalfError`` and
+    not a ``ModelError``, so the previous handler let it out: ``build`` raised,
+    ``main`` exited 2, and every main in the deployment lost the channel, the
+    gate and the offline safe word because of one bad file.
+    """
+    from half.secrets import FileSecretStore
+
+    root = tmp_path / "mains"
+    root.mkdir()
+    secrets = FileSecretStore.beside(root)
+    secrets.put("vidit", "model_api_key", "sk-fine")
+    secrets.put("asha", "model_api_key", "sk-also-fine")
+    broken = [p for p in Path(secrets.root).rglob("*asha*") if p.is_file()]
+    assert broken, "the credential file was not found to corrupt"
+    broken[0].write_text("{not json", encoding="utf-8")
+
+    config = load({ROOT_ENV: str(root), MAINS_ENV: "123:vidit, 456:asha"})
+    wiring = build(config, token="123:fake")
+    try:
+        assert wiring.second.holds("vidit"), "a good main was unequipped too"
+        assert not wiring.second.holds("asha")
+    finally:
+        wiring.registry.close()
+
+
+def test_a_holder_the_crisis_path_refuses_does_not_kill_the_boot(tmp_path, monkeypatch):
+    """The same rule one layer up: if the narrow-holder check ever refused what
+    the composition root built, the deployment must still start with the phrase
+    table rather than not start at all."""
+    import half.__main__ as entrypoint
+
+    class Wide:
+        async def classify(self, work): ...
+        async def generate(self, work): ...
+
+    class Fake:
+        def classifier(self):
+            return Wide()
+
+    monkeypatch.setattr(entrypoint, "AnthropicProvider", lambda *a, **k: Fake())
+    monkeypatch.setattr(
+        entrypoint.SDKTransport, "from_secrets",
+        classmethod(lambda cls, secrets, main_id: object()),
+    )
+
+    config = load({ROOT_ENV: str(tmp_path), MAINS_ENV: "123:vidit"})
+    wiring = build(config, token="123:fake")
+    try:
+        assert not wiring.second.holds("vidit")
+    finally:
+        wiring.registry.close()
+
+
+def test_every_main_is_classified_on_the_same_tier(tmp_path):
+    """CAP-12 is never gated by tier, so detection quality may not follow what
+    somebody pays. A main is equipped by having a key; the tier the classifier
+    runs on is pinned for everybody, and a main's conversation tier does not
+    reach it — requiring a ``HALF_MODEL_TIERS`` entry was the same gate wearing
+    configuration's clothes.
+
+    That the pinned tier is the right one — that it detects well enough, in
+    every script — is a question for the reviewer and an evaluation set, and no
+    arrangement of green cases answers it."""
+    from half.config import TIERS_ENV
+    from half.model.tier import Tier as ModelTierEnum
+    from half.secrets import FileSecretStore
+
+    assert CLASSIFY_TIER in {str(tier) for tier in ModelTierEnum}
+
+    root = tmp_path / "mains"
+    root.mkdir()
+    store = FileSecretStore.beside(root)
+    for main in ("vidit", "asha"):
+        store.put(main, "model_api_key", "sk-fine")
+
+    # One main on the frontier tier, one with no tier configured at all.
+    config = load({ROOT_ENV: str(root), MAINS_ENV: "123:vidit, 456:asha",
+                   TIERS_ENV: "vidit:frontier"})
+    wiring = build(config, token="123:fake")
+    try:
+        assert wiring.second.holds("vidit") and wiring.second.holds("asha")
+    finally:
+        wiring.registry.close()
+
+
+# =============================================================================
+# the breaker, and what an operator sees
+# =============================================================================
+
+
+def test_a_run_of_failures_stops_the_asking_rather_than_repeating_it():
+    """During an outage every turn would otherwise pay the full bound and then
+    issue another doomed request — the latency and the spend of asking a
+    question nobody is answering. Counted in turns, because nothing under
+    ``half/crisis`` reads a clock."""
+    second, holder = opinion(Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED))
+    for _ in range(BREAK_AFTER):
+        consulted(second, ORDINARY)
+    assert len(holder.seen) == BREAK_AFTER
+    assert second.tally.consulted == BREAK_AFTER
+
+    for _ in range(BREAK_FOR):
+        assert consulted(second, ORDINARY).fell_back
+    assert len(holder.seen) == BREAK_AFTER, "the breaker kept calling"
+    assert second.tally.skipped == BREAK_FOR
+    assert second.tally.consulted == BREAK_AFTER, "a skip counted as a call"
+
+
+def test_the_breaker_tries_again_and_clears_when_it_works():
+    """A breaker that never closed again would be an outage that removed the
+    classifier permanently — the silent degradation, arriving as a fix."""
+    answers = [Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED)] * BREAK_AFTER
+    answers += [labelled(MAIN_AT_RISK)] * 10
+    second = SecondOpinion({MAIN: Holder(lambda work: answers.pop(0))})
+    for _ in range(BREAK_AFTER + BREAK_FOR):
+        consulted(second, ORDINARY)
+    assert consulted(second, UNSEEN[0]).asks, "the breaker never closed"
+    assert second.tally.answered >= 1
+
+
+def test_the_breaker_is_one_mains_and_not_the_deployments():
+    """One main's provider being down says nothing about another's, and a
+    global breaker would silently take the classifier away from everybody
+    because of one bad key."""
+    down = Holder(Failure(Kind.REFUSED, Reason.NOT_AUTHORISED))
+    up = Holder(labelled(MAIN_AT_RISK))
+    second = SecondOpinion({"vidit": down, "asha": up})
+    for _ in range(BREAK_AFTER + 3):
+        consulted(second, ORDINARY, main="vidit")
+    assert consulted(second, UNSEEN[0], main="asha").asks
+    assert len(up.seen) == 1
+
+
+def test_a_failing_classifier_is_loud_before_it_is_round(caplog):
+    """*A fallback is counted and visible.* Every hundred consultations is not
+    good enough on its own: a wholly failing classifier would be silent until
+    it reached a round number. So the counts also go out at error level once
+    the rate is evidence rather than arithmetic."""
+    import logging
+
+    caplog.set_level(logging.INFO)
+    second, _ = opinion(Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED))
+    for _ in range(ALARM_AFTER):
+        consulted(second, ORDINARY)
+
+    alarms = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert alarms, "a wholly failing classifier said nothing at error level"
+    assert second.tally.fallback_rate >= ALARM_RATE
+
+
+def test_the_counts_can_be_written_out_on_the_way_down(caplog):
+    """A process that ran for a week and never reached a round number still has
+    to say what it did. ``serve`` calls this in its ``finally``."""
+    import logging
+
+    caplog.set_level(logging.INFO)
+    second, _ = opinion(labelled(NO_RISK))
+    consulted(second, ORDINARY)
+    caplog.clear()
+    second.flush()
+    assert any("crisis classifier:" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.cap12_classifier_property
+def test_serve_writes_the_counts_out_on_the_way_down():
+    import half.__main__ as entrypoint
+
+    tree = ast.parse(Path(entrypoint.__file__).read_text(encoding="utf-8"))
+    serve = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "serve"
+    )
+    flushes = [
+        node for node in ast.walk(serve)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "flush"
+    ]
+    assert flushes, "serve never writes the classifier's counts out"
+
+
+# =============================================================================
+# the outcomes that were quietly miscounted
+# =============================================================================
+
+
+@pytest.mark.cap12_classifier_property
+def test_a_fallback_that_asks_cannot_be_constructed():
+    """The outage-asks-everyone failure, made unrepresentable rather than
+    avoided by every caller remembering."""
+    with pytest.raises(CrisisError, match="fallback cannot ask"):
+        Verdict(Action.ASK, fell_back=True)
+    with pytest.raises(CrisisError):
+        Verdict(Action.ENTER)
+    with pytest.raises(CrisisError):
+        Verdict(Action.SURFACE)
+
+
+def test_an_answer_that_breaks_the_ports_contract_is_counted_as_a_fallback():
+    """Reproduced in review: ``Decision(label=["main_at_risk"])`` raised inside
+    ``_verdict``, which was called from the ``else:`` of the try — outside both
+    handlers — so ``consulted`` was incremented and nothing was counted against
+    it. The one number an operator watches understated failure on exactly the
+    failing path."""
+    second, _ = opinion(Decision(label=["main_at_risk"]))
+    verdict = consulted(second, UNSEEN[0])
+    assert verdict.fell_back
+    assert second.tally.consulted == 1
+    assert second.tally.fell_back == 1
+    assert second.tally.fallback_rate == 1.0
+
+
+def test_a_broken_contract_is_counted_apart_from_a_holder_that_threw():
+    """``bound_exceeded`` was separated from a transport fault because the two
+    want different responses. A provider that answers with something unreadable
+    and a build that raises want different responses for the same reason."""
+    unreadable, _ = opinion(Decision(label="not-a-label-in-any-build"))
+    consulted(unreadable, ORDINARY)
+    assert unreadable.tally.unreadable == 1 and unreadable.tally.raised == 0
+
+    threw, _ = opinion(RuntimeError("no tier for this main"))
+    consulted(threw, ORDINARY)
+    assert threw.tally.raised == 1 and threw.tally.unreadable == 0

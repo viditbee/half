@@ -24,6 +24,7 @@ from half.channel.telegram import TelegramChannel
 from half.channel.telegram_transport import PTBTransport
 from half.config import TELEGRAM_TOKEN_ENV, Config, load
 from half.crisis.classifier import (
+    CLASSIFY_TIER,
     PER_CALL_MICRO_USD,
     PER_PASS_MICRO_USD,
     SecondOpinion,
@@ -116,17 +117,29 @@ def build(config: Config, token: str) -> Wiring:
 def second_opinion(config: Config, secrets: FileSecretStore) -> SecondOpinion:
     """The crisis classifier, for the mains a deployment has equipped (6d).
 
-    **Nothing here can fail the boot, and nothing here can fail a turn.** A main
-    with no tier, no key, or a tier this build has no model for simply gets no
-    second opinion — which is story 6a's behaviour: the phrase table decides
-    alone, offline, and the safe word still works with the provider down. The
-    alternative is a crisis subsystem that refuses to start because a key is
-    missing, which is the omission headline arriving at boot time.
+    **Nothing here can fail the boot** — which is a rule this function broke
+    before review round 1 caught it. It caught ``ModelError`` only, and the
+    first read of the secret store happens here: a truncated or hand-edited
+    ``.credentials/<main>.json`` raises ``StoreError``, which is a ``HalfError``
+    and not a ``ModelError``, so one unreadable file took down the channel, the
+    gate and the offline safe word for *every* main in the deployment. A crisis
+    subsystem that refuses to start is the omission headline arriving at boot
+    time, so every failure here leaves that main unequipped and the process
+    running.
+
+    A main with no key gets story 6a's behaviour: the phrase table decides
+    alone, offline, and the safe word still works with the provider down.
+
+    **Equipped by a key, not by a tier.** Every main is classified on
+    ``CLASSIFY_TIER`` whatever they pay, because CAP-12 is never gated by tier
+    and making detection quality follow a paid plan is that gate however it is
+    spelled. Requiring a ``HALF_MODEL_TIERS`` entry was the same gate wearing
+    configuration's clothes.
 
     **The narrow holder, never the provider.** ``classifier()`` hands back an
     object with one method that returns a label — no generation, no batch, no
-    ledger to reset. ``SecondOpinion`` refuses a wider one, so this is checked
-    rather than merely intended.
+    ledger to reset. ``SecondOpinion`` refuses anything wider, so this is
+    checked rather than merely intended.
 
     **One ledger per main**, because a provider's ``Spend`` is shared by
     everything it hands out and a ceiling shared across mains would be one
@@ -137,35 +150,35 @@ def second_opinion(config: Config, secrets: FileSecretStore) -> SecondOpinion:
     """
     holders: dict[str, Classifier] = {}
     for main_id in config.mains.values():
-        tier = config.tier_for(main_id)
-        if tier is None:
-            logger.info(
-                "main=%s has no model tier; the crisis phrase table decides "
-                "alone for them", main_id
-            )
-            continue
         try:
             provider = AnthropicProvider(
                 SDKTransport.from_secrets(secrets, main_id),
-                tiers=Tiers.parse({main_id: tier}),
+                tiers=Tiers.parse({main_id: CLASSIFY_TIER}),
                 budget=Budget(
                     per_call_micro_usd=PER_CALL_MICRO_USD,
                     per_pass_micro_usd=PER_PASS_MICRO_USD,
                 ),
             )
-        except ModelError:
-            # No key, an unknown tier, a missing SDK. Each is a deployment that
-            # has not equipped this main, and none of them is a reason to hold
-            # up a Half that can still detect a disclosure offline. The class
-            # only — a provider's own message can quote what it was sent
+            holders[main_id] = provider.classifier()
+        except Exception as exc:  # noqa: BLE001 - a boot must not die here
+            # No key, an unreadable credential file, an unknown tier, a missing
+            # SDK, a holder the crisis path will not take. Each is a deployment
+            # that has not equipped this main, and none of them is a reason to
+            # hold up a Half that can still detect a disclosure offline. The
+            # class only — a provider's own message can quote what it was sent
             # (AD-22).
             logger.warning(
-                "main=%s has no usable model; the crisis phrase table decides "
-                "alone for them", main_id
+                "main=%s has no usable model (%s); the crisis phrase table "
+                "decides alone for them", main_id, type(exc).__name__,
             )
-            continue
-        holders[main_id] = provider.classifier()
-    return SecondOpinion(holders)
+    try:
+        return SecondOpinion(holders)
+    except Exception as exc:  # noqa: BLE001 - nor here
+        logger.error(
+            "the crisis classifier could not be assembled (%s); the phrase "
+            "table decides alone for every main", type(exc).__name__,
+        )
+        return SecondOpinion()
 
 
 async def serve(config: Config, token: str) -> None:
@@ -199,6 +212,10 @@ async def serve(config: Config, token: str) -> None:
                 # about people on a schedule.
                 ticker.cancel()
     finally:
+        # What the classifier did, once, on the way out — counts only (AD-22).
+        # Without it a process that ran for a week with a wholly failing
+        # classifier could end without ever reaching a round number.
+        wiring.second.flush()
         wiring.registry.close()
 
 

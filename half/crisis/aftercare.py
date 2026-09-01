@@ -321,12 +321,13 @@ class Schedule:
         """
         try:
             return await self._evaluate(main_id, now=now, text=text, quiet=quiet)
-        except Exception:
+        except Exception as exc:
             # No content, no wording, no main-identifying string beyond the id
-            # the runtime already logs (AD-22). The turn still replies.
-            logger.exception(
-                "aftercare could not be evaluated for main=%s; nothing "
-                "restored on this turn", main_id
+            # the runtime already logs, and the class of the fault rather than
+            # its own text (AD-22, story 6d). The turn still replies.
+            logger.warning(
+                "aftercare could not be evaluated for main=%s (%s); nothing "
+                "restored on this turn", main_id, type(exc).__name__
             )
             return ""
 
