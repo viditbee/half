@@ -3,7 +3,16 @@ name = "half"
 version = "0.1.0"
 description = "A second self that lives in your messaging app."
 requires-python = ">=3.12"
-dependencies = ["python-telegram-bot>=22.8,<23"]
+# Official platform SDKs only (AD-6). The Anthropic SDK is a hard dependency
+# rather than an extra even though ``half.model`` ships with no production
+# caller (story 9b): the AD-2 gate reads this list to decide what the runtime
+# may import, and an optional dependency there is an undeclared one. It is
+# reached from exactly one class — ``SDKTransport``, imported lazily inside its
+# own constructor — so importing Half still builds no client and reads no key.
+dependencies = [
+    "anthropic>=1.2,<2",
+    "python-telegram-bot>=22.8,<23",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
@@ -52,4 +61,7 @@ markers = [
     "ad9_guarantee: the promises inside the queue — no catch-up on any path, the lock, the bound, isolation, the durable write that stops a pass, and the window across every zone",
     "one_clock: exactly one module reads a clock, everything below it takes an injected now, and no signal is consulted to guess a zone",
     "one_clock_guarantee: the three sentences that half exists to make true — one reader, no zone inference, and a due time the host's own timezone cannot move",
+    "ad19: the model port — classify apart from generate, cache breakpoints first-class, the four failures, the tier on the main, and a budget that refuses before it spends",
+    "ad19_guarantee: the promises inside the port — a classifier that cannot author text, a breakpoint nothing moves, a model named in one table, a submission that outlives its process, no content in a log, and no model reachable from a fold",
+    "offline: the suite reaches no network, asserted at the socket rather than by convention",
 ]

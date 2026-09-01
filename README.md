@@ -58,10 +58,15 @@ statically: nothing outside `half/governance/` resolves a license without the
 ceiling, and nothing outside it writes one.
 
 It still cannot decide what is *worth* saying: the responder is a deterministic
-stub because no model is called anywhere yet. The trust balance and the unsaid
-and unasked queues are story 5b, and the nightly pass the scheduler runs is
-story 9b — today that pass does nothing, which is a first-class outcome rather
-than a placeholder.
+stub, and **no model is called anywhere.** The port that one day will be is
+built — `half/model/`, story 9b — and it ships with no production caller on
+purpose. Its five consumers (claim derivation, the crisis classifier,
+consolidation, tension minting, and the reply itself) are each their own story
+with their own risk, and wiring one of them in alongside the port would put the
+port's design and that consumer's risk into a single review. The trust balance
+and the unsaid and unasked queues are story 5b, and the nightly pass the
+scheduler runs today does nothing, which is a first-class outcome rather than a
+placeholder.
 
 **Not ready for real use.** The crisis subsystem has not been reviewed by a
 qualified clinician, and that review is a launch gate rather than a follow-up.
@@ -313,7 +318,11 @@ Half literally cannot speak until you do.
 uv run --extra dev pytest -q
 ```
 
-The suite is hermetic — it makes no network calls and needs no bot token.
+The suite is hermetic — it makes no network calls and needs no bot token, and
+that is now **asserted at the socket** rather than kept by convention:
+`test_model_offline.py` runs the whole suite in a subprocess with every
+spelling of `connect`, and of name resolution, replaced by something that
+raises.
 
 ## Layout
 
@@ -329,6 +338,7 @@ The suite is hermetic — it makes no network calls and needs no bot token.
 | `half/text.py` | One script-neutral tokenizer, shared by index and matcher |
 | `half/civil.py` | Clockless civil-date arithmetic, shared by the crisis floor and the loop timescales |
 | `half/channel/` | The `Channel` port, reachability, the Telegram adapter |
+| `half/model/` | The `ModelProvider` port: classification apart from generation, cache breakpoints first-class, tiers as configuration, per-call and per-pass cost ceilings, and one transport-injected implementation |
 | `half/actor/` | One actor per main — an inbox and a mutex — and the wiring |
 | `half/crisis/` | Owns the inbound entrypoint: the tier table, the two actions, the templates, the handoff, aftercare and the held safety plan |
 | `half/config.py` | Who counts as a main, from the environment |
@@ -446,6 +456,20 @@ case records a movement **after** the correction, because a loop that stands and
 can no longer move has been demoted under another name — and every period,
 threshold and boundary is pinned to its value with both sides asserted, after
 review found each of them satisfied by a whole band of wrong ones.
+
+`test_model.py` is the AD-19 gate, and most of it is about what the port
+*cannot* do. A classify-only holder has exactly one public method and no public
+attribute exposing a way to author text — so *"a model never authors a word a
+main in crisis reads"* is a property of the object a crisis caller is holding
+rather than a rule it has to remember, and a synthetic subclass that adds a
+`generate` proves the scan would see one. No module outside the tier table may
+name a model in any spelling, scanned over the whole tree, because a model in a
+call site is the change that passes review and the one that makes the tier stop
+travelling. A breakpoint lands on exactly the block the caller ended the prefix
+on and one past the prompt is refused rather than clamped. No log call in the
+package can carry content, and nothing reachable from a fold reaches the port —
+transitively, since a fold that imported a helper that imported the port would
+pass a one-hop check while being every bit as impure.
 
 `test_context.py` is the AD-18 gate. It scans the rendered context and the
 reply for any *fragment* of a withheld claim — adjacent word pairs,

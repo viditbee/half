@@ -496,3 +496,97 @@ jobs:
         # no-clock scan, and the AD-3 discard-and-replay of an older derived
         # view all live here and were named by no gate.
         run: uv run --locked --extra dev pytest -q tests/test_retrieval.py
+
+      - name: 'AD-19: one model port, cache breakpoints first-class'
+        # The model port is the first thing in Half that can spend money and
+        # the first that can author text, and every rule in it decays quietly:
+        # nothing breaks the day a `generate` appears on the classifier, a
+        # model name is written into a call site, a breakpoint is clamped to
+        # where it would fit, a failure collapses two of the four kinds into
+        # one, or a budget starts being checked after the call instead of
+        # before it. The suite stays green and the free tier's cost model is
+        # silently different — or a main in crisis is answered by something
+        # that authored the words.
+        #
+        # Marker-selected rather than file-selected, for the reason the AD-18,
+        # AD-28, CAP-12, CAP-6 and AD-9 steps are: it must not go green because
+        # another step happened to run one of the same files.
+        #
+        # **The floor carries margin that is not the cases it protects**, the
+        # rule review has had to establish for four stories running. 122
+        # selected, 100 required — and the forty-three guarantee cases are
+        # marked separately and gated below, so deleting them lands on 79 and
+        # fails *twice*: their own gate collects nothing, and this one drops
+        # beneath its floor.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m ad19 -q --collect-only \
+            | grep -c '::' || true)
+          echo "AD-19 cases collected: $collected"
+          if [ "$collected" -lt 100 ]; then
+            echo "::error::the AD-19 gate collected $collected cases; it has stopped asserting"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m ad19
+
+      - name: 'AD-19: the promises inside the port'
+        # The subset that carries the story, gated separately for the reason
+        # the CAP-12 durability, CAP-6 firewall and AD-9 guarantee gates exist:
+        # a floor on the superset cannot stop this half being hollowed out, and
+        # the half that would go with it is the half where the rules are
+        # properties rather than spellings.
+        #
+        # These are: that a classify-only holder has exactly one public method
+        # and no public attribute exposing a way to author text (with a
+        # synthetic bypass that adds one, so the scan cannot pass having seen
+        # nothing); that no module outside the tier table names a model, in any
+        # spelling, scanned over the whole tree; that a breakpoint is placed
+        # where the caller put it and one past the prompt is refused rather
+        # than clamped; that a caller stating none gets no caching and a cost
+        # that says so; that the four failures are four distinct kinds and
+        # none carries a substituted answer; that an over-budget call is
+        # refused with nothing sent; that one ledger is shared by every holder
+        # a provider hands out; that a submission survives being written to a
+        # string and collected by a different provider; that no log call in the
+        # package can carry content (AD-22); and that no model is reachable
+        # from a fold, transitively (AD-30).
+        #
+        # 43 selected, 35 required.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m ad19_guarantee -q --collect-only \
+            | grep -c '::' || true)
+          echo "AD-19 guarantee cases collected: $collected"
+          if [ "$collected" -lt 35 ]; then
+            echo "::error::the AD-19 guarantee gate collected $collected cases; the promises are unguarded"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m ad19_guarantee
+
+      - name: 'The suite reaches no network, asserted at the socket'
+        # Its own step, because it is the only gate in the tree that is not a
+        # statement about Half's code: it is a statement about every test, and
+        # it is the one that would notice an SDK constructed for real wherever
+        # somebody wrote it.
+        #
+        # It runs the whole suite in a subprocess with every spelling of
+        # `connect` — and of name resolution, which is what an SDK reaches
+        # first — replaced by something that raises. The guard goes in through
+        # `sitecustomize`, so the subprocesses the suite spawns of its own are
+        # covered too.
+        #
+        # The floor covers the non-vacuity cases as well as the run: a guard
+        # nobody has tried to defeat is a guard resting on nothing, so five of
+        # these are deliberate bypasses, one per way of reaching out, plus the
+        # child-process case and the one that closes the recursion the first
+        # version of this file opened. 13 selected, 10 required.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m offline -q --collect-only \
+            | grep -c '::' || true)
+          echo "offline cases collected: $collected"
+          if [ "$collected" -lt 10 ]; then
+            echo "::error::the offline gate collected $collected cases; the suite may now reach the network"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m offline

@@ -188,3 +188,73 @@ class NotReachable(ChannelError):
 
 class ForbiddenRecipient(ChannelError):
     """An outbound send was addressed to someone other than the main (AD-25)."""
+
+
+class ModelError(HalfError):
+    """A fault in the model port (AD-19).
+
+    **Deliberately narrow, and it is worth saying what it is not.** The four
+    things the port answers *with* — unavailable, refused, over-budget and
+    malformed — are values, not exceptions: what a failure *means* is the
+    caller's to decide, and a crisis caller that fails toward entering, a
+    consolidation caller that fails toward skipping and a reply that fails
+    toward silence cannot share one default. An exception would make the port
+    pick one for all three.
+
+    So a ``ModelError`` is only ever a *caller or operator mistake* — a tier
+    this build cannot name, a breakpoint pointing past the prompt, a budget
+    that admits nothing. Those are faults in the build, not answers from a
+    provider, and a value nobody has to check is exactly how they get shipped.
+    """
+
+
+class UnknownTier(ModelError):
+    """A tier the build does not know, or a main with no tier at all (AD-20).
+
+    Raised rather than defaulted. A global fallback tier is the failure AD-20
+    exists to prevent in both directions at once: it either overpays for every
+    free main or quietly underserves a paid one, and it does so silently, which
+    is what makes it a bug nobody finds.
+    """
+
+
+class BreakpointError(ModelError):
+    """A cache breakpoint the port will not place where it was asked (AD-19).
+
+    Never clamped, never moved. The free tier's cost model rests on the stable
+    prefix being cached exactly where the caller ended it, and a port that
+    quietly slid a breakpoint to the nearest legal position would produce a
+    request that works, costs more, and says nothing about it.
+    """
+
+
+class BudgetError(ModelError):
+    """A cost budget that could not admit any call (CAP-7).
+
+    A misconfiguration, not a refusal: a per-call ceiling above the per-pass
+    one, or a limit of zero, means every call is over budget forever. That is
+    a nightly pass that silently does nothing, which looks exactly like a
+    nightly pass with nothing to say.
+    """
+
+
+class ModelUnavailable(ModelError):
+    """The transport could not reach the provider (AD-19).
+
+    Raised **by a transport** and caught at the port boundary, where it becomes
+    an ``unavailable`` outcome. It is a ``ModelError`` so that a transport
+    never leaks a provider's own exception type inward, which the conventions
+    forbid; it is never raised out of the port.
+    """
+
+
+class ModelRefused(ModelError):
+    """The provider refused the request (AD-19).
+
+    A transport-raised twin of ``ModelUnavailable``, and distinct from it for
+    the reason ``SendFailed`` carries ``retryable``: the two want opposite
+    handling, and a caller that cannot tell them apart will either hammer a
+    provider that is answering correctly or drop a call that would have
+    succeeded on the next attempt. Caught at the port boundary and turned into
+    a ``refused`` outcome; never raised out of the port.
+    """
