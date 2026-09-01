@@ -16,11 +16,12 @@ Your credentials are never in this tree.
 
 ## Status
 
-Stories 1–5a of 12: the store, the Telegram channel, mail ingestion, retrieval,
-the two-channel context, and the license ladder. Half can hold a conversation,
-remember it, derive claims from your mail without keeping the mail, rank what
-it knows against what you just said, and decide which of it may be *said* as
-opposed to merely acted on.
+Stories 1–5a and 6a of 12: the store, the Telegram channel, mail ingestion,
+retrieval, the two-channel context, the license ladder, and the crisis mode's
+switch and moment. Half can hold a conversation, remember it, derive claims
+from your mail without keeping the mail, rank what it knows against what you
+just said, decide which of it may be *said* as opposed to merely acted on, and
+step out of all of it when you are in danger.
 
 Every belief carries a license, and licenses are enforced when the context is
 **built** rather than by filtering what comes out. A claim licensed `assert`
@@ -45,11 +46,47 @@ ceiling, and nothing outside it writes one.
 
 It still cannot decide what is *worth* saying: the responder is a deterministic
 stub because no model is called anywhere yet. The trust balance and the unsaid
-and unasked queues are story 5b, and crisis handling — which is what lowers the
-ceiling in production — is story 6.
+and unasked queues are story 5b.
 
-**Not ready for real use.** In particular the crisis protocol (story 6) is
-unimplemented, and that is a launch gate.
+**Not ready for real use.** The crisis subsystem has not been reviewed by a
+qualified clinician, and that review is a launch gate rather than a follow-up.
+A green test suite is not clinical review.
+
+## Crisis
+
+The safe word is **`red plum`**. Typing it anywhere in any message — in the
+middle of a sentence, in any case, run together as one word — puts Half into
+crisis mode immediately. Nothing is scored, no threshold has to be cleared, and
+nothing can outvote it. It never changes.
+
+Crisis mode is a pre-filter ahead of the normal pipeline rather than a branch
+inside it (AD-10), so no route into an ordinary turn can skip it. Entering does
+four things: ledger retrieval is hard-disabled for that person — a disabled
+retriever *raises* rather than returning an empty set somebody could read as
+"nothing here" — the global license ceiling drops to `behave` and is written to
+the log, so it survives eviction and restart; the reply is assembled from
+templates; and the mode is held, because nothing in this story exits it.
+
+**Replies are templated, never generated, and that is a safety decision.** Every
+documented catastrophic failure of a chatbot in this situation is a *generation*
+failure — a bridge named, a dose given, a method described. A template set
+cannot produce content it does not contain, so "no method or means content, in
+any phrasing" stops being a behaviour and becomes a property: the assembly is
+not given the person's text at all, so no phrasing is a lever on the output.
+Every word anyone can receive in crisis lives in one reviewable file with no
+locale, no phone number and no service name in it.
+
+Half states plainly that it is software on every crisis turn. That is the one
+deliberate break of character in the product, and it is built on purpose. A
+risk signal about *someone else* never runs the protocol on them: it surfaces
+something the main can share, records nothing about that person, and stops. A
+third-party mention or a sudden change in pattern raises vigilance and can
+never enter the mode alone. Nothing on this path reads a plan or a payment
+state, so free and lapsed people get identical behaviour.
+
+The warm handoff — a prefilled draft to a person the main chooses — is story
+6b, and aftercare, which is what raises the ceiling again, is story 6c. If 6c
+slips, Half stays capped: quiet rather than loud, which is the safe failure.
 
 ## Running it
 
@@ -89,7 +126,7 @@ The suite is hermetic — it makes no network calls and needs no bot token.
 | `half/text.py` | One script-neutral tokenizer, shared by index and matcher |
 | `half/channel/` | The `Channel` port, reachability, the Telegram adapter |
 | `half/actor/` | One actor per main — an inbox and a mutex — and the wiring |
-| `half/crisis/` | Owns the inbound entrypoint; the assessment lands in story 6 |
+| `half/crisis/` | Owns the inbound entrypoint: the tier table, the templates, the assembly |
 | `half/config.py` | Who counts as a main, from the environment |
 | `half/__main__.py` | The composition root |
 
@@ -106,6 +143,18 @@ is the crisis gate.
 
 `test_dependencies.py` enforces that the runtime imports only the standard
 library and pinned dependencies.
+
+`test_crisis.py` is the CAP-12 gate. It observes what a person *receives*
+rather than what a function returned, and it closes sets rather than sampling
+them: no phrasing list can prove "no method content in any phrasing", so what
+is asserted is that every reply is made of lines from one closed, reviewable
+file and that the assembly cannot see the person's words at all.
+
+`test_redteam.py` climbs the C-SSRS ladder and then keeps climbing into the
+frames that actually break agents — fiction, role-play, instruction override,
+pressure, and the request to agree. Every step is checked, not only the last,
+and the checks are first run against synthetic bad replies and required to
+reject each one.
 
 `test_retrieval.py` varies one ranking factor at a time with the score
 tie-break deliberately pointing the other way, so a factor quietly replaced by

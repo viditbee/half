@@ -104,6 +104,17 @@ class RetrievalDisabled(RetrievalError):
     """
 
 
+class CrisisError(HalfError):
+    """A crisis path was asked for something it must not produce (CAP-12).
+
+    Raised only for a caller mistake — asking the template assembly for a reply
+    to a tier that has none, or raising vigilance with a tier that would enter
+    the mode. Never raised on the reply path a main is waiting on: going quiet
+    in crisis is one of the two documented catastrophic failures, so nothing
+    here converts a main's message into silence.
+    """
+
+
 class ChannelError(HalfError):
     """A fault in the messaging channel."""
 

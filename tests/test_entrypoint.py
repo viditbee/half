@@ -59,12 +59,19 @@ def test_no_module_imports_the_pipeline_around_the_gate():
     assert not offenders, f"modules reaching the pipeline outside the gate: {offenders}"
 
 
-def test_the_crisis_stub_is_honest():
-    """An empty gate is safer than a plausible one.
+def test_the_crisis_stub_is_gone():
+    """The inverse of what this asserted through story 5a.
 
-    A keyword scan here would read as coverage and discourage building the real
-    detector, which the crisis-protocol companion specifies precisely.
+    Until story 6a an empty gate was safer than a plausible one: a keyword scan
+    would have read as coverage and discouraged building the real detector. The
+    detector exists now, so the assertion flips — a gate that still raised
+    ``NotImplementedError`` on the crisis path, or still deferred to a later
+    story, would be a gate that goes quiet in the one place going quiet is a
+    documented catastrophic failure.
     """
     source = (ROOT / "half/crisis/gate.py").read_text(encoding="utf-8")
-    assert "story 6" in source, "the stub must say where the real logic lands"
-    assert "NotImplementedError" in source, "the crisis response must not be faked"
+    assert "NotImplementedError" not in source, (
+        "the crisis response must be answered, not deferred"
+    )
+    for reached in ("half.crisis.signals", "half.crisis import respond"):
+        assert reached in source, f"the gate must reach {reached}"

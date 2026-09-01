@@ -123,6 +123,42 @@ jobs:
           fi
           uv run --locked --extra dev pytest -q -m ad28
 
+      - name: 'CAP-12: the crisis mode — the switch, the moment, the never-list'
+        # The one path where a mistake is unrecoverable, so it gets a gate of
+        # its own rather than living inside "tests failed". It covers the tier
+        # table, the templated reply, the never-list, the ceiling that drops on
+        # entry, and the C-SSRS-shaped escalating red-team suite.
+        #
+        # Marker-selected rather than file-selected, for the reason the AD-18
+        # and AD-28 steps give: it must not go green because another step
+        # happened to run one of the same files.
+        #
+        # The count is asserted for the same reason as well — `pytest -m cap12`
+        # against a renamed marker deselects everything and exits 0, which
+        # looks identical to a passing run. --strict-markers (pyproject)
+        # catches a misspelling; this floor catches a rename, and catches
+        # someone quietly unmarking the cases the gate exists for.
+        #
+        # Both crisis files are marked file-wide here, unlike test_ladder.py,
+        # and that is correct rather than lazy: every case in both is CAP-12,
+        # so there is nothing unrelated for the count to be padded with. 139
+        # selected, 120 required: prune a redundant phrasing case, do not gut
+        # the gate.
+        #
+        # **This gate is not clinical review.** The companion's build
+        # requirement 6 is a qualified reviewer before launch, and a green run
+        # here does not satisfy it or substitute for it.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap12 -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-12 cases collected: $collected"
+          if [ "$collected" -lt 120 ]; then
+            echo "::error::the CAP-12 gate collected $collected cases; it has stopped asserting"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap12
+
       - name: 'AD-5 and AD-30: retrieval degrades, and never writes'
         # The reranker fallback, the salience-is-derived assertions, the
         # no-clock scan, and the AD-3 discard-and-replay of an older derived

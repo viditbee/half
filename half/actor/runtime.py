@@ -74,10 +74,14 @@ class Runtime:
 
     def __post_init__(self) -> None:
         # An injected gate owns its own wiring; the default one is handed the
-        # registry's per-main resolver, so the switch crisis turns off is the
-        # one that main's own retriever reads — and no one else's.
+        # registry's per-main resolvers, so the switch crisis turns off is the
+        # one that main's own retriever reads — and no one else's — and the
+        # ceiling it drops is the durable one in that main's log, which
+        # survives eviction and restart (AD-28, CAP-12).
         self._gate = self.gate or CrisisGate(
-            pipeline=self._pipeline, retrieval=self.registry.retrieval_switch
+            pipeline=self._pipeline,
+            retrieval=self.registry.retrieval_switch,
+            lower_ceiling=self.registry.lower_ceiling,
         )
 
     async def run(self) -> None:
