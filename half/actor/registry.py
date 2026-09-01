@@ -52,6 +52,7 @@ from half.store.records import (
     NEXT_PASS_AT,
     handoff_projection,
     handoff_record,
+    history_projection,
     plan_projection,
     plan_record,
     zone_projection,
@@ -560,6 +561,76 @@ class ActorRegistry:
             actor.store.record(
                 Op.SCHEDULE, f"sc_{fields[NEXT_PASS_AT]}", t, **dict(fields)
             )
+
+    # -- the nightly pass's doors (CAP-7, story 9c) ---------------------------
+    #
+    # Three more, and they follow ``schedule_record`` / ``zone_records`` /
+    # ``note_pass`` exactly: two reads that hydrate without blocking and
+    # without writing, and one write that goes through the mutex. The pass runs
+    # outside any turn, under the scheduler, so it needs the same shape the
+    # crisis gate and the scheduler needed — and it must not get a second,
+    # private route to a main's log, because the single writer is what lets the
+    # store skip a journal (AD-1).
+
+    def tension_table(self, main_id: str) -> dict[str, dict[str, Any]]:
+        """This main's tensions, as the log last folded them (CAP-7).
+
+        The whole table rather than a narrowing, and that is not an oversight:
+        a tension record carries a state, a pair of ids and a license, all of
+        which the pass needs, and no claim text at all — the text lives on the
+        two beliefs the pair names. There is nothing here to narrow away.
+        """
+        actor = self._reached(main_id)
+        self._evict_if_needed()
+        return {
+            ident: dict(record)
+            for ident, record in actor.store.state().tensions.items()
+        }
+
+    def belief_history(self, main_id: str) -> tuple[dict[str, Any], ...]:
+        """Every belief append this main has, narrowed to id, stamp and support.
+
+        **The log, in log order — not the fold**, and that is the one place in
+        Half where a read goes to the authority rather than the derived view.
+        It has to: *"what did this entry cite when the tension was recorded"* is
+        a question about the past, the fold holds only the present, and the
+        alternative is writing a counter onto the tension for the pass to
+        mutate — the AD-30 violation story 4 avoided by making salience
+        computed.
+
+        **Narrowed by field, hard.** A log read is every claim Half holds about
+        the main, and the pass has business with none of it: what decides
+        whether a disagreement is widening is how many *sources* an entry
+        cites. ``history_projection`` keeps the id, the stamp and the support
+        set and drops the claim, the subject, the ledger, the phone book and
+        the safety plan — see ``records.HISTORY_VISIBLE``.
+
+        Correction and expunge records are kept, carrying no support: a side
+        that was retracted stops accumulating, which is what the fold has
+        already turned into a resolution, and dropping the record would leave
+        the pass unable to see the entry at all.
+        """
+        actor = self._reached(main_id)
+        self._evict_if_needed()
+        return tuple(
+            history_projection(record.data) for record in actor.store.log
+        )
+
+    async def note_transition(
+        self, main_id: str, *, tension_id: str, t: str, fields: Mapping[str, Any]
+    ) -> None:
+        """Move one tension, under the mutex (AD-1, AD-3).
+
+        **Takes the fields, never the parts.** ``half.tensions.ledger`` composes
+        them and refuses the states nothing may write, so the registry does not
+        know what `widening` means and must not start deciding.
+
+        Appended under the **tension's own id**, which is what makes the fold
+        merge the new state over the pair and the license the mint recorded
+        rather than replacing them. A transition is an append and never an edit.
+        """
+        async with self.acquire(main_id) as actor:
+            actor.store.record(Op.TENSION, tension_id, t, **dict(fields))
 
     async def suspend_for_crisis(
         self, main_id: str, *, t: str, tier: str, score: int, fresh: bool = True

@@ -42,6 +42,17 @@ SCHEDULE_KEY: Final[str] = "schedule"
 #: would be a second way for derived state to exist that the log does not
 #: describe.
 #:
+#: v9 changed the fold's **tension** semantics (story 9c), and the bump is not
+#: optional even though no table changed. Two things moved at once: a tension
+#: record is now merged over the tension it names rather than replacing it, and
+#: a correction to either of a tension's two entries resolves that tension in
+#: place. A v8 view surviving the upgrade would therefore hold tensions still
+#: reading `fresh` over entries the main has already retracted — so the nightly
+#: pass would keep computing drift between a live claim and a deleted one, and
+#: the morning surface would reach for it. A derived view that disagrees with
+#: the log about which disagreements are still open is exactly what AD-3 says
+#: to discard and replay.
+#:
 #: v8 added the ``schedule`` row (story 9a). A view built by v7 has no place to
 #: put a due time, so a stale one surviving the upgrade would report every main
 #: as never scheduled — and the scheduler would reschedule the whole population
@@ -54,7 +65,7 @@ SCHEDULE_KEY: Final[str] = "schedule"
 #: loop in the shared ``expunged`` set, where the new transition guard does not
 #: look — so a stale view surviving the upgrade would have a main's ranking
 #: function disagree with their own log about which wantings are still open.
-DERIVED_VERSION: Final[int] = 8
+DERIVED_VERSION: Final[int] = 9
 
 #: Every object this module owns, in an order safe to drop: the FTS table
 #: references ``beliefs`` as its external content.

@@ -17,6 +17,24 @@ line. A wanting is not a fact; evidence of non-action changes a loop's *state*
 and never its truth, and there is no state in the vocabulary that means false.
 ``tests/test_loops.py`` asserts the structure as well as the behaviour, because
 this is exactly the rule everybody agrees with and then breaks by accident.
+
+**The resolution rule (CAP-7) — and it is the firewall's deliberate inverse.**
+A correction *does* reach the tension table, and must. A loop is a *wanting*,
+which evidence cannot refute; a tension is a claim **about two entries**, so
+retracting, revising or expunging one of them genuinely ends the disagreement.
+The two rules point in opposite directions because they are about opposite
+objects, and both are written down because each one, applied to the other's
+object, is a plausible-looking line: the firewall applied to tensions leaves
+them standing over entries that no longer exist, and this rule applied to loops
+lets a retracted belief demote a wanting.
+
+Resolution is a **state change, never a deletion**. The tension stays in the
+fold, keeps its pair and its license, and reads `resolved` — history is kept,
+because what a person once held in tension with themselves is part of the
+record. And nothing here says *which* of the two entries went, or that either
+was wrong: a `retract` and a `revise` resolve a tension identically, and the
+difference between *"you changed"* and *"Half was wrong about you"* stays on the
+correction record where the apology is composed from it.
 """
 
 from __future__ import annotations
@@ -30,6 +48,7 @@ from typing import Any, Final
 from half.errors import CorruptLogError
 from half.store.ops import AFTERCARE_STATES, CRISIS_STATES, Op
 from half.store.records import (
+    BETWEEN,
     LAST_MOVEMENT,
     LOOP,
     NEXT_PASS_AT,
@@ -38,6 +57,7 @@ from half.store.records import (
     Record,
     carried_forward,
 )
+from half.tensions.states import TensionState
 
 #: The fields a ``loop_transition`` carries forward into the loop table. Read
 #: from ``half.store.records`` rather than spelled here, so that the append
@@ -45,6 +65,13 @@ from half.store.records import (
 #: ``last_movement`` — which would be a loop that is permanently and invisibly
 #: not silent-detectable.
 _TRANSITION_FIELDS: Final[tuple[str, ...]] = (STATE, TIMESCALE, LAST_MOVEMENT)
+
+#: The state a tension takes when one of its two entries leaves the ledger
+#: (CAP-7). Read from ``half.tensions.states`` rather than spelled here, so the
+#: vocabulary, the append gate and this branch cannot drift to two spellings of
+#: the same word — which would be a tension the pass keeps evaluating over an
+#: entry that no longer exists.
+_RESOLVED: Final[str] = TensionState.RESOLVED.value
 
 
 @dataclass(slots=True)
@@ -188,6 +215,17 @@ def fold(records: Iterable[Record]) -> State:
                 # cases never mention the loop table.
                 target = _require_target(record)
                 state.beliefs.pop(target, None)
+                # **The resolution rule (CAP-7), and it is the firewall's
+                # deliberate inverse.** A tension is a claim about *two
+                # entries*, so removing one of them genuinely ends the
+                # disagreement — which is precisely what a loop's removal from
+                # this branch must never do, because a wanting is not a claim
+                # about anything a correction can reach. The tension is not
+                # deleted: it keeps its pair, its license and its place in the
+                # fold and reads `resolved`, because a tension the main lived
+                # inside is part of the record even after it closes. Nothing
+                # here records which entry went, or that either was wrong.
+                _resolve_tensions(state, target)
 
             case Op.EXPUNGE:
                 # **The firewall's one door (CAP-6).** A loop is removed only by
@@ -212,11 +250,36 @@ def fold(records: Iterable[Record]) -> State:
                 target = _require_target(record)
                 state.expunged.add(target)
                 state.beliefs.pop(target, None)
+                # An expunge that names *the tension itself* removes it: an
+                # erasure is an erasure, and this is the main's own deliberate
+                # *"erase this"* rather than a correction to one of its sides.
                 state.tensions.pop(target, None)
+                # An expunge that names one of its **sides** resolves it
+                # instead, on the same terms as a retract or a revise (CAP-7).
+                # The order matters: a name that is somehow both is erased *and*
+                # cannot then be resolved, because it is no longer there.
+                _resolve_tensions(state, target)
 
             case Op.TENSION:
                 if record.id not in state.expunged:
-                    state.tensions[record.id] = copy.deepcopy(dict(record.data))
+                    # **Merged, not replaced**, and that is what makes a
+                    # transition an append rather than an edit (AD-3). A
+                    # transition carries a state and nothing else, so a
+                    # wholesale replace would silently drop the pair the mint
+                    # recorded and the license the ladder admitted — a tension
+                    # that lost its two sides the first night the pass moved
+                    # it, with replay faithfully reproducing the loss. The loop
+                    # table has merged since story 8 for the same reason.
+                    #
+                    # **Read tolerant, write strict.** Nothing here checks the
+                    # state against the vocabulary; ``validate_tension_fields``
+                    # refuses an unknown one before the record is durable, which
+                    # is where the check belongs. Refusing it here as well would
+                    # mean a log written by a later build — through the
+                    # Ask-First path that adds a state — took a main's whole
+                    # fold down rather than costing one tension its evaluation.
+                    held = state.tensions.setdefault(record.id, {})
+                    held.update(copy.deepcopy(dict(record.data)))
 
             case Op.LOOP_TRANSITION:
                 # The only op that opens or moves a loop, and the only place in
@@ -324,6 +387,41 @@ def fold(records: Iterable[Record]) -> State:
                 )
 
     return state
+
+
+def _resolve_tensions(state: State, entry_id: str) -> None:
+    """Resolve every tension ``entry_id`` is one of the two sides of (CAP-7).
+
+    **A correction resolves a tension; it never deletes one.** This is story
+    8's loop rule turned exactly around, and the inversion is deliberate: a
+    loop is a *wanting*, which evidence cannot refute, so the correction path
+    is structurally unable to reach it; a tension is a claim *about two
+    entries*, so retracting, revising or expunging one of them genuinely ends
+    the disagreement. Leaving the tension standing over an entry that no longer
+    exists would have the nightly pass keep computing drift between a live
+    claim and a deleted one, and the morning surface reach for it.
+
+    What changes is the **state and nothing else**. The tension keeps its id,
+    its pair, its license and its place in the fold, so:
+
+    * history is kept — a resolved tension is not an erased one, and *"these
+      two things about you were once in tension"* stays true and readable;
+    * nothing records which side went, or that either was wrong. `retract`
+      (*"you changed"*) and `revise` (*"Half was wrong about you"*) land here
+      identically, because which of two claims about a person was mistaken is
+      not a question a tension answers — and the log keeps the two verbs apart
+      on the correction record, which is where the apology is composed from.
+
+    Pure, like everything else in this module: it reads the tension table it
+    was handed and writes one string.
+    """
+    for tension in state.tensions.values():
+        pair = tension.get(BETWEEN)
+        if not isinstance(pair, (list, tuple)) or entry_id not in pair:
+            continue
+        # Idempotent. A second correction to the other side, or a replay over
+        # the same log, must not produce a different fold.
+        tension[STATE] = _RESOLVED
 
 
 def _require_target(record: Record) -> str:

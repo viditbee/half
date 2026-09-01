@@ -571,6 +571,115 @@ jobs:
           fi
           uv run --locked --extra dev pytest -q -m one_clock_guarantee
 
+      - name: 'CAP-7: the tension ledger — the vocabulary, the drift, the pass'
+        # *Drift is tension velocity* is one of the three metrics the product
+        # is measured on, and every rule that makes it trustworthy is the kind
+        # that decays in silence: nothing breaks the day a state is spelled two
+        # ways, a threshold starts deciding widening, a model gets asked
+        # instead of the log, a transition replaces the mint instead of merging
+        # over it, or the nightly pass stops being idempotent. The suite stays
+        # green and a main is told their life is drifting on a number two
+        # builds would disagree about.
+        #
+        # Marker-selected rather than file-selected, for the reason the AD-18,
+        # AD-28, CAP-12, CAP-6, AD-9 and AD-19 steps are: it must not go green
+        # because another step happened to run one of the same files.
+        #
+        # **The floor carries margin that is not the cases it protects**, the
+        # rule review has had to establish for five stories running. 251
+        # selected, 215 required — and the 101 guarantee cases are marked
+        # separately and gated below, so deleting them lands on 150 and fails
+        # *three* times: both subset gates collect nothing, and this one drops
+        # 65 beneath its floor. The margin, 36, is deliberately far smaller
+        # than the guarantee count, so the slack cannot be absorbed by deleting
+        # guarantees — which is what review round 2 measured happening on the
+        # AD-19 gate.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap7 -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-7 cases collected: $collected"
+          if [ "$collected" -lt 215 ]; then
+            echo "::error::the CAP-7 gate collected $collected cases; it has stopped asserting"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap7
+
+      - name: 'CAP-7: a correction resolves a tension and never deletes one'
+        # A second gate over the subset that carries the story's most invertible
+        # rule, for the reason the CAP-6 firewall gate exists — and this is that
+        # firewall's deliberate **inverse**. A loop is a wanting, which evidence
+        # cannot refute, so the correction path is structurally unable to reach
+        # it; a tension is a claim about *two entries*, so retracting one of
+        # them genuinely ends the disagreement and the correction path must
+        # reach it. Each rule applied to the other's object is a
+        # plausible-looking line, which is why both are written down and both
+        # are gated.
+        #
+        # And the inverse of story 8's own hole is gated with them. That
+        # firewall passed its AST check while a demotion travelled through
+        # `state.expunged` instead of `state.loops` — a loop present in the
+        # fold, which every case asserted, and silently unable to move again.
+        # The equivalent here is a correction that resolves a tension *and also*
+        # drops it, which is indistinguishable from correct behaviour to any
+        # case that only reads the state afterwards. So every case below
+        # asserts the tension is present **by id** after retract, revise and
+        # expunge, keeps its pair and its license, is absent from the expunged
+        # set, and comes back from a rebuild.
+        #
+        # 14 selected, 12 required.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap7_resolution -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-7 resolution cases collected: $collected"
+          if [ "$collected" -lt 12 ]; then
+            echo "::error::the resolution gate collected $collected cases; a correction may now delete a tension"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap7_resolution
+
+      - name: 'CAP-7: neither side of a tension is wrong'
+        # A third gate, over the guards that have to fail when a ranking is
+        # **added** rather than merely pass because none exists. That
+        # distinction is the whole lesson of story 6c's no-authoring rule,
+        # which forbade three spellings of *writing* a field and let the
+        # content be composed elsewhere and handed to the blessed writer.
+        #
+        # So there are four layers, each with its own synthetic bypass: the
+        # append gate refuses a ranked field outright, on every spelling and
+        # through all three ways a record is built; the drift computation is
+        # asserted symmetric under swapping the pair, over the whole matrix of
+        # states and accumulation patterns; no expression in the tension
+        # surface may index the pair positionally or sort, max or min over it;
+        # and no name, argument, attribute, keyword or dict key in that surface
+        # may come from the vocabulary of ranking. Twenty mutations were run
+        # against them before this gate was written — a winner field on the
+        # ledger, on the pass and in the fold's resolution; a computation that
+        # prefers the first side; a comparator that orders the pair and changes
+        # no output; a whole new `half/tensions/rank.py`; and the side composed
+        # under an innocent name and handed to the blessed writer. Every one is
+        # red.
+        #
+        # Salience is gated here too, and deliberately: this story builds no
+        # decay, because story 4 made salience computed with a ninety-day
+        # half-life. The way that regresses is a counter stored on a tension
+        # for the pass to mutate — the exact AD-30 violation story 4 avoided,
+        # arriving one object over — so the pass's whole append vocabulary is
+        # pinned to one field and the half-life is pinned by value.
+        #
+        # 87 selected, 75 required.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap7_neutrality -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-7 neutrality cases collected: $collected"
+          if [ "$collected" -lt 75 ]; then
+            echo "::error::the neutrality gate collected $collected cases; a tension may now rank its two sides"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap7_neutrality
+
       - name: 'AD-5 and AD-30: retrieval degrades, and never writes'
         # The reranker fallback, the salience-is-derived assertions, the
         # no-clock scan, and the AD-3 discard-and-replay of an older derived

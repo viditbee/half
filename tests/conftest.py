@@ -90,6 +90,30 @@ def tier_change_log(tmp_path):
         s.record(Op.TENSION, "x_2", "2026-08-03T02:40Z",
                  between=["b_2", "b_3"], state="widening", model_tier="frontier",
                  **ladder.admitted())
+        # A tension that *moved* (story 9c). Here for the reason the loop
+        # transitions below are: the replay test is what proves a transition
+        # merges over the mint rather than replacing it, and that what comes
+        # back after a rebuild is the tension's new state **with its pair and
+        # its license still on it**. A transition that replaced the record
+        # would round-trip perfectly and be a tension with no sides — the drift
+        # computation would report it as not computable for ever, silently.
+        s.record(Op.TENSION, "x_1", "2026-08-04T02:10Z", state="persistent")
+        # And a tension resolved by a correction to one of its two entries —
+        # the *inverse* of the loop firewall, which is exactly why it is in the
+        # fixture that proves replay. A tension left `fresh` over a retracted
+        # entry would survive a rebuild looking live; one *deleted* by the
+        # correction would lose a record of the main's own life. It has to come
+        # back present and `resolved`.
+        seed_belief(s, "b_4", "2026-08-04T08:00Z", subject="self",
+                    claim="says the mornings are for writing", ledger="stated",
+                    independent=1, model_tier="frontier")
+        seed_belief(s, "b_5", "2026-08-04T08:01Z", subject="self",
+                    claim="has sent no draft since May", ledger="revealed",
+                    independent=2, model_tier="frontier")
+        s.record(Op.TENSION, "x_3", "2026-08-05T02:10Z",
+                 between=["b_4", "b_5"], state="fresh", model_tier="frontier",
+                 **ladder.admitted())
+        s.record(Op.RETRACT, "r_x3", "2026-08-06T09:00Z", target="b_5")
         s.record(Op.LOOP_TRANSITION, "l_1", "2026-08-03T02:41Z",
                  loop="buy-farmland", state="stalled", timescale="years",
                  last_movement="2026-03-12")

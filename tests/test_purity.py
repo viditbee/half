@@ -57,6 +57,15 @@ PURE_MODULES = (
     "half/loops/states.py",
     "half/loops/timescale.py",
     "half/loops/ledger.py",
+    # The tension ledger (CAP-7, story 9c). *Drift is tension velocity* is one
+    # of the three metrics the product is measured on, and a clock or a model
+    # reaching any of these three would make it a number two builds reading one
+    # log disagree about — and a model upgrade look like a life event. Widening
+    # is computed from the log and an **injected** ``now``, or it is not
+    # computed at all.
+    "half/tensions/states.py",
+    "half/tensions/widening.py",
+    "half/tensions/ledger.py",
 )
 
 #: **``half/schedule/due.py`` is deliberately not in that list**, and the reason

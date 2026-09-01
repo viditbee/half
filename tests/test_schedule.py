@@ -1034,11 +1034,15 @@ def test_a_derived_view_from_the_previous_shape_is_discarded_not_reused(tmp_path
     first tick rewrites the entire population's due times in one go.
 
     Asserted with the literal version rather than the constant, so bumping the
-    constant cannot make this pass by moving with it.
+    constant cannot make this pass by moving with it. Story 9c bumped it to 9
+    when the fold's tension semantics changed, and updating the literal here is
+    the deliberate acknowledgement that gate is asking for: what it forbids is
+    a bump that *nobody noticed*, and the stale view it plants is one version
+    behind whatever the current one is.
     """
     from half.store import db
 
-    assert db.DERIVED_VERSION == 8
+    assert db.DERIVED_VERSION == 9
 
     reg = ActorRegistry(tmp_path)
     set_due(reg, "vidit", NOON + 500)
@@ -1048,7 +1052,7 @@ def test_a_derived_view_from_the_previous_shape_is_discarded_not_reused(tmp_path
     import sqlite3
 
     conn = sqlite3.connect(tmp_path / "vidit" / "half.db")
-    conn.execute("PRAGMA user_version = 7")
+    conn.execute("PRAGMA user_version = 8")
     conn.commit()
     conn.close()
 
@@ -1910,8 +1914,16 @@ def test_the_scheduler_is_wired_into_the_shipped_composition(tmp_path):
     The clock is swapped before the tick so this case does not write real due
     times into a temporary tree off the wall clock, which the module docstring
     forbids and the first version of this did.
+
+    **The pass is asserted by value, not by keyword** (story 9c). Until then
+    ``work`` was ``Nothing`` and this case said so; now it must be the
+    consolidation pass holding *this* wiring's registry. An ``isinstance``
+    check would pass for a ``TensionPass`` wired to somebody else's registry or
+    to none at all, and a keyword search of the source would pass for one that
+    was constructed and thrown away.
     """
     from half.__main__ import build
+    from half.consolidate.pass_ import TensionPass
     from half.config import MAINS_ENV, ROOT_ENV, load
 
     config = load({ROOT_ENV: str(tmp_path), MAINS_ENV: "123:vidit,456:asha"})
@@ -1920,7 +1932,8 @@ def test_the_scheduler_is_wired_into_the_shipped_composition(tmp_path):
         assert isinstance(wiring.scheduler, Scheduler)
         assert set(wiring.scheduler.mains) == {"vidit", "asha"}
         assert wiring.scheduler.root == tmp_path
-        assert isinstance(wiring.scheduler.work, Nothing)
+        assert not isinstance(wiring.scheduler.work, Nothing)
+        assert wiring.scheduler.work == TensionPass(ledger=wiring.registry)
         assert isinstance(wiring.scheduler.clock, SystemClock)
         assert wiring.scheduler.bound == DEFAULT_BOUND
         assert wiring.scheduler.timeout == DEFAULT_TIMEOUT

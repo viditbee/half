@@ -23,6 +23,7 @@ from half.actor.runtime import Runtime
 from half.channel.telegram import TelegramChannel
 from half.channel.telegram_transport import PTBTransport
 from half.config import TELEGRAM_TOKEN_ENV, Config, load
+from half.consolidate.pass_ import TensionPass
 from half.crisis.classifier import (
     CLASSIFY_TIER,
     PER_CALL_MICRO_USD,
@@ -96,8 +97,16 @@ def build(config: Config, token: str) -> Wiring:
     # The due-time queue (AD-9). Every main carries their own ``next_pass_at``
     # at their local pre-dawn with jitter; the tick drains what is due under
     # bounded concurrency, holding a file lock so a second worker cannot drain
-    # the same queue. The pass body is a later story, so what it runs today is
-    # ``Nothing`` — which is a first-class outcome, not a placeholder (AD-27).
+    # the same queue.
+    #
+    # **What it runs is the consolidation pass** (CAP-7, story 9c), not
+    # ``Nothing``. Story 9a shipped the thing that runs a pass before any pass
+    # existed, which was correct then and is the placeholder now: a tick that
+    # drains a queue and calls a no-op is a scheduler nobody has proved runs
+    # work. ``TensionPass`` re-evaluates each main's tensions against the
+    # instant the tick read and appends the transitions that follow — no model
+    # call, no network, and nothing sent to anybody, because deciding whether
+    # any of it is worth saying is story 10's.
     #
     # The lock lives in ``config.root``, beside the mains rather than inside any
     # one of them: what it excludes is a second drain of this queue, not a
@@ -107,6 +116,7 @@ def build(config: Config, token: str) -> Wiring:
         registry=registry,
         mains=tuple(config.mains.values()),
         root=config.root,
+        work=TensionPass(ledger=registry),
     )
 
     return Wiring(channel=channel, registry=registry, secrets=secrets,

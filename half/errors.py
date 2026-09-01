@@ -134,6 +134,31 @@ class ScheduleError(HalfError, ValueError):
     """
 
 
+class TensionError(HalfError, ValueError):
+    """A tension change the ledger or the append gate refuses (CAP-7, story 9c).
+
+    Raised by the *writing* half of ``half.tensions.ledger`` — moving a tension
+    to a state outside the vocabulary, or to `resolved`, which is not a state
+    anything decides — and by ``records.validate_tension_fields``, which refuses
+    the same values one layer down where they would become durable. The
+    *reading* half never raises: reading a tension happens on the nightly pass,
+    and one unreadable tension must cost that tension its evaluation rather than
+    the whole pass.
+
+    **Also a ``ValueError``**, and for the reason ``LoopError`` and
+    ``ScheduleError`` are both: the conventions say no public store operation
+    raises a non-``HalfError``, while ``validate_fields`` has raised bare
+    ``ValueError`` for every malformed field since story 1. Inheriting from both
+    is how one refusal answers to both names rather than one of them silently
+    winning.
+
+    A refusal is loud on purpose. The log is append-only, so every path this
+    rejects is one that would put a permanent state into the record of a
+    disagreement — and a tension in a state no build can name is a mirror
+    nothing can read back.
+    """
+
+
 class RetrievalError(HalfError):
     """A fault in the retrieval layer (CAP-9)."""
 

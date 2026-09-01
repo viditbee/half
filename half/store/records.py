@@ -23,6 +23,7 @@ from half.errors import (
     LoopError,
     SchemaVersionError,
     ScheduleError,
+    TensionError,
     UnknownOpError,
 )
 from half.loops.ledger import LOOP
@@ -35,6 +36,9 @@ from half.loops.timescale import (
     moment,
 )
 from half.store.ops import SCHEMA_VERSION, Op, parse_op
+from half.tensions.states import TENSION_STATES
+from half.tensions.states import is_state as is_tension_state
+from half.tensions.widening import BETWEEN, RANKED_FIELDS, SIDES
 from half.text import terms
 
 #: Fields every record must carry.
@@ -238,6 +242,26 @@ def zone_projection(record: Mapping[str, Any]) -> dict[str, Any]:
     return {name: record[name] for name in ZONE_VISIBLE if name in record}
 
 
+#: The only fields of a belief record the nightly pass may see (CAP-7, story
+#: 9c): its id, when it was written, and what it cites.
+#:
+#: Narrowed by field for the reason ``ZONE_VISIBLE`` and ``HANDOFF_VISIBLE``
+#: are, and here the reason is sharper than either. The pass reads the **log**
+#: rather than the fold — it has to, because *"what did this entry cite a week
+#: ago"* is a question the fold cannot answer and the alternative is storing a
+#: counter for the pass to mutate (AD-30). A log read is every claim Half holds
+#: about the main, in full, and the pass has business with none of it: what
+#: decides whether a disagreement is widening is how many sources an entry
+#: cites, not what it says. So the claim, the subject, the ledger, the contact,
+#: the plan and every other field stay behind this line.
+HISTORY_VISIBLE: Final[tuple[str, ...]] = ("id", "t", "support")
+
+
+def history_projection(record: Mapping[str, Any]) -> dict[str, Any]:
+    """``record`` reduced to what the nightly pass may see."""
+    return {name: record[name] for name in HISTORY_VISIBLE if name in record}
+
+
 def handoff_record(record: Mapping[str, Any] | Any) -> bool:
     """Whether ``record`` is phone-book material.
 
@@ -398,7 +422,85 @@ _TYPED_FIELDS: Final[dict[str, type | tuple[type, ...]]] = {
     ZONE: str,
     NEXT_PASS_AT: str,
     TOLD_ZONE: bool,
+    # The tension ledger (CAP-7). ``between`` names the two entries that
+    # disagree, validated at the append for the reason every field above is:
+    # the log is append-only, so a ``between`` stored as a bare string is a
+    # tension whose two sides can never be compared and whose record can never
+    # be taken back. What a *valid* pair looks like is
+    # ``validate_tension_fields``' question; this is the type.
+    BETWEEN: (list, tuple),
 }
+
+
+def validate_tension_fields(fields: Mapping[str, Any]) -> None:
+    """Reject a tension the ledger could never read back (CAP-7, story 9c).
+
+    **Write strict, read tolerant**, on the same terms as a loop transition and
+    for the same reason: the log is append-only, so a value that decides how a
+    disagreement is named or whether it can be evaluated at all is refused
+    *before the record is durable*, with a hard error and never a default.
+
+    * ``state`` — one of the five, or nothing. A sixth, once durable, is a
+      disagreement every future fold carries and no build can name. It is
+      **optional** rather than required because a transition append carries a
+      state and a license change carries none, and demanding one on every
+      record would make promoting a tension impossible without restating it.
+    * **no ranked side, ever.** A field out of ``RANKED_FIELDS`` — a winner, a
+      loser, a primary, a mistaken one — is refused outright, because *"neither
+      side of a tension is wrong"* is structural and the log is append-only. A
+      ranking written once is one every future fold carries and no correction
+      takes back, and the natural way to write it is not malice but a helpful
+      line recording which entry the evidence went against so a message can be
+      phrased better. That is Half rendering the verdict the constitution
+      forbids, and it fails here rather than in review.
+    * ``between`` — two **distinct** entry ids, or nothing. A tension is a
+      record linking *two* entries that disagree (glossary); one naming a
+      single entry, three of them, or the same entry twice is not a
+      disagreement, and stored permanently it is a tension whose drift can
+      never be computed. Optional for the reason ``state`` is: a transition
+      does not restate the pair.
+
+    There is no branch here that picks a state for the main, none that supplies
+    a missing side, and none that puts the two sides in an order.
+
+    The read direction is deliberately looser — see ``half.store.fold`` — so a
+    log written by a *later* build, through the Ask-First path that adds a
+    state, still folds. A build that refused to read it would take a main's
+    whole store down over one word, where carrying it through costs that one
+    tension its evaluation and nothing else.
+    """
+    state = fields.get(STATE)
+    if state is not None and not is_tension_state(state):
+        raise TensionError(
+            f"field {STATE!r} must be one of {', '.join(sorted(TENSION_STATES))} "
+            f"on a {Op.TENSION.value} record, got {state!r}"
+        )
+    ranked = sorted(RANKED_FIELDS & fields.keys())
+    if ranked:
+        # The value is deliberately not quoted back: it names one of the main's
+        # own entries, and an exception message reaches a log line through
+        # every handler that formats one (AD-22). The field name is enough.
+        raise TensionError(
+            f"a {Op.TENSION.value} record may not carry {ranked}: neither side "
+            f"of a tension is wrong. For a person both entries can be true at "
+            f"once, which is the whole reason the object exists — a tension "
+            f"names the gap and never renders the verdict"
+        )
+    pair = fields.get(BETWEEN)
+    if pair is None:
+        return
+    ids = list(pair) if isinstance(pair, (list, tuple)) else []
+    if (
+        len(ids) != SIDES
+        or not all(isinstance(item, str) and item.strip() for item in ids)
+        or len(set(ids)) != SIDES
+    ):
+        raise TensionError(
+            f"field {BETWEEN!r} must name exactly {SIDES} distinct entries on a "
+            f"{Op.TENSION.value} record; a tension is the record of two entries "
+            f"that disagree, and one that names any other number is a "
+            f"disagreement nothing can ever evaluate"
+        )
 
 
 def validate_schedule_fields(fields: Mapping[str, Any]) -> None:
@@ -543,6 +645,13 @@ def validate_fields(fields: dict[str, Any], *, op: Op | None = None) -> None:
         # must refuse as a ``ScheduleError`` rather than as the generic type
         # check's bare ``ValueError``.
         validate_schedule_fields(fields)
+    if op is Op.TENSION:
+        # First, for the reason the loop and schedule gates are first: a
+        # malformed state must refuse as a ``TensionError`` rather than as the
+        # generic type check's bare ``ValueError``, so a caller wrapping the
+        # write path in ``except TensionError`` catches every refusal this gate
+        # makes — including "that is not a list".
+        validate_tension_fields(fields)
     for name, expected in _TYPED_FIELDS.items():
         if name not in fields or fields[name] is None:
             continue
