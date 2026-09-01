@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from half.errors import CorruptLogError
-from half.store.ops import Op
+from half.store.ops import CRISIS_STATES, Op
 from half.store.records import Record, carried_forward
 
 
@@ -36,6 +36,13 @@ class State:
     #: Here rather than in memory so that a cap survives eviction and restart —
     #: losing the store is the only thing that may lose a ceiling.
     ceiling: str | None = None
+    #: The last crisis record, or ``None`` if the mode has never opened
+    #: (CAP-12). Raw fields: whether the mode is *open* is the crisis module's
+    #: question, and the fold answers no clinical ones. Here rather than in
+    #: memory because a mode that ends at the next eviction is not a mode — the
+    #: main's next message would be answered by the ordinary pipeline, which is
+    #: an exit nobody decided.
+    crisis: dict[str, Any] | None = None
 
     def canonical_json(self) -> str:
         """Deterministic serialization — the unit of the byte-identical
@@ -47,6 +54,7 @@ class State:
                 "loops": self.loops,
                 "expunged": sorted(self.expunged),
                 "ceiling": self.ceiling,
+                "crisis": self.crisis,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -126,6 +134,20 @@ def fold(records: Iterable[Record]) -> State:
                         path="<fold>", line=0,
                     )
                 state.ceiling = rung
+
+            case Op.CRISIS:
+                mode = record.data.get("state")
+                if mode not in CRISIS_STATES:
+                    # Fatal for the reason an unreadable ceiling is: a crisis
+                    # record the fold cannot read would no-op, leaving a main
+                    # out of the mode while the log says they are in it — and
+                    # the next message answered by the ordinary pipeline.
+                    raise CorruptLogError(
+                        f"{record.op} record {record.id!r} has state {mode!r};"
+                        f" expected one of {sorted(CRISIS_STATES)}",
+                        path="<fold>", line=0,
+                    )
+                state.crisis = copy.deepcopy(dict(record.data))
 
             case _:  # pragma: no cover - guarded by the closed vocabulary
                 # A new Op added to the enum must not fold to nothing. Silently

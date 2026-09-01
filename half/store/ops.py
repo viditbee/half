@@ -20,7 +20,12 @@ from typing import Final
 #: and the reason the bump is not optional: an older build silently folding a
 #: log whose ceiling records it cannot see would resolve every license
 #: uncapped, and a main mid-aftercare would be un-suppressed by a rollback.
-SCHEMA_VERSION: Final[int] = 2
+#:
+#: v3 added ``crisis`` (story 6a), for the same reason one rung stronger. A
+#: build that could not see a crisis record would fold a main in the mode to a
+#: main who is not, and answer their next message through the ordinary
+#: pipeline — a silent mode exit, which CAP-12 forbids outright.
+SCHEMA_VERSION: Final[int] = 3
 
 
 class Op(StrEnum):
@@ -47,6 +52,28 @@ class Op(StrEnum):
     #: reads as protection. AD-26 keeps *volatile* state out of the log, and a
     #: thirty-day governance decision is not volatile.
     CEILING = "ceiling"
+    #: The main entered crisis mode, or an operator reversed that entry
+    #: (CAP-12).
+    #:
+    #: In the log for the reason the ceiling is, and one degree more urgently.
+    #: A mode held only in memory ends at the next eviction or restart, and the
+    #: main's following message is answered by ordinary Half — which is a mode
+    #: exit that nobody decided and nobody can see. It is also the only record
+    #: that the mode ever opened: the ceiling append says a cap exists, not what
+    #: put it there, and the clinical reviewer's first question is how often
+    #: this fires and on what.
+    #:
+    #: **Content-free** (AD-22). The record carries the tier, a signal count and
+    #: the state — never the message, never a phrase, never a claim.
+    CRISIS = "crisis"
+
+
+#: The two states a ``crisis`` record may carry. Named here, beside the op, so
+#: the fold that validates them and the registry that writes them cannot drift
+#: to two different spellings of the same word.
+CRISIS_ENTERED: Final[str] = "entered"
+CRISIS_REVERSED: Final[str] = "reversed"
+CRISIS_STATES: Final[frozenset[str]] = frozenset({CRISIS_ENTERED, CRISIS_REVERSED})
 
 
 #: Frozen membership test. Kept separate from the enum so a lookup never

@@ -126,24 +126,19 @@ jobs:
       - name: 'CAP-12: the crisis mode — the switch, the moment, the never-list'
         # The one path where a mistake is unrecoverable, so it gets a gate of
         # its own rather than living inside "tests failed". It covers the tier
-        # table, the templated reply, the never-list, the ceiling that drops on
-        # entry, and the C-SSRS-shaped escalating red-team suite.
+        # table, the two actions and their two costs, the templated reply, the
+        # never-list, the golden pins over the reviewed corpus, and the
+        # C-SSRS-shaped escalating red-team suite.
         #
         # Marker-selected rather than file-selected, for the reason the AD-18
         # and AD-28 steps give: it must not go green because another step
         # happened to run one of the same files.
         #
-        # The count is asserted for the same reason as well — `pytest -m cap12`
-        # against a renamed marker deselects everything and exits 0, which
-        # looks identical to a passing run. --strict-markers (pyproject)
-        # catches a misspelling; this floor catches a rename, and catches
-        # someone quietly unmarking the cases the gate exists for.
-        #
-        # Both crisis files are marked file-wide here, unlike test_ladder.py,
-        # and that is correct rather than lazy: every case in both is CAP-12,
-        # so there is nothing unrelated for the count to be padded with. 139
-        # selected, 120 required: prune a redundant phrasing case, do not gut
-        # the gate.
+        # The count is asserted because `pytest -m cap12` against a renamed
+        # marker deselects everything and exits 0, which looks identical to a
+        # passing run. --strict-markers (pyproject) catches a misspelling; this
+        # floor catches a rename, and catches someone quietly unmarking the
+        # cases the gate exists for.
         #
         # **This gate is not clinical review.** The companion's build
         # requirement 6 is a qualified reviewer before launch, and a green run
@@ -153,11 +148,36 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap12 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-12 cases collected: $collected"
-          if [ "$collected" -lt 120 ]; then
+          if [ "$collected" -lt 360 ]; then
             echo "::error::the CAP-12 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap12
+
+      - name: 'CAP-12: crisis state survives eviction, restart and a full disk'
+        # A second gate over a subset, because the first floor had a silent
+        # failure mode that review found by arithmetic: it was set to exactly
+        # the count remaining after deleting every durability case, so the
+        # whole durable half of the story could be removed — the mode, the
+        # ceiling and the retrieval disable all reverting to memory — with the
+        # CAP-12 step still green and still above its floor.
+        #
+        # These are the cases driven through the real runtime and the real
+        # store: the mode across a restart and an eviction, the ceiling in the
+        # log, the retrieval switch rehydrated off, the entry record, the
+        # operator reversal, and a reply still sent when the disk is full. A
+        # subset with its own floor cannot be hollowed out by a floor set on
+        # the superset.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap12_durable -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-12 durability cases collected: $collected"
+          if [ "$collected" -lt 26 ]; then
+            echo "::error::the durability gate collected $collected cases; the mode may no longer be durable"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap12_durable
 
       - name: 'AD-5 and AD-30: retrieval degrades, and never writes'
         # The reranker fallback, the salience-is-derived assertions, the

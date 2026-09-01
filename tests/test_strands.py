@@ -290,14 +290,15 @@ def test_the_default_gate_disables_the_registrys_switch_for_that_main(
     own gate, because those prove the gate honours a switch it is *given*, not
     that the runtime gives it the right one.
     """
-    monkeypatch.setattr(CrisisGate, "_is_crisis", lambda self, inb: True)
+    monkeypatch.setattr(CrisisGate, "_is_crisis",
+                        lambda self, inb, **kw: True)
     root = tmp_path / "mains"
     reg = ActorRegistry(root)
     assert reg.retrieval_switch("vidit").enabled
 
-    # _respond_to_crisis is story 6 and raises; run()'s per-message isolation
-    # absorbs that, but the disable happened before it.
-    run_turns(root, [("123", "safe word")], registry=reg)
+    # The text is deliberately ordinary: the override is what makes this a
+    # crisis turn, so the assertion is about wiring rather than detection.
+    run_turns(root, [("123", "how is the garden")], registry=reg)
     assert not reg.retrieval_switch("vidit").enabled
     reg.close()
 

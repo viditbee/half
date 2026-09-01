@@ -20,27 +20,55 @@ Both have one root: Half was still running its normal architecture. So this is
 not a special input to the ordinary system. It is a separate mode entered
 before any normal machinery touches the message.
 
-**Entering does four things, in this order:**
+**Two actions, with two costs.** Asking is cheap and reversible; entering is
+expensive and durable. A build that collapses them governs a main for thirty
+days because they mentioned a film, and that is not the asymmetry the companion
+argues for.
 
-1. *Ledger retrieval is hard-disabled* for that main. Not discouraged — a
-   disabled retriever raises, and never returns an empty set a caller could
-   read as *"this main has nothing"*. Nothing true about the main's past is
-   safe to surface here.
-2. *The license ceiling drops to `behave`, durably.* If entry did not cap, a
-   crisis conversation would be followed by ordinary Half — nudges, tensions,
-   the mirror. Restoring it is story 6c, so a slipped 6c leaves Half quiet
-   rather than loud, which is the safe failure.
-3. *The reply is assembled from templates*, from a plan chosen by tier. The
-   main's text is not an argument to the assembly, so no phrasing carries
-   anything into the reply.
-4. *The mode is held.* Nothing here exits it: the companion leaves *who
-   decides it is over* an open question, and a build that answered it silently
-   would be answering a clinical question with a timeout.
+*Asking* returns one gentle direct question and nothing else. No mode, no cap,
+nothing written, nothing durable. If the answer is no, it is over.
 
-**Nothing is recorded.** The pipeline is not called, so no belief is appended
-for a crisis turn — not the main's message, and above all nothing about a third
-party. The ceiling record is the single exception, and it is a governance fact
-about the main rather than a claim about anybody.
+*Entering* does four things, in this order:
+
+1. *The suspension is recorded, durably and under the actor's mutex* — the
+   crisis record, the ceiling drop and the retrieval disable together, because
+   a build where two of the three land is a build where a main is capped but
+   retrievable. The crisis record is also the only trace that the mode ever
+   opened, and the clinical reviewer's first question is how often it fires and
+   on what. It carries a tier and a count, never a word of what was said.
+2. *Ledger retrieval is hard-disabled* for that main — and stays disabled
+   across eviction and restart, because it is read back from the log at
+   hydration. A disabled retriever raises; it never returns an empty set a
+   caller could read as *"this main has nothing"*.
+3. *The license ceiling drops to `behave`*, durably. Restoring it is story 6c,
+   so a slipped 6c leaves Half quiet rather than loud.
+4. *The mode is held* — in the log, not in memory. Nothing here exits it: the
+   companion leaves *who decides it is over* an open question, and a build that
+   answered it with a timeout, a keyword or a process restart would be
+   answering a clinical question by accident.
+
+**Reversing a false entry.** A durable cap with no way back is a trap rather
+than a safety feature, so there is one documented, deliberate, recorded path:
+
+    from half.actor.registry import ActorRegistry
+    registry = ActorRegistry("~/.half")
+    asyncio.run(registry.reverse_crisis(
+        "vidit", t="2026-09-01T22:14:00Z",
+        because="entered on a film quote; confirmed with the main"))
+
+That is an operator action with a stated reason that outlives whoever typed it.
+It is not a mode-exit policy and must never be automated — see
+``ActorRegistry.reverse_crisis``.
+
+**Nothing may cost the main their reply.** Every durable step is inside one
+broad ``except``: a corrupt log, a full disk, a refactored signature, anything.
+The suspension is best-effort and the reply is not. An earlier version let a
+``StoreError`` out of the switch resolver and the main received nothing at all,
+which is the omission headline reproduced exactly.
+
+**Nothing is recorded but the suspension.** The pipeline is not called on a
+crisis turn or an asking turn, so no belief is appended — not the main's
+message, and above all nothing about a third party.
 
 **Never gated by tier.** Nothing on this path reads a plan, a subscription or a
 payment state; ``signals.assess`` takes only the message. Free and lapsed mains
@@ -50,117 +78,142 @@ get identical behaviour because there is no value to branch on.
 from __future__ import annotations
 
 import logging
-from typing import Awaitable, Callable
+from dataclasses import dataclass, field
+from typing import Awaitable, Callable, Protocol, runtime_checkable
 
 from half.channel.port import Inbound
 from half.crisis import respond
-from half.crisis.signals import ACTION_FOR, Action, Assessment, Tier, assess
-from half.errors import CrisisError, HalfError
-from half.governance.ladder import Ceiling, License
-from half.retrieval.rank import RetrievalSwitch
+from half.crisis.signals import (
+    Action,
+    Assessment,
+    Tier,
+    assess,
+    is_affirmative,
+)
 
 logger = logging.getLogger(__name__)
 
 #: What the gate delegates to once a turn is judged ordinary.
 Pipeline = Callable[[Inbound], Awaitable[str | None]]
 
-#: Resolves one main's retrieval switch. A function rather than a switch,
-#: because crisis is a state of one person and not of the worker process.
-SwitchFor = Callable[[str], RetrievalSwitch]
 
-#: Lowers one main's license ceiling, durably (AD-28). The registry's
-#: ``lower_ceiling``: it appends before it moves the in-memory value, so a
-#: crash between the two leaves a main *more* capped than the process thought.
-#: ``t`` is the inbound stamp — nothing on this path reads a clock (AD-30).
-LowerCeiling = Callable[..., Ceiling]
+@runtime_checkable
+class CrisisStore(Protocol):
+    """The durable half of the mode. ``ActorRegistry`` satisfies it.
 
-#: The rung crisis entry caps every license at. One rung, and the weakest.
-CRISIS_CEILING: License = License.BEHAVE
+    Two operations, deliberately: reading whether the mode is open, and
+    applying the whole suspension at once. Splitting the second into a switch,
+    a ceiling and a record gave three things that could land separately, and
+    two of them landing is the state nobody designed.
+    """
+
+    def crisis_open(self, main_id: str) -> bool:
+        """Whether this main is in the mode, per their log."""
+        ...
+
+    async def suspend_for_crisis(
+        self, main_id: str, *, t: str, tier: str, score: int
+    ) -> None:
+        """Record the entry, drop the ceiling, disable retrieval — atomically
+        enough that no two of the three can be observed apart, and under the
+        main's own mutex (AD-1)."""
+        ...
+
+
+@dataclass(slots=True)
+class VolatileCrisisStore:
+    """A standalone gate's memory of who is in the mode.
+
+    **Not durable, and it says so.** A gate constructed without a real store —
+    in a test, or in a caller that has not wired one — still holds the mode for
+    the life of the process, still caps nothing, and loses everything on
+    restart. The runtime always passes the registry; this exists so that a gate
+    with no store fails visibly in one direction only, by forgetting, rather
+    than by pretending it wrote something.
+    """
+
+    open_for: set[str] = field(default_factory=set)
+
+    def crisis_open(self, main_id: str) -> bool:
+        return main_id in self.open_for
+
+    async def suspend_for_crisis(
+        self, main_id: str, *, t: str, tier: str, score: int
+    ) -> None:
+        self.open_for.add(main_id)
 
 
 class CrisisGate:
     """Every inbound message crosses this before anything else sees it."""
 
     def __init__(
-        self,
-        pipeline: Pipeline,
-        retrieval: SwitchFor | None = None,
-        lower_ceiling: LowerCeiling | None = None,
+        self, pipeline: Pipeline, store: CrisisStore | None = None
     ) -> None:
         self._pipeline = pipeline
-        # CAP-12 requires ledger retrieval to be hard-disabled in crisis mode,
-        # and the gate is the only place that knows the mode has been entered.
-        # It is resolved per main: the runtime passes the actor registry's
-        # resolver, so the switch this turns off is the one that main's own
-        # retriever reads. A gate built without one keeps its own per-main
-        # switches rather than a single shared flag, so even the standalone
-        # case cannot silence a bystander.
-        self._own: dict[str, RetrievalSwitch] = {}
-        self._retrieval = retrieval if retrieval is not None else self._mine
-        # Same shape, same reason. The runtime hands over the registry's
-        # ``lower_ceiling``, which is durable and survives eviction and restart
-        # (AD-28). A gate built without one caps in memory only, per main, so a
-        # standalone gate still caps — it just cannot promise durability, and
-        # says so rather than pretending.
-        self._ceilings: dict[str, Ceiling] = {}
-        self._lower_ceiling = lower_ceiling
-        # Who is in the mode. Volatile by AD-26 and deliberately so: the
-        # *durable* half of entry is the ceiling, which is a governance
-        # decision recorded in the log. Membership here is how the mode holds
-        # across a conversation. A restart therefore re-detects rather than
-        # remembering — and a restarted main is still capped at `behave`, which
-        # is the quiet failure rather than the loud one.
-        self._held: set[str] = set()
-        # Raised by a third-party mention or a sudden behaviour change, and by
-        # nothing else. Counts only: never content, never a belief (AD-22,
-        # AD-26). Neither signal can enter the mode, alone or together — entry
-        # reads ``ACTION_FOR`` and this dict is not in that path.
-        self._vigilance: dict[str, int] = {}
+        self._store: CrisisStore = store if store is not None else VolatileCrisisStore()
+        # Mains this process suspended, kept beside the durable record rather
+        # than instead of it. If the append failed — a full disk, a corrupt log
+        # — the main is still in the mode for as long as this worker lives, and
+        # the failure is loud in the log rather than silent in the product.
+        self._fallback: set[str] = set()
+        # Who has an unanswered question from Half, by the message it was asked
+        # on. Volatile by AD-26, and correctly so: this is how the conversation
+        # is *right now*, it expires by itself, and losing it costs a
+        # confirmation shortcut rather than a mode. It also stops Half asking
+        # twice in a row, which would be nagging in the one register where
+        # nagging is unforgivable.
+        self._asked: dict[str, str] = {}
 
-    def _mine(self, main_id: str) -> RetrievalSwitch:
-        return self._own.setdefault(main_id, RetrievalSwitch())
+    # -- the turn -------------------------------------------------------------
 
     async def handle(self, inbound: Inbound) -> str | None:
-        """Assess, then either respond directly or delegate inward.
+        """Assess once, then act on that one assessment.
 
         Returns the reply text, or ``None`` for silence — which is a first-class
         outcome for an *ordinary* turn (AD-27) and never one for a crisis turn.
         """
-        if self._is_crisis(inbound):
-            # Suspended first, so retrieval is off and the cap is down before
-            # any reply is composed — and before anything a later story adds
-            # between these lines could run against a live ledger.
-            self._suspend(inbound)
-            reply = await self._respond_to_crisis(inbound)
-            # Held last, so the *first* crisis turn is assessed on its own
-            # signal and every turn after it resolves to the held plan.
-            self._held.add(inbound.main_id)
-            return reply
+        decision = self._decide(inbound)
+        # The override hook is consulted only when the tier table did not
+        # already decide, so an ordinary turn costs one assessment and a crisis
+        # turn costs one assessment.
+        if decision.enters or self._is_crisis(inbound, decision=decision):
+            self._asked.pop(inbound.main_id, None)
+            await self._suspend(inbound, decision)
+            return await self._respond_to_crisis(inbound, decision=decision)
 
-        assessment = self._assess(inbound)
-        if assessment.action is Action.SURFACE:
+        if decision.action is Action.SURFACE:
             # Somebody other than the main. A resource the main can share, and
             # it stops here: the mode is not entered, no ceiling moves, and the
             # pipeline is not called — so no belief about that person is
             # written to any store.
-            return respond.reply_for(assessment)
+            self._asked.pop(inbound.main_id, None)
+            return respond.reply_for(decision)
+
+        if decision.action is Action.ASK:
+            self._asked[inbound.main_id] = inbound.external_id
+            return respond.reply_for(decision)
+
+        # Any other resolution answers or abandons a standing question.
+        self._asked.pop(inbound.main_id, None)
         return await self._pipeline(inbound)
 
     # -- the two seams --------------------------------------------------------
 
-    def _is_crisis(self, inbound: Inbound) -> bool:
+    def _is_crisis(
+        self, inbound: Inbound, *, decision: Assessment | None = None
+    ) -> bool:
         """Whether this turn is handled as crisis.
 
-        True while the mode is held, because nothing exits it, and otherwise
-        exactly when the tier table says the signal enters (CAP-12). A
-        vigilance-only tier cannot reach this branch: entry is a lookup in
-        ``ACTION_FOR``, not a condition spelled out here.
+        True while the mode is open, because nothing exits it, and otherwise
+        exactly when the tier table maps the signal to ``Action.ENTER``. Entry
+        is a lookup in that table, never a condition spelled out here.
         """
-        if inbound.main_id in self._held:
-            return True
-        return self._assess(inbound).enters
+        found = decision if decision is not None else self._decide(inbound)
+        return found.enters
 
-    async def _respond_to_crisis(self, inbound: Inbound) -> str:
+    async def _respond_to_crisis(
+        self, inbound: Inbound, *, decision: Assessment | None = None
+    ) -> str:
         """The reply, assembled from templates (CAP-12).
 
         The tier chooses a plan; the plan is a tuple of template lines. The
@@ -168,98 +221,90 @@ class CrisisGate:
         assessment — so no phrasing of a method request can produce method
         content, and no reply is ever empty.
         """
-        return respond.reply_for(self._crisis_tier(inbound))
+        found = decision if decision is not None else self._decide(inbound)
+        if not found.enters:
+            # Reached when a subclass overrides ``_is_crisis``. Treat it as the
+            # mode being open rather than raising: an exception here would cost
+            # the main their reply.
+            found = Assessment(Tier.HELD, Action.ENTER, scored=False)
+        return respond.reply_for(found)
 
-    # -- entering -------------------------------------------------------------
+    # -- deciding -------------------------------------------------------------
 
-    def _assess(self, inbound: Inbound) -> Assessment:
-        """The tier table's verdict on this message, and nothing else."""
-        return assess(inbound.text)
+    def _decide(self, inbound: Inbound) -> Assessment:
+        """What this turn is. Pure — every side effect belongs to ``handle``.
 
-    def _crisis_tier(self, inbound: Inbound) -> Assessment:
-        """The assessment the reply is built from.
+        An open mode outranks everything: a main already in it gets the held
+        plan whatever this turn says, including a turn that reads as ordinary
+        and including one arguing that the mode should end.
 
-        A main already in the mode gets the held plan whatever this turn says —
-        including a turn that reads as ordinary, and including one arguing that
-        the mode should end. Re-running the opening plan every turn would
-        thank them for telling Half something they told it an hour ago.
+        A standing question changes how the next message reads, and only the
+        next one. *Yes*, *sometimes*, *kind of* and *maybe* all enter — treating
+        a hedged yes as a no is the hedge that makes asking pointless. More
+        hedging does **not** ask again: the question already stands, and asking
+        twice in a row is nagging in the one register where nagging is
+        unforgivable.
         """
-        if inbound.main_id in self._held:
+        if self._open(inbound.main_id):
             return Assessment(Tier.HELD, Action.ENTER, scored=False)
-        found = self._assess(inbound)
-        if found.enters:
+
+        found = assess(inbound.text)
+        if inbound.main_id not in self._asked:
             return found
-        # Reached when a subclass overrides ``_is_crisis`` — the seam the
-        # runtime tests use. Treat it as the mode being open rather than
-        # raising: an exception here would cost the main their reply.
-        return Assessment(Tier.HELD, Action.ENTER, scored=False)
+        if found.action is Action.NONE and is_affirmative(inbound.text):
+            return Assessment(Tier.CONFIRMATION, Action.ENTER, scored=False, score=1)
+        if found.action is Action.ASK:
+            return Assessment(Tier.NONE, Action.NONE, score=found.score)
+        return found
 
-    def _suspend(self, inbound: Inbound) -> None:
-        """Disable this main's retrieval and drop their ceiling to `behave`.
+    def _open(self, main_id: str) -> bool:
+        """Whether the mode is open for this main, durably or in this process.
 
-        Idempotent, and ordered: the switch is in memory and cannot fail, so it
-        goes first. The ceiling append can fail — a full disk, a corrupt log —
-        and a failure to persist a cap must never cost the main their reply,
-        which is why it is caught here. The in-memory cap is kept either way,
-        so the process stays capped even when the log did not take it.
+        A store that cannot be read is not allowed to raise on the reply path,
+        and it is not allowed to put every main into the mode either: an
+        unreadable store answers *not open*, while the mains this process
+        suspended stay suspended regardless.
         """
-        self._retrieval(inbound.main_id).disable()
-        self._cap(inbound)
-
-    def _cap(self, inbound: Inbound) -> None:
-        capped = self._ceilings.get(inbound.main_id, Ceiling()).lowered_to(
-            CRISIS_CEILING
-        )
-        self._ceilings[inbound.main_id] = capped
-        if self._lower_ceiling is None:
-            return
+        if main_id in self._fallback:
+            return True
         try:
-            self._lower_ceiling(
-                inbound.main_id,
-                CRISIS_CEILING,
-                t=inbound.t,
-                because="crisis mode entered (CAP-12)",
-            )
-        except HalfError:
-            # No content, and no message text (AD-22). Loud in the log because
-            # a cap that did not persist is a main who comes back uncapped.
+            return self._store.crisis_open(main_id)
+        except Exception:
+            # No content, no message text (AD-22). The main still gets a reply.
             logger.exception(
-                "crisis ceiling did not persist for main=%s; capped in memory "
-                "only", inbound.main_id
+                "could not read crisis state for main=%s; treating the mode as "
+                "closed for this turn", main_id
             )
+            return False
 
-    # -- vigilance ------------------------------------------------------------
+    async def _suspend(self, inbound: Inbound, decision: Assessment) -> None:
+        """Enter the mode for this main. Never raises.
 
-    def raise_vigilance(self, main_id: str, tier: Tier) -> int:
-        """Note a signal that raises vigilance and can never enter the mode.
+        Broad on purpose. The narrow version caught ``HalfError`` only, and the
+        two failures that actually happened were neither: hydrating the actor
+        to reach its retrieval switch opened a store — so a ``StoreError`` came
+        out of the *resolver* before the reply was composed — and an
+        ``OSError`` from a full disk was never a ``HalfError`` at all. On the
+        one path where going quiet is a documented catastrophic failure, the
+        set of exceptions worth losing a reply over is empty.
 
-        A third-party mention (a friend's message about the main) and a sudden
-        change in pattern. **Never alone**, and here that is structural rather
-        than remembered: this refuses any tier the table does not map to
-        ``Action.VIGILANCE``, and it does not touch ``_held``, so there is no
-        spelling of a call to this method that opens the mode.
-
-        Returns the running count for this main. Counts only — no content, no
-        belief, nothing durable (AD-22, AD-26).
+        ``CancelledError`` is not caught: shutdown is not a message failure.
         """
-        if ACTION_FOR.get(tier) is not Action.VIGILANCE:
-            raise CrisisError(
-                f"{tier} is not a vigilance signal. A third-party mention and "
-                "a behaviour change raise vigilance and never enter the mode; "
-                "entering is decided by the tier table on the message itself"
+        self._fallback.add(inbound.main_id)
+        try:
+            await self._store.suspend_for_crisis(
+                inbound.main_id,
+                t=inbound.t,
+                tier=str(decision.tier),
+                score=decision.score,
             )
-        count = self._vigilance.get(main_id, 0) + 1
-        self._vigilance[main_id] = count
-        return count
-
-    def vigilance(self, main_id: str) -> int:
-        """How many vigilance-raising signals this main has accumulated.
-
-        Read by later stories — 6b's handoff and 6c's aftercare — and by
-        nothing in the entry path, which is the point: vigilance informs how
-        closely Half is watching, and never whether the mode opens.
-        """
-        return self._vigilance.get(main_id, 0)
+        except Exception:
+            # Loud, because a suspension that did not persist is a main who
+            # comes back uncapped and out of the mode. Content-free (AD-22).
+            logger.exception(
+                "crisis suspension did not persist for main=%s; held in memory "
+                "only for the life of this process", inbound.main_id
+            )
 
     # -- introspection --------------------------------------------------------
 
@@ -270,6 +315,12 @@ class CrisisGate:
         companion's first open question — who decides it is over, and how the
         mirror comes back without feeling like surveillance resuming — and
         answering it with a timeout, a keyword or a quiet expiry would be
-        answering a clinical question in code review.
+        answering a clinical question in code review. Undoing a *false* entry
+        is a different thing and lives on the registry, where it is deliberate,
+        recorded and reasoned.
         """
-        return main_id in self._held
+        return self._open(main_id)
+
+    def awaiting_answer(self, main_id: str) -> bool:
+        """Whether a question from Half is standing for this main."""
+        return main_id in self._asked

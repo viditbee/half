@@ -91,6 +91,17 @@ def tier_change_log(tmp_path):
         s.record(Op.LOOP_TRANSITION, "l_1", "2026-08-03T02:41Z",
                  loop="buy-farmland", state="stalled", timescale="years",
                  last_movement="2026-03-12")
+        # A crisis entry and an operator reversal (CAP-12). Here rather than in
+        # a fixture of their own because the replay test is what proves the new
+        # op folds, round-trips through SQLite and reproduces byte-identically
+        # — and because "last record wins" is exactly the property a fold can
+        # get wrong while every other test stays green.
+        s.record(Op.CRISIS, "cr_tiered_1", "2026-08-04T01:00Z",
+                 state="entered", tier="disclosure", score=2)
+        s.record(Op.CEILING, "c_tiered_1", "2026-08-04T01:00Z",
+                 rung="behave", because="crisis mode entered (CAP-12)")
+        s.record(Op.CRISIS, "cr_tiered_2", "2026-08-05T09:30Z",
+                 state="reversed", because="false positive, confirmed")
         yield s
 
 

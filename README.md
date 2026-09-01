@@ -37,7 +37,8 @@ being unexpected rather than being wrong. No amount of corroboration promotes a
 belief on its own; promotion is an event involving you, recorded as an append.
 An unsupported claim may be *asked*, never asserted. Quarantine pins a belief
 at `behave` permanently, and the fold carries the pin forward so no later
-record can drop it. Above all of it sits one ceiling per person, applied where
+record can drop it. Above all of it sits one ceiling per person — one cap over
+every belief and tension that person has, not one shared by the worker — applied where
 licenses are resolved rather than where messages are composed, so a new surface
 cannot bypass it by forgetting to check; it lives in the log, so it survives
 eviction and restart, and it can cap but never promote. Both halves are gated
@@ -54,39 +55,76 @@ A green test suite is not clinical review.
 
 ## Crisis
 
-The safe word is **`red plum`**. Typing it anywhere in any message — in the
-middle of a sentence, in any case, run together as one word — puts Half into
-crisis mode immediately. Nothing is scored, no threshold has to be cleared, and
-nothing can outvote it. It never changes.
+**Asking and entering are two different things, and they cost differently.**
+Half asks a gentle direct question on a hunch — a hedged sentence, algospeak, a
+misspelling, letters spaced out, a preparatory act, a farewell. That costs one
+question you can wave away: no mode, no cap, nothing written, and if you say no
+it is over. Half only *enters* the mode on the safe word, on an explicit
+disclosure, on an affirmative answer to that question, or when you are reaching
+a crisis line — because entering is durable and suspends the rest of the
+product. A build that collapses the two governs you for a month because you
+mentioned a film.
+
+The safe word is **`lantern hour`**. Typing it anywhere in any message — mid
+sentence, in any case, pluralised, mistyped by one letter, run together as one
+word, or with its letters spaced apart — enters the mode immediately. Nothing
+is scored, no threshold has to be cleared, and nothing can outvote it. It never
+changes.
 
 Crisis mode is a pre-filter ahead of the normal pipeline rather than a branch
-inside it (AD-10), so no route into an ordinary turn can skip it. Entering does
-four things: ledger retrieval is hard-disabled for that person — a disabled
-retriever *raises* rather than returning an empty set somebody could read as
-"nothing here" — the global license ceiling drops to `behave` and is written to
-the log, so it survives eviction and restart; the reply is assembled from
-templates; and the mode is held, because nothing in this story exits it.
+inside it (AD-10), so no route into an ordinary turn can skip it. Entering
+records the whole suspension at once, in your own log and under your actor's
+lock: ledger retrieval is hard-disabled — a disabled retriever *raises* rather
+than returning an empty set somebody could read as "nothing here" — your
+license ceiling drops to `behave`, and the mode itself is recorded. All three
+come back together when your actor is rehydrated, so an eviction under memory
+pressure or a process restart cannot end the mode or quietly switch retrieval
+back on. Nothing in Half exits the mode: the question of who decides a crisis
+is over is a clinical one, and a timeout is not an answer to it.
+
+Nothing may cost you a reply. Every durable step is best-effort and the reply
+is not: a corrupt log, a full disk or a refactored signature is caught, logged
+without content, and the templated reply is still sent.
 
 **Replies are templated, never generated, and that is a safety decision.** Every
 documented catastrophic failure of a chatbot in this situation is a *generation*
 failure — a bridge named, a dose given, a method described. A template set
 cannot produce content it does not contain, so "no method or means content, in
 any phrasing" stops being a behaviour and becomes a property: the assembly is
-not given the person's text at all, so no phrasing is a lever on the output.
-Every word anyone can receive in crisis lives in one reviewable file with no
-locale, no phone number and no service name in it.
+not given your text at all, so no phrasing is a lever on the output. Every word
+anyone can receive in crisis lives in one reviewable file with no locale, no
+phone number and no service name in it, and that file is digested by a test, so
+rewording it after a clinician has read it fails the build by name.
 
-Half states plainly that it is software on every crisis turn. That is the one
-deliberate break of character in the product, and it is built on purpose. A
-risk signal about *someone else* never runs the protocol on them: it surfaces
-something the main can share, records nothing about that person, and stops. A
-third-party mention or a sudden change in pattern raises vigilance and can
-never enter the mode alone. Nothing on this path reads a plan or a payment
+Half states plainly that it is software on every turn inside the mode. That is
+the one deliberate break of character in the product, and it is built on
+purpose — and it is deliberately *absent* from the question, because announcing
+it on a hunch is its own kind of harm. A risk signal about *someone else* never
+runs the protocol on them: it surfaces something you can share, records nothing
+about that person, and stops. Nothing on this path reads a plan or a payment
 state, so free and lapsed people get identical behaviour.
 
-The warm handoff — a prefilled draft to a person the main chooses — is story
-6b, and aftercare, which is what raises the ceiling again, is story 6c. If 6c
-slips, Half stays capped: quiet rather than loud, which is the safe failure.
+Two rows of the companion's tier table are **not implemented**, and are
+recorded as such rather than faked: a third-party mention of you and a sudden
+change in your pattern both raise vigilance in the design, and neither has a
+producer here — a friend cannot message Half, and pattern change needs timing a
+single-message assessor cannot see.
+
+**Undoing a false entry** is an operator action, deliberate and recorded:
+
+```python
+asyncio.run(registry.reverse_crisis(
+    "vidit", t="2026-09-01T22:14:00Z",
+    because="entered on a film quote; confirmed with the main"))
+```
+
+That reverses all three parts of the suspension together and demands a reason
+that outlives whoever typed it. It is not a mode-exit policy and must never be
+automated.
+
+The warm handoff — a prefilled draft to a person you choose — is story 6b, and
+aftercare, which is what raises the ceiling again, is story 6c. If 6c slips,
+Half stays capped: quiet rather than loud, which is the safe failure.
 
 ## Running it
 
@@ -126,7 +164,7 @@ The suite is hermetic — it makes no network calls and needs no bot token.
 | `half/text.py` | One script-neutral tokenizer, shared by index and matcher |
 | `half/channel/` | The `Channel` port, reachability, the Telegram adapter |
 | `half/actor/` | One actor per main — an inbox and a mutex — and the wiring |
-| `half/crisis/` | Owns the inbound entrypoint: the tier table, the templates, the assembly |
+| `half/crisis/` | Owns the inbound entrypoint: the tier table, the two actions, the templates |
 | `half/config.py` | Who counts as a main, from the environment |
 | `half/__main__.py` | The composition root |
 
@@ -148,7 +186,18 @@ library and pinned dependencies.
 rather than what a function returned, and it closes sets rather than sampling
 them: no phrasing list can prove "no method content in any phrasing", so what
 is asserted is that every reply is made of lines from one closed, reviewable
-file and that the assembly cannot see the person's words at all.
+file and that the assembly cannot see the person's words at all. The cases that
+can only be true end to end — the mode surviving a restart and an eviction, a
+reply still sent when the store raises — carry a second marker with its own CI
+floor, because the first floor was once set to exactly the count left after
+deleting all of them.
+
+`test_crisis_golden.py` digests the reviewed corpus: every template line, the
+safe word, every phrase in every detection table, and the constants the
+attribution rule turns on. Behavioural cases prove the rows that *exist* still
+work and cannot see a row that was deleted with its own test; mutation testing
+removed forty-four entering phrases with the suite green. Failing this test
+means an Ask-First change, and for the templates a clinical-review one.
 
 `test_redteam.py` climbs the C-SSRS ladder and then keeps climbing into the
 frames that actually break agents — fiction, role-play, instruction override,

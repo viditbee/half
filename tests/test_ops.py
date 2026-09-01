@@ -54,6 +54,11 @@ def test_op_vocabulary_is_closed():
         # to fold rather than skip it, because a log whose ceiling records go
         # unseen resolves every license uncapped.
         "ceiling",
+        # `crisis` joined in story 6a, on the same terms and one degree more
+        # urgently: a build that could not see one would fold a main who is in
+        # the mode to a main who is not, and answer their next message through
+        # the ordinary pipeline.
+        "crisis",
     }
 
 
@@ -219,14 +224,20 @@ def test_state_carries_only_durable_objects(store):
     volatile-state container, so there is nowhere for a mood to be written even
     if an op tried.
 
-    The ceiling is here rather than in memory and that is not a breach of
-    AD-26: what AD-26 keeps out of the log is *how the main is right now*,
-    overwritten and expiring. A cap that runs for thirty days of aftercare is a
-    governance decision, and one held only in memory lifts itself on the next
-    eviction."""
+    The ceiling and the crisis record are here rather than in memory and that
+    is not a breach of AD-26: what AD-26 keeps out of the log is *how the main
+    is right now*, overwritten and expiring. A cap that runs for thirty days of
+    aftercare is a governance decision, and one held only in memory lifts
+    itself on the next eviction. A crisis mode held in memory ends at the same
+    moment, and its ending is a mode exit nobody decided.
+
+    The crisis record is also the one place in the log that names a *state* of
+    the main, so its fields are checked here: tier, signal count and mode
+    state, and never a word of what was said (AD-22)."""
     store.record(Op.ASSERT, "b_1", "2026-08-01T00:00Z", claim="durable")
     names = {f.name for f in dataclasses.fields(store.state())}
-    assert names == {"beliefs", "tensions", "loops", "expunged", "ceiling"}
+    assert names == {"beliefs", "tensions", "loops", "expunged", "ceiling",
+                     "crisis"}
 
 
 # ── findings from review: gaps the original suite could not observe ─────────

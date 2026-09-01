@@ -376,10 +376,10 @@ def test_the_crisis_branch_is_reachable_from_a_test(tmp_path):
     """The gate was constructed inside run(), so no test could supply one that
     reports a crisis — the whole branch was unreachable."""
     class AlwaysCrisis(CrisisGate):
-        def _is_crisis(self, inbound):
+        def _is_crisis(self, inbound, **kw):
             return True
 
-        async def _respond_to_crisis(self, inbound):
+        async def _respond_to_crisis(self, inbound, **kw):
             return "I'm software. You need a person."
 
     transport = FakeTransport([msg(text="anything")])

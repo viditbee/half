@@ -32,4 +32,5 @@ markers = [
     "ad24: retrieval weights and never excludes",
     "ad28: one license ceiling per actor, applied where licenses are resolved",
     "cap12: the crisis mode — the switch, the moment, and the never-list",
+    "cap12_durable: crisis state that must survive eviction, restart and a full disk",
 ]

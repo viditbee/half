@@ -14,16 +14,24 @@ placeholders, no f-strings — asserted statically in ``tests/test_crisis.py``.
 A template with a hole in it is a generator with extra steps, and the hole is
 where the main's own words would come back out.
 
-**The do-list is the shape of every plan** (#chatsafe / Orygen, Delphi
-consensus): be present, express empathy, acknowledge the difficulty, thank
-them for telling you, stay. ``half.crisis.respond`` asserts at import that no
-plan is missing one of them, so the do-list is a structural property of the
-assembly rather than an intention in a docstring.
+**The do-list is the shape of every entering plan** (#chatsafe / Orygen, Delphi
+consensus): be present, express empathy, acknowledge the difficulty, thank them
+for telling you, stay. ``half.crisis.respond`` checks at import that no plan is
+missing one of them, and raises rather than asserting, because a guarantee
+``python -O`` removes is not a guarantee.
 
-**The machine statement appears in every plan.** *"I'm software. You need a
-person."* It is the one deliberate break of character in a product whose whole
-identity is being the main's other self, and it is built on purpose rather than
-discovered in production.
+**The machine statement appears in every plan that enters the mode**, and in
+the third-party reply. *"I'm software. You need a person."* It is the one
+deliberate break of character in a product whose whole identity is being the
+main's other self, and it is built on purpose.
+
+**It does not appear in the asking plan, and that is deliberate.** The asking
+plan is one gentle question after an *inference* — a film, a pet, a hard week.
+Breaking character to announce "I am software and you need a human being" on
+that evidence is itself sensationalising, and it makes the cheap action
+expensive. The break of character belongs to the moment; it arrives the instant
+the answer is yes, and it is on the clinical-review list like everything else
+here.
 
 **No locale, anywhere.** Half ships world-wide and assumes nothing about where
 the main is: no phone number, no short code, no country, no service name, no
@@ -36,13 +44,17 @@ fixing: present, unhurried, and explicit that Half is not going to resolve this
 in a sentence.
 
 Changing any wording in this file is an Ask-First change and, before launch, a
-clinical-review change. A green suite is not clinical review.
+clinical-review change. ``tests/test_crisis_golden.py`` digests every line, so
+an edit fails the suite by name rather than silently making a reviewed corpus
+unreviewed. A green suite is not clinical review.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Final
+
+from half.errors import CrisisError
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,7 +82,7 @@ MACHINE_HELD: Final = Line(
 )
 
 #: Either of these satisfies *"Half states plainly that it is a machine"*.
-#: ``respond`` asserts every plan carries one.
+#: ``respond`` checks every entering plan carries one.
 MACHINE_LINES: Final[tuple[Line, ...]] = (MACHINE, MACHINE_HELD)
 
 
@@ -82,22 +94,16 @@ THANKS: Final = Line(
     "said it to me.",
 )
 
-THANKS_INFERRED: Final = Line(
-    "thanks-inferred",
-    "Thank you for saying as much as you have. I would rather ask and be "
-    "wrong than miss this.",
-)
-
 THANKS_HELD: Final = Line(
     "thanks-held",
     "I am glad you are still talking to me.",
 )
 
-#: Any of these satisfies *"thank them for telling you"*. There are three
-#: because the moment differs: the main has disclosed, Half is asking on
-#: inference and has been told nothing yet, or the mode is already open and
-#: thanking them again for the same disclosure would be hollow.
-THANKS_LINES: Final[tuple[Line, ...]] = (THANKS, THANKS_INFERRED, THANKS_HELD)
+#: Either of these satisfies *"thank them for telling you"*. There are two
+#: because the moment differs: the main has just disclosed, or the mode is
+#: already open and thanking them again for the same disclosure would be
+#: hollow.
+THANKS_LINES: Final[tuple[Line, ...]] = (THANKS, THANKS_HELD)
 
 EMPATHY: Final = Line(
     "empathy",
@@ -119,21 +125,32 @@ HUMAN: Final = Line(
 )
 
 
-# -- the direct question -----------------------------------------------------
+# -- the question ------------------------------------------------------------
+#
+# The whole of the asking path, and the one deliberate inversion of the license
+# ladder. Everywhere else in Half, inference licenses `ask` and never `assert`;
+# here inference licensing `ask` is *mandatory*. Asking directly about suicide
+# does not increase risk — that is well established, and the fear that it does
+# is what makes builders ship silence. A false positive in Half's voice is
+# exactly these three paragraphs, which is what a good friend says.
+
+ASK_OPEN: Final = Line(
+    "ask-open",
+    "Something in that stayed with me, and I would rather check than let it "
+    "go.",
+)
 
 ASK: Final = Line(
     "ask",
     "I might be reading this wrong, and I would rather ask than not: are you "
     "thinking about suicide?",
 )
-"""The one deliberate inversion of the license ladder.
 
-Everywhere else in Half, inference licenses `ask` and never `assert`; here
-inference licensing `ask` is *mandatory*. Asking directly about suicide does
-not increase risk — that is well established, and the fear that it does is what
-makes builders ship silence. A false positive in Half's voice is exactly this
-sentence, which is what a good friend says.
-"""
+ASK_CLOSE: Final = Line(
+    "ask-close",
+    "There is no wrong answer. If I have got this wrong, just say so and I "
+    "will let it be.",
+)
 
 
 # -- openers -----------------------------------------------------------------
@@ -147,6 +164,11 @@ OPEN_SAFE_WORD: Final = Line(
 OPEN_DISCLOSURE: Final = Line(
     "open-disclosure",
     "I hear you, and I am taking what you said seriously.",
+)
+
+OPEN_CONFIRMATION: Final = Line(
+    "open-confirmation",
+    "You answered me, and I am not going to treat that lightly.",
 )
 
 OPEN_SEEKING_HELP: Final = Line(
@@ -203,14 +225,16 @@ LINES: Final[tuple[Line, ...]] = (
     MACHINE,
     MACHINE_HELD,
     THANKS,
-    THANKS_INFERRED,
     THANKS_HELD,
     EMPATHY,
     STAY,
     HUMAN,
+    ASK_OPEN,
     ASK,
+    ASK_CLOSE,
     OPEN_SAFE_WORD,
     OPEN_DISCLOSURE,
+    OPEN_CONFIRMATION,
     OPEN_SEEKING_HELP,
     OPEN_HELD,
     OTHER_OPEN,
@@ -221,6 +245,26 @@ LINES: Final[tuple[Line, ...]] = (
 
 TEXTS: Final[frozenset[str]] = frozenset(line.text for line in LINES)
 
-assert len({line.id for line in LINES}) == len(LINES), "duplicate template id"
-assert len(TEXTS) == len(LINES), "duplicate template text"
-assert all(line.text.strip() for line in LINES), "an empty template is silence"
+
+def _check_lines() -> None:
+    """Import-time invariants, as raises rather than bare ``assert``.
+
+    ``python -O`` strips an assert and leaves the module importing cleanly, so
+    a guarantee written as one is a guarantee that an optimisation flag can
+    remove. None of these may be removable.
+    """
+    ids = [line.id for line in LINES]
+    if len(set(ids)) != len(ids):
+        raise CrisisError("two template lines share an id")
+    if len(TEXTS) != len(LINES):
+        raise CrisisError("two template lines share their text")
+    for line in LINES:
+        if not line.text.strip():
+            raise CrisisError(f"template {line.id!r} is empty; that is silence")
+    for group in (MACHINE_LINES, THANKS_LINES):
+        for line in group:
+            if line not in LINES:
+                raise CrisisError(f"template {line.id!r} is grouped but unregistered")
+
+
+_check_lines()

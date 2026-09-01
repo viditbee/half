@@ -22,15 +22,16 @@ import re
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from half.errors import StoreError
 from half.governance.ladder import TOP, Ceiling, License, ceiling_fields
 from half.retrieval.prefix import build_prefix
 from half.retrieval.rank import RetrievalSwitch
 from half.retrieval.strands import Strands
-from half.store.ops import Op
+from half.store.ops import CRISIS_ENTERED, CRISIS_REVERSED, Op
 from half.store.store import Store
 
 #: A main_id becomes a directory name, so it is validated before it can reach
@@ -45,6 +46,24 @@ def validate_main_id(main_id: str) -> str:
             f"unsafe main_id {main_id!r}: letters, digits, dash and underscore only"
         )
     return main_id
+
+def mode_is_open(record: Mapping[str, Any] | None) -> bool:
+    """Whether a folded ``crisis`` record leaves the mode open.
+
+    The one reader of that field's shape, so the fold, the registry and the
+    gate cannot disagree about what "in the mode" means. Named apart from
+    ``ActorRegistry.crisis_open`` on purpose: that one reaches a main's store,
+    this one reads a record somebody already has. Fail-closed on
+    anything unreadable: a record this build cannot parse is treated as an
+    *open* mode, because the cost of reading an open mode as closed is
+    answering a main in crisis through the ordinary pipeline.
+    """
+    if record is None:
+        return False
+    if not isinstance(record, Mapping):
+        return True
+    return record.get("state") != CRISIS_REVERSED
+
 
 #: How many hydrated actors a worker holds before evicting the least recent.
 DEFAULT_CAPACITY = 256
@@ -66,6 +85,12 @@ class Actor:
     #: switch per actor, not per worker: a single shared switch meant one
     #: main's crisis disabled retrieval for every other main the process was
     #: serving, which is a silent, total memory outage for uninvolved people.
+    #:
+    #: **Hydrated, not defaulted.** The switch used to be born enabled on every
+    #: hydration, so an eviction under memory pressure re-enabled the retrieval
+    #: a crisis had "hard-disabled" — the same defect the ceiling had before it
+    #: was moved into the log, one field over. It is now read from the crisis
+    #: record at hydration, which is what makes *hard* mean hard.
     retrieval: RetrievalSwitch = field(default_factory=RetrievalSwitch)
     #: The one global license cap for *this main* (AD-28). Beside ``strands``
     #: and ``retrieval`` for the same reason both are here: it is per main, so
@@ -137,8 +162,16 @@ class ActorRegistry:
         # at hydration is what makes prefix hits work in the running product
         # and not only where a test remembers to pass it.
         store = Store(self.root / main_id, prefix=build_prefix)
+        state = store.state()
         actor = Actor(
-            main_id=main_id, store=store, ceiling=Ceiling(store.state().ceiling)
+            main_id=main_id,
+            store=store,
+            ceiling=Ceiling(state.ceiling),
+            # Both durable halves of a crisis suspension come back together
+            # (CAP-12). A main in the mode rehydrates with retrieval already
+            # off, so there is no window — not one turn, not one line — in
+            # which an evicted main reads as uncapped or as retrievable.
+            retrieval=RetrievalSwitch(enabled=not mode_is_open(state.crisis)),
         )
         self._actors[main_id] = actor
         return actor
@@ -206,12 +239,23 @@ class ActorRegistry:
 
     # -- the ceiling (AD-28) -------------------------------------------------
     #
-    # No caller in ``half/`` lowers a ceiling yet, and that is deliberate rather
-    # than unfinished: this story builds the mechanism and the story's Never
-    # list reserves the *policy* for story 6, which decides when aftercare
-    # begins, how long it runs and how it steps back up. What is finished here
-    # is that a cap, once set, is durable, cannot lift itself, and is applied
-    # everywhere a license is resolved.
+    # Story 5a built the cap and said, accurately then, that nothing in
+    # ``half/`` lowered one. That is no longer true: ``half.crisis.gate`` drops
+    # it to `behave` on entry, and the operator reversal path raises it again.
+    # Both go through ``suspend_for_crisis`` and ``reverse_crisis`` below
+    # rather than through the two sync methods, and the difference is the
+    # mutex.
+    #
+    # **AD-1, and where the mutex is taken.** ``lower_ceiling`` and
+    # ``release_ceiling`` append *without* holding the actor's mutex. That is
+    # safe only for a caller that already holds it, or that is otherwise
+    # serialized against every other writer for this main — which is an
+    # assumption, so it is stated at both ends rather than left implicit at
+    # one. Neither has a caller in ``half/``; they are 5a's surface and its
+    # tests. Everything the crisis path does goes through the two async
+    # methods, which take the mutex themselves, so a supervisor running many
+    # actors concurrently cannot interleave a crisis append with an ordinary
+    # turn's.
 
     def license_ceiling(self, main_id: str) -> Ceiling:
         """This main's license ceiling, hydrating the actor if needed.
@@ -266,6 +310,102 @@ class ActorRegistry:
             **ceiling_fields(ceiling, because=because),
         )
         actor.ceiling = ceiling
+
+    # -- the crisis mode (CAP-12) ---------------------------------------------
+
+    def crisis_open(self, main_id: str) -> bool:
+        """Whether this main is in crisis mode, per the log.
+
+        The authority is the ``crisis`` record, not a set in memory. A mode
+        that ended at the next eviction would answer the main's following
+        message through the ordinary pipeline — a mode exit that nobody
+        decided and nothing recorded, which CAP-12 forbids outright.
+        """
+        actor = self._reached(main_id)
+        self._evict_if_needed()
+        return mode_is_open(actor.store.state().crisis)
+
+    def crisis_record(self, main_id: str) -> dict[str, Any] | None:
+        """The last crisis record for this main, or ``None``.
+
+        Content-free by construction (AD-22): tier, signal count, state and
+        time. It exists because the clinical reviewer's first question is how
+        often the mode fires and on what, and nothing else in the log answers
+        it — a ceiling append says a cap exists, never what put it there.
+        """
+        actor = self._reached(main_id)
+        self._evict_if_needed()
+        record = actor.store.state().crisis
+        return dict(record) if record is not None else None
+
+    async def suspend_for_crisis(
+        self, main_id: str, *, t: str, tier: str, score: int
+    ) -> None:
+        """Enter the mode for this main, durably and under the mutex (CAP-12).
+
+        One call does the whole suspension because its three parts must not be
+        separable: the crisis record, the ceiling drop, and the retrieval
+        disable. A build where two of the three landed is a build where a main
+        is capped but retrievable, or in the mode but uncapped.
+
+        Ordered so that a crash never leaves the main *less* suspended than the
+        process believes: the appends go first and the in-memory switch last.
+
+        Idempotent. A held main re-enters on every turn of a long conversation,
+        and one record per message would be a log full of the same fact.
+        """
+        async with self.acquire(main_id) as actor:
+            if not mode_is_open(actor.store.state().crisis):
+                actor.store.record(
+                    Op.CRISIS,
+                    f"cr_{main_id}_{t}",
+                    t,
+                    state=CRISIS_ENTERED,
+                    tier=tier,
+                    score=score,
+                )
+            self._record_ceiling(
+                actor,
+                actor.ceiling.lowered_to(License.BEHAVE),
+                t=t,
+                because="crisis mode entered (CAP-12)",
+            )
+            actor.retrieval.disable()
+
+    async def reverse_crisis(
+        self, main_id: str, *, t: str, because: str
+    ) -> None:
+        """Undo a crisis entry — the operator path, and the only way back.
+
+        **This is not a mode exit policy.** Nothing in Half decides that a
+        crisis is over: the companion leaves *who decides it is over*
+        unresolved, and a timeout, a keyword or a quiet expiry would each be
+        answering a clinical question in code review. This is the separate
+        thing a durable cap needs to be a safety feature rather than a trap —
+        a deliberate, recorded, human act that undoes a false entry, with a
+        reason that outlives whoever typed it.
+
+        Reverses all three parts of the suspension together, for the reason
+        ``suspend_for_crisis`` applies them together.
+        """
+        if not isinstance(because, str) or not because.strip():
+            raise StoreError(
+                "reverse_crisis: reversing a crisis entry requires a stated "
+                "reason; it undoes a suspension something deliberate applied"
+            )
+        async with self.acquire(main_id) as actor:
+            actor.store.record(
+                Op.CRISIS,
+                f"cr_{main_id}_{t}",
+                t,
+                state=CRISIS_REVERSED,
+                because=because.strip(),
+            )
+            self._record_ceiling(
+                actor, actor.ceiling.released(to=TOP, because=because),
+                t=t, because=because,
+            )
+            actor.retrieval.enable()
 
     @property
     def hydrated(self) -> list[str]:
