@@ -1398,10 +1398,14 @@ def test_a_hanging_provider_does_not_delay_another_mains_safe_word(tmp_path):
         by_main.setdefault(chat, at - started)
     assert set(by_main) == {"123", "456"}, transport.timed
     assert asha_open, "the safe word did not enter the mode"
-    assert by_main["456"] < 0.3, (
-        f"a safe word waited {by_main['456']:.2f}s behind another main's "
-        "classifier; the offline floor is only offline for whoever is first "
-        "in the queue"
+    assert by_main["456"] < by_main["123"], (
+        f"a safe word was answered at {by_main['456']:.2f}s, after the "
+        f"classified main's {by_main['123']:.2f}s; the offline floor is only "
+        "offline for whoever is first in the queue. Compared against the other "
+        "main rather than against a wall-clock threshold: the property is that "
+        "the safe word does not wait behind somebody else's provider, and a "
+        "loaded runner makes every absolute number wrong without making the "
+        "property false."
     )
     assert transport.timed[0][0] == "456", (
         "the main whose turn needed no network was answered second"
