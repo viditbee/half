@@ -33,13 +33,14 @@ PrefixFn = Callable[[Mapping[str, Any]], str]
 #: to the main rather than to any one belief.
 CEILING_KEY: Final[str] = "ceiling"
 CRISIS_KEY: Final[str] = "crisis"
+AFTERCARE_KEY: Final[str] = "aftercare"
 
 #: Shape of the derived view. Bumped whenever a column or an FTS table changes.
 #: SQLite here is derived and disposable (AD-3), so a mismatch is resolved by
 #: discarding it and replaying the log — never by an in-place migration, which
 #: would be a second way for derived state to exist that the log does not
 #: describe.
-DERIVED_VERSION: Final[int] = 5
+DERIVED_VERSION: Final[int] = 6
 
 #: Every object this module owns, in an order safe to drop: the FTS table
 #: references ``beliefs`` as its external content.
@@ -74,9 +75,10 @@ CREATE TABLE IF NOT EXISTS loops    (id TEXT PRIMARY KEY, data TEXT NOT NULL) ST
 CREATE TABLE IF NOT EXISTS expunged (id TEXT PRIMARY KEY) STRICT;
 
 -- Folded governance state that belongs to the main rather than to any one
--- belief: the license ceiling (AD-28) and whether the crisis mode is open
--- (CAP-12). Derived and disposable like every other table here — the authority
--- is the ``ceiling`` and ``crisis`` ops in the log.
+-- belief: the license ceiling (AD-28), whether the crisis mode is open, and
+-- where the aftercare conversation got to (CAP-12). Derived and disposable
+-- like every other table here — the authority is the ``ceiling``, ``crisis``
+-- and ``aftercare`` ops in the log.
 CREATE TABLE IF NOT EXISTS governance (key TEXT PRIMARY KEY, value TEXT) STRICT;
 
 -- Indexes the *terms* columns rather than the raw text, because a script
@@ -201,6 +203,9 @@ def rebuild(
         if state.crisis is not None:
             conn.execute("INSERT INTO governance (key, value) VALUES (?,?)",
                          (CRISIS_KEY, _dump(state.crisis)))
+        if state.aftercare is not None:
+            conn.execute("INSERT INTO governance (key, value) VALUES (?,?)",
+                         (AFTERCARE_KEY, _dump(state.aftercare)))
         for ident, data in state.tensions.items():
             conn.execute("INSERT INTO tensions (id, data) VALUES (?,?)",
                          (ident, _dump(data)))
@@ -238,6 +243,9 @@ def read_state(conn: sqlite3.Connection) -> State:
     row = conn.execute("SELECT value FROM governance WHERE key = ?",
                        (CRISIS_KEY,)).fetchone()
     state.crisis = json.loads(row["value"]) if row is not None else None
+    row = conn.execute("SELECT value FROM governance WHERE key = ?",
+                       (AFTERCARE_KEY,)).fetchone()
+    state.aftercare = json.loads(row["value"]) if row is not None else None
     return state
 
 

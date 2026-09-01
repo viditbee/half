@@ -59,6 +59,11 @@ def test_op_vocabulary_is_closed():
         # the mode to a main who is not, and answer their next message through
         # the ordinary pipeline.
         "crisis",
+        # `aftercare` joined in story 6c, again with the schema version bumped.
+        # It is the only record that carries the main's *answer* about resuming
+        # the mirror, and a build that could not see one would read a main who
+        # declined as a main who was never asked.
+        "aftercare",
     }
 
 
@@ -231,13 +236,21 @@ def test_state_carries_only_durable_objects(store):
     itself on the next eviction. A crisis mode held in memory ends at the same
     moment, and its ending is a mode exit nobody decided.
 
+    The aftercare record joins them in story 6c on the same terms, and it is
+    the sharpest case of the three. It carries whether Half has asked the main
+    about resuming the mirror and what they answered — a question held in
+    memory is asked again after every eviction, which is nagging, and a decline
+    held in memory disappears, leaving some later "yes" free to land on a
+    question the main already refused.
+
     The crisis record is also the one place in the log that names a *state* of
     the main, so its fields are checked here: tier, signal count and mode
-    state, and never a word of what was said (AD-22)."""
+    state, and never a word of what was said (AD-22). The aftercare record is
+    held to the same rule and carries only a state and a time."""
     store.record(Op.ASSERT, "b_1", "2026-08-01T00:00Z", claim="durable")
     names = {f.name for f in dataclasses.fields(store.state())}
     assert names == {"beliefs", "tensions", "loops", "expunged", "ceiling",
-                     "crisis"}
+                     "crisis", "aftercare"}
 
 
 # ── findings from review: gaps the original suite could not observe ─────────

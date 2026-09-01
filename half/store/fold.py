@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from half.errors import CorruptLogError
-from half.store.ops import CRISIS_STATES, Op
+from half.store.ops import AFTERCARE_STATES, CRISIS_STATES, Op
 from half.store.records import Record, carried_forward
 
 
@@ -43,6 +43,15 @@ class State:
     #: main's next message would be answered by the ordinary pipeline, which is
     #: an exit nobody decided.
     crisis: dict[str, Any] | None = None
+    #: The last aftercare record, or ``None`` if Half has never put the
+    #: question (CAP-12, story 6c). Raw fields, for the reason ``crisis``
+    #: holds raw fields: whether a step is *due* is aftercare's question and
+    #: the fold answers no clinical ones. The last record is enough because
+    #: the states supersede one another — asked, then answered — and because a
+    #: record older than the most recent crisis entry belongs to a period that
+    #: ended, which ``half.crisis.aftercare`` decides by comparing the two
+    #: stamps rather than by the fold throwing anything away.
+    aftercare: dict[str, Any] | None = None
 
     def canonical_json(self) -> str:
         """Deterministic serialization — the unit of the byte-identical
@@ -55,6 +64,7 @@ class State:
                 "expunged": sorted(self.expunged),
                 "ceiling": self.ceiling,
                 "crisis": self.crisis,
+                "aftercare": self.aftercare,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -148,6 +158,21 @@ def fold(records: Iterable[Record]) -> State:
                         path="<fold>", line=0,
                     )
                 state.crisis = copy.deepcopy(dict(record.data))
+
+            case Op.AFTERCARE:
+                answer = record.data.get("state")
+                if answer not in AFTERCARE_STATES:
+                    # Fatal on the same terms as the two above. An aftercare
+                    # record the fold cannot read would no-op, and the state it
+                    # would silently drop is the main's own answer: a decline
+                    # folding to nothing leaves the next turn free to read a
+                    # later yes as consent to a question the main refused.
+                    raise CorruptLogError(
+                        f"{record.op} record {record.id!r} has state {answer!r};"
+                        f" expected one of {sorted(AFTERCARE_STATES)}",
+                        path="<fold>", line=0,
+                    )
+                state.aftercare = copy.deepcopy(dict(record.data))
 
             case _:  # pragma: no cover - guarded by the closed vocabulary
                 # A new Op added to the enum must not fold to nothing. Silently

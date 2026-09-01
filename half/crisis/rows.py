@@ -74,14 +74,14 @@ MAX_KEY: Final[int] = 64
 MAX_LINK: Final[int] = 2048
 
 
-def plain(value: object, *, limit: int) -> str | None:
+def one_line(value: object, *, limit: int) -> str | None:
     """``value`` as one printable line within ``limit``, or ``None``.
 
     ``str.isprintable`` is the whole control-character test and it is the right
     one: it is false for every C0 and C1 control, for every format character
     (the bidirectional overrides and the zero-width joiners among them), for
     the line and paragraph separators, and for every space character except an
-    ordinary one. So a name cannot carry a second line, cannot carry an
+    ordinary one. So a value cannot carry a second line, cannot carry an
     invisible reordering mark, and cannot carry a byte that a terminal or a
     messaging client will interpret rather than show.
 
@@ -89,6 +89,11 @@ def plain(value: object, *, limit: int) -> str | None:
     this build does not understand; a name with a newline in it is either a
     mistake or an attempt, and rendering a cleaned-up guess at either is how
     the guess reaches somebody in crisis.
+
+    **This is the check for a value that stands alone.** A value that is going
+    to be *joined into a row* needs ``plain`` as well, which adds the one thing
+    a row needs and a standing line does not: that the value cannot contain the
+    separators the row is made of.
     """
     if not isinstance(value, str):
         return None
@@ -96,6 +101,25 @@ def plain(value: object, *, limit: int) -> str | None:
     if not text or len(text) > limit:
         return None
     if not text.isprintable():
+        return None
+    return text
+
+
+def plain(value: object, *, limit: int) -> str | None:
+    """``value`` as one printable line that could not be mistaken for a row.
+
+    ``one_line`` plus the separator refusal. Everything joined into an option
+    row goes through here — a contact's name, a way to reach a service, a note
+    — because a value containing either separator makes the row ambiguous when
+    it is read back, which is what the guard reads it back for.
+
+    A value rendered *as itself* is a different question and takes ``one_line``:
+    a line of a held safety plan is one paragraph among reviewed paragraphs and
+    is joined with nothing, so an em dash in a clinician's sentence — which is
+    ordinary prose — must not withhold the document it belongs to.
+    """
+    text = one_line(value, limit=limit)
+    if text is None:
         return None
     if any(separator in text for separator in SEPARATORS):
         return None

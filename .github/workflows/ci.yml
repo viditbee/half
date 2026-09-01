@@ -148,7 +148,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap12 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-12 cases collected: $collected"
-          if [ "$collected" -lt 700 ]; then
+          if [ "$collected" -lt 950 ]; then
             echo "::error::the CAP-12 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -173,7 +173,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap12_durable -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-12 durability cases collected: $collected"
-          if [ "$collected" -lt 32 ]; then
+          if [ "$collected" -lt 80 ]; then
             echo "::error::the durability gate collected $collected cases; the mode may no longer be durable"
             exit 1
           fi
@@ -211,6 +211,77 @@ jobs:
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap12_handoff
+
+      - name: 'CAP-12: aftercare — the floor, the steps, the answer, the held plan'
+        # A fourth gate over a fourth subset, for the reason the durability and
+        # handoff gates exist: a floor on the superset cannot stop this half
+        # being hollowed out, and every case below could be deleted with the
+        # CAP-12 step still green and still comfortably above its own floor.
+        #
+        # What it covers: that nothing restores inside the thirty-day floor by
+        # any path; that reaching it grants one rung and never the lot; that
+        # the second step has its own floor; that the mirror is *asked* for and
+        # the cap holds until the main answers; that silence and a hedge are
+        # both refused as consent; that a decline holds the cap and is not for
+        # ever; that a second crisis restarts the floor from the later entry;
+        # that the operator reversal still works and is deliberately not
+        # stepwise; that the arithmetic is a pure function of two stamps with
+        # no clock anywhere under `half/crisis`; and that a held safety plan
+        # comes back word for word while there is exactly one expression in the
+        # tree that could write one.
+        #
+        # **The floor carries a margin that is not the cases it protects.**
+        # Review round 1 found the first version set to exactly the count left
+        # after deselecting the twelve single-case property tests — the writer
+        # gate, the quarantine rule, the unprompted-yes rule, the closed-set
+        # plan guard, both quiet rules — so every one of them could be deleted
+        # with all four gates green. That is story 6a's floor bug, one story
+        # on. The floor is now well under the count *and* the property cases
+        # carry their own marker and their own gate below, so deleting them
+        # fails twice: their gate collects nothing, and this one drops beneath
+        # its floor.
+        #
+        # **This gate is not clinical review.** Every wording it exercises —
+        # the question Half puts before the mirror resumes, and the frame
+        # around a document somebody else wrote — is on the reviewer's list,
+        # and a green run here does not satisfy build requirement 6 or
+        # substitute for it. Nor does it say the schedule itself is right: the
+        # floor, the dwells and the two intervals are numbers a qualified
+        # reviewer has to agree with, and this only proves the build honours
+        # them.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap12_aftercare -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-12 aftercare cases collected: $collected"
+          if [ "$collected" -lt 210 ]; then
+            echo "::error::the aftercare gate collected $collected cases; it has stopped asserting"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap12_aftercare
+
+      - name: 'CAP-12: the structural rules aftercare and the safety plan rest on'
+        # The property cases, gated separately from the behavioural ones they
+        # sit beside. Each is a single case asserting something no amount of
+        # behaviour can show: that only one expression in the tree can write a
+        # safety plan and that every call site hands it a value it was *given*;
+        # that no module knows the shape of a plan; that nothing here reads a
+        # clock, a tier or a payment state; that a restore names no target;
+        # that a question Half never asked cannot be answered.
+        #
+        # A floor on the suite they belong to cannot protect them — they are a
+        # fiftieth of it — which is exactly how the first version of the
+        # aftercare gate came to have a floor equal to the count without them.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap12_aftercare_property -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-12 property cases collected: $collected"
+          if [ "$collected" -lt 45 ]; then
+            echo "::error::the property gate collected $collected cases; the structural rules are unguarded"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap12_aftercare_property
 
       - name: 'AD-5 and AD-30: retrieval degrades, and never writes'
         # The reranker fallback, the salience-is-derived assertions, the

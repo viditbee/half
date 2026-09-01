@@ -983,8 +983,13 @@ def test_releasing_a_ceiling_is_durable_and_reasoned(tmp_path):
     registry = ActorRegistry(root)
     registry.lower_ceiling("vidit", License.BEHAVE, t="2026-06-02T00:00:00Z",
                            because="aftercare")
-    registry.release_ceiling("vidit", t="2026-07-05T00:00:00Z",
-                             because="aftercare ended on day 31")
+    # Two calls, because story 6c made a release one rung. A single call that
+    # put everything back is the restore CAP-12 forbids, and there is no longer
+    # an expression for it here.
+    registry.release_ceiling("vidit", to=License.ASK, t="2026-07-05T00:00:00Z",
+                             because="aftercare: the floor is past, one step")
+    registry.release_ceiling("vidit", to=License.ASSERT, t="2026-07-19T00:00:00Z",
+                             because="aftercare: the main asked for the mirror back")
     registry.close()
 
     assert ActorRegistry(root).license_ceiling("vidit").rung is TOP
@@ -994,9 +999,11 @@ def test_releasing_a_ceiling_is_durable_and_reasoned(tmp_path):
         r.data.get("because") for r in Store(root / "vidit").log
         if r.op is Op.CEILING
     ]
-    assert reasons == ["aftercare", "aftercare ended on day 31"], (
-        "a ceiling outlives whoever set it; the log has to say why"
-    )
+    assert reasons == [
+        "aftercare",
+        "aftercare: the floor is past, one step",
+        "aftercare: the main asked for the mirror back",
+    ], "a ceiling outlives whoever set it; the log has to say why"
 
 
 @pytest.mark.ad28
@@ -1305,7 +1312,16 @@ def test_only_the_context_builder_decides_a_rung():
     #: Reusing it means a contact cannot become offerable by a path a belief
     #: could not take. Nothing else about a rung is read there, and the writer
     #: gate below still forbids it spelling the field into a record.
-    allowed = {"half/context/build.py", "half/crisis/contacts.py"}
+    #: ``half/crisis/safetyplan.py`` reads ``quarantined`` and nothing else in
+    #: that set, on the same terms. A plan the main pinned is the main saying
+    #: leave this alone, and asking the ladder's own predicate is what stops a
+    #: second reader of the pin arriving with its own idea of what counts —
+    #: which is how a quarantined contact became a crisis door once already.
+    #: No rung is decided there: a held document is not a claim Half is
+    #: asserting, and the writer gate below still forbids it spelling a license
+    #: field into a record.
+    allowed = {"half/context/build.py", "half/crisis/contacts.py",
+               "half/crisis/safetyplan.py"}
     offenders: list[str] = []
     for module, path in source_modules():
         relative = str(path.relative_to(ROOT))

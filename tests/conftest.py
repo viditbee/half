@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from half.crisis import safetyplan
 from half.governance import ladder
 from half.governance.ladder import License
 from half.store.ops import Op
@@ -112,6 +113,23 @@ def tier_change_log(tmp_path):
                     support=["s_9"], contact="आशा", handle="asha")
         seed_belief(s, "b_place", "2026-08-06T10:01Z", rung=License.ASSERT,
                     support=["s_9"], region="in")
+        # Aftercare (story 6c). Here for the reason the crisis records are: the
+        # replay test is what proves the new op folds, round-trips through
+        # SQLite and reproduces byte-identically. A recorded *decline* that did
+        # not survive a rebuild is a question the main already answered being
+        # put to them again after a restart — and, worse, a later "yes" free to
+        # land on it. The held safety plan travels for the same reason: a plan
+        # Half stops holding after a restart is a document produced at three in
+        # the morning by nothing.
+        s.record(Op.AFTERCARE, "ac_tiered_1", "2026-08-07T09:00Z", state="asked")
+        s.record(Op.CEILING, "c_tiered_2", "2026-08-07T09:00Z",
+                 rung="ask", because="aftercare: the floor is past, one step")
+        s.record(Op.AFTERCARE, "ac_tiered_2", "2026-08-21T18:30Z", state="declined")
+        s.record(Op.ASSERT, "p_tiered", "2026-08-21T18:31Z",
+                 **safetyplan.held_fields([
+                     "When I start pacing at two in the morning, that is the sign.",
+                     "Ring Asha. She knows.",
+                 ]))
         yield s
 
 

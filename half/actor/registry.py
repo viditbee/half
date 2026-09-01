@@ -27,12 +27,33 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from half.errors import StoreError
-from half.governance.ladder import TOP, Ceiling, License, ceiling_fields
+from half.governance.aftercare import FLOOR_DAYS, answered, at_least, entered_at
+from half.governance.ladder import (
+    TOP,
+    Ceiling,
+    License,
+    ceiling_fields,
+    height,
+    next_rung,
+)
 from half.retrieval.prefix import build_prefix
 from half.retrieval.rank import RetrievalSwitch
 from half.retrieval.strands import Strands
-from half.store.ops import CRISIS_ENTERED, CRISIS_REVERSED, Op
-from half.store.records import handoff_projection, handoff_record
+from half.store.ops import (
+    AFTERCARE_AGREED,
+    AFTERCARE_ASKED,
+    AFTERCARE_DECLINED,
+    AFTERCARE_STATES,
+    CRISIS_ENTERED,
+    CRISIS_REVERSED,
+    Op,
+)
+from half.store.records import (
+    handoff_projection,
+    handoff_record,
+    plan_projection,
+    plan_record,
+)
 from half.store.store import Store
 
 #: A main_id becomes a directory name, so it is validated before it can reach
@@ -47,6 +68,26 @@ def validate_main_id(main_id: str) -> str:
             f"unsafe main_id {main_id!r}: letters, digits, dash and underscore only"
         )
     return main_id
+
+def _note_aftercare(actor: "Actor", *, t: str, state: str) -> None:
+    """Append one aftercare record.
+
+    The id carries the state as well as the stamp. Stored stamps are
+    minute-resolution, so a question put and answered inside one minute would
+    otherwise be two records with one id — and while the fold's last-write-wins
+    happens to keep the right one, a log where two different facts share an
+    identifier is a log that cannot be read back.
+    """
+    actor.store.record(Op.AFTERCARE, f"ac_{actor.main_id}_{t}_{state}", t, state=state)
+
+
+def _stamp_of(record: Mapping[str, Any] | None) -> str | None:
+    """The ``t`` a folded record carries, or ``None``."""
+    if not isinstance(record, Mapping):
+        return None
+    stamp = record.get("t")
+    return stamp if isinstance(stamp, str) else None
+
 
 def mode_is_open(record: Mapping[str, Any] | None) -> bool:
     """Whether a folded ``crisis`` record leaves the mode open.
@@ -268,6 +309,44 @@ class ActorRegistry:
             if handoff_record(record)
         )
 
+    def safetyplan_records(self, main_id: str) -> tuple[dict[str, Any], ...]:
+        """The safety plans this main is holding (CAP-12, story 6c).
+
+        The same door ``handoff_records`` opens, narrowed the same way and for
+        the same reason: the crisis gate runs before the mutex is taken
+        (AD-10), and the mode has hard-disabled ledger retrieval, so the one
+        thing this path may reach is the document the main was given — never a
+        claim about them. ``plan_record`` selects which records are a plan at
+        all and ``plan_projection`` then keeps only the plan and its pin, so a
+        belief carrying both a plan and a claim hands over the plan and keeps
+        the claim.
+
+        Ordered by id so the same store produces the same plan twice.
+        """
+        actor = self._reached(main_id)
+        self._evict_if_needed()
+        beliefs = actor.store.state().beliefs
+        return tuple(
+            plan_projection(record)
+            for _, record in sorted(beliefs.items())
+            if plan_record(record)
+        )
+
+    async def hold_safetyplan(
+        self, main_id: str, *, t: str, fields: Mapping[str, Any]
+    ) -> None:
+        """Store one safety plan for this main, under the mutex (AD-1).
+
+        **Takes the fields, never the lines.** ``half.crisis.safetyplan``
+        composes them and is the only expression in the codebase that puts a
+        value into the plan field; this appends what it is handed. That split
+        is deliberate: an actor method that took a list and wrote
+        ``plan=lines`` would be a second writer, and the whole clinical
+        boundary is that there is exactly one.
+        """
+        async with self.acquire(main_id) as actor:
+            actor.store.record(Op.ASSERT, f"p_{main_id}_{t}", t, **dict(fields))
+
     # -- the ceiling (AD-28) -------------------------------------------------
     #
     # Story 5a built the cap and said, accurately then, that nothing in
@@ -316,16 +395,48 @@ class ActorRegistry:
         return lowered
 
     def release_ceiling(
-        self, main_id: str, *, t: str, because: str, to: License = TOP
+        self, main_id: str, *, to: License, t: str, because: str
     ) -> Ceiling:
-        """Raise this main's cap — aftercare ending, and nothing else.
+        """Raise this main's cap by **one rung**, and never further.
 
         Named, reasoned and durable, because raising a ceiling ends a
         suppression something deliberate put in place. No belief moves: a cap is
         a minimum against each belief's own license.
+
+        **``to`` has no default any more, and that is story 6c's repair.** It
+        used to default to `assert` — one call, and a main mid-aftercare was
+        back to full licence in a single step, which is the failure CAP-12
+        names when it requires licenses restored *gradually rather than at
+        once*. A default is not a decision anybody makes, so it is gone, and a
+        jump of more than one rung is refused outright rather than left to the
+        caller's arithmetic. There is now no expression in this codebase that
+        restores everything at once.
+
+        The one deliberate exception is ``reverse_crisis``, which does not come
+        through here. That is not a restore: it undoes an entry that should
+        never have happened, so there is no ladder to climb back up — see its
+        own docstring.
         """
         actor = self._reached(main_id)
+        # ``released`` is what parses ``to``: it refuses anything that is not a
+        # rung, so there is no second reader of a license value here (story 5a's
+        # single-decision rule) and no spelling of a typo that folds silently.
         released = actor.ceiling.released(to=to, because=because)
+        target = released.rung
+        if height(target) < height(actor.ceiling.rung):
+            raise StoreError(
+                f"release_ceiling: {actor.ceiling.rung} -> {target} lowers the "
+                "cap. Lowering is a safety act with its own path and needs no "
+                "reason; this one raises and is refused when it would not"
+            )
+        if height(target) > height(actor.ceiling.rung) and target is not next_rung(
+            actor.ceiling.rung
+        ):
+            raise StoreError(
+                f"release_ceiling: {actor.ceiling.rung} -> {target} restores "
+                "more than one rung. Aftercare comes back a step at a time; a "
+                "single jump to full licence is what CAP-12 forbids"
+            )
         self._record_ceiling(actor, released, t=t, because=because)
         return released
 
@@ -369,8 +480,21 @@ class ActorRegistry:
         record = actor.store.state().crisis
         return dict(record) if record is not None else None
 
+    def aftercare_record(self, main_id: str) -> dict[str, Any] | None:
+        """The last aftercare record for this main, or ``None`` (story 6c).
+
+        Content-free by construction (AD-22): a state and a time. It is where
+        *"has Half asked about the mirror, and what did the main say"* is
+        answered, and nothing else in the log answers it — a ceiling append
+        says a cap moved, never whether anybody was asked first.
+        """
+        actor = self._reached(main_id)
+        self._evict_if_needed()
+        record = actor.store.state().aftercare
+        return dict(record) if record is not None else None
+
     async def suspend_for_crisis(
-        self, main_id: str, *, t: str, tier: str, score: int
+        self, main_id: str, *, t: str, tier: str, score: int, fresh: bool = True
     ) -> None:
         """Enter the mode for this main, durably and under the mutex (CAP-12).
 
@@ -382,11 +506,45 @@ class ActorRegistry:
         Ordered so that a crash never leaves the main *less* suspended than the
         process believes: the appends go first and the in-memory switch last.
 
-        Idempotent. A held main re-enters on every turn of a long conversation,
-        and one record per message would be a log full of the same fact.
+        Idempotent for the *held* state. A main already in the mode re-enters on
+        every turn of a long conversation, and one record per message would be a
+        log full of the same fact.
+
+        **But a fresh disclosure is a new entry, and story 6c needs it to be.**
+        Aftercare's floor runs from the most recent entry and never from the
+        first, so a second crisis during aftercare has to be visible as an
+        event with its own stamp — otherwise "the clock restarts" is a sentence
+        with nothing behind it. ``fresh`` is false only when the tier is the
+        *held* state, which is the gate saying this turn detected nothing new;
+        every other entering tier is a signal that fired on this message.
+        Two entries at the same instant are still one: the same turn cannot
+        disclose twice. Stored stamps are minute-resolution, so "the same
+        instant" spans a whole minute and two genuine disclosures inside one
+        minute collapse to the earlier — accepted, because the cost is a floor
+        that starts up to sixty seconds early and the alternative is a log line
+        per message in a fast exchange.
+
+        **The ceiling drops on an entry and not on every turn**, which is story
+        6c's other repair here. Re-applying the drop on every held turn was
+        harmless while nothing ever raised a ceiling; now that aftercare does,
+        it made a restore last exactly until the main's next message — thirty
+        days of floor, one rung back, and then silently capped again by the
+        turn that observed it. So the suspension is what an *entry* does, and a
+        turn that enters nothing leaves the cap where the log put it. Retrieval
+        is still disabled unconditionally, because that switch lives in memory
+        and an eviction is not an entry.
+
+        The self-heal that the unconditional drop used to provide — a crash
+        between the two appends leaving a main in the mode and uncapped — moves
+        to ``half.crisis.aftercare``, which holds the cap down to what the
+        floor permits as well as stepping it up.
         """
         async with self.acquire(main_id) as actor:
-            if not mode_is_open(actor.store.state().crisis):
+            current = actor.store.state().crisis
+            entering = not mode_is_open(current) or (
+                fresh and _stamp_of(current) != t
+            )
+            if entering:
                 actor.store.record(
                     Op.CRISIS,
                     f"cr_{main_id}_{t}",
@@ -395,13 +553,127 @@ class ActorRegistry:
                     tier=tier,
                     score=score,
                 )
-            self._record_ceiling(
-                actor,
-                actor.ceiling.lowered_to(License.BEHAVE),
-                t=t,
-                because="crisis mode entered (CAP-12)",
-            )
+                self._record_ceiling(
+                    actor,
+                    actor.ceiling.lowered_to(License.BEHAVE),
+                    t=t,
+                    because="crisis mode entered (CAP-12)",
+                )
             actor.retrieval.disable()
+
+    # -- aftercare (CAP-12, story 6c) -----------------------------------------
+    #
+    # Two writes, and the split is deliberate. ``note_aftercare`` records what
+    # was said and moves nothing; ``restore_step`` moves the cap by one rung
+    # and, where the step *is* an answer, records that answer in the same
+    # mutex. Neither is a mode exit: the ceiling comes back, the mode does not,
+    # and who decides the mode is over remains the companion's open question.
+
+    async def note_aftercare(self, main_id: str, *, t: str, state: str) -> None:
+        """Record that the question was put, or that the main declined it.
+
+        Durable, because both facts have to survive an eviction. A question
+        held in memory is asked again on the next turn after a restart, which
+        is nagging; a decline held in memory disappears, leaving some later
+        "yes" free to land on a question the main already refused.
+
+        Moves no ceiling. Being asked restores nothing and declining takes
+        nothing away — the cap is exactly where it was either way.
+        """
+        if state not in AFTERCARE_STATES:
+            raise StoreError(
+                f"note_aftercare: {state!r} is not an aftercare state; "
+                f"expected one of {sorted(AFTERCARE_STATES)}"
+            )
+        async with self.acquire(main_id) as actor:
+            _note_aftercare(actor, t=t, state=state)
+
+    async def hold_ceiling(
+        self, main_id: str, *, to: License, t: str, because: str
+    ) -> Ceiling:
+        """Hold this main's cap down to ``to``, under the mutex. Only lowers.
+
+        ``lower_ceiling``'s durable, serialized twin, and it exists because
+        aftercare is the ceiling's owner for as long as an aftercare period is
+        running — in both directions. Stepping up is the story; holding down is
+        what makes the step-up safe, because it is what notices a cap that is
+        higher than the floor permits.
+
+        The case it is for: the entry's two appends are one mutex apart, and a
+        process killed between them leaves a main in the mode with no ceiling
+        record. That used to heal itself, badly, by re-dropping the cap on
+        every held turn — which is exactly what made a restore last until the
+        main's next message.
+        """
+        async with self.acquire(main_id) as actor:
+            self._record_ceiling(
+                actor, actor.ceiling.lowered_to(to), t=t, because=because
+            )
+            return actor.ceiling
+
+    async def restore_step(
+        self, main_id: str, *, t: str, because: str, note: str | None = None
+    ) -> Ceiling:
+        """Raise this main's cap by exactly one rung, under the mutex (AD-1).
+
+        The one path aftercare restores through, and it takes no target: the
+        step is ``ladder.next_rung`` of wherever the cap is now, so there is no
+        argument a caller could pass that would put everything back at once.
+
+        ``note`` is the main's answer where the step *is* one — recorded in the
+        same mutex as the ceiling move, because a build where the consent
+        landed and the restore did not is a main who was asked, answered, and
+        saw nothing happen, and a build with the reverse is a mirror that
+        resumed with no record of anybody agreeing to it.
+        """
+        async with self.acquire(main_id) as actor:
+            state = actor.store.state()
+            began = entered_at(state.crisis)
+            if began is None:
+                raise StoreError(
+                    "restore_step: there is no crisis entry to come back from. "
+                    "Aftercare restores what a crisis capped; anything else "
+                    "raising a ceiling is an operator act with its own path"
+                )
+            if not at_least(FLOOR_DAYS, since=began, now=t):
+                raise StoreError(
+                    f"restore_step: {t} is inside the {FLOOR_DAYS}-day floor "
+                    f"that began at {began}. Nothing restores before it, by "
+                    "any path — including this one, which is the path a caller "
+                    "who has not read the floor reaches for"
+                )
+            if note is not None and note not in AFTERCARE_STATES:
+                raise StoreError(f"restore_step: {note!r} is not an aftercare state")
+            if note == AFTERCARE_AGREED:
+                # An agreement has to answer a question that was actually put.
+                # ``asked`` is the question standing; ``declined`` is a main
+                # who answered it and has since changed their mind — and a
+                # decline is only ever written in reply to a standing question,
+                # so either state is proof that Half asked. ``stopped`` is not:
+                # a main who asked not to be asked is not answering anything,
+                # and a consent record after one is not a shape aftercare
+                # produces. Nothing at all means the consent answers nothing,
+                # which is what the aftercare op exists to make unforgeable.
+                put, _ = answered(state.aftercare, since=began)
+                if put not in (AFTERCARE_ASKED, AFTERCARE_DECLINED):
+                    raise StoreError(
+                        "restore_step: an agreement has to answer a question. "
+                        "This aftercare period has no record of one being put, "
+                        "so this consent answers nothing"
+                    )
+            step = next_rung(actor.ceiling.rung)
+            if step is None:
+                return actor.ceiling  # already at the top; nothing to restore
+            released = actor.ceiling.released(to=step, because=because)
+            # The ceiling first, then the record of the answer. A crash between
+            # them then leaves the cap raised with no answer recorded, so the
+            # next turn holds it back down and asks again — recoverable. The
+            # other order leaves an answer recorded, aftercare finished and the
+            # cap never raised, which is a main stuck one rung short for ever.
+            self._record_ceiling(actor, released, t=t, because=because)
+            if note is not None:
+                _note_aftercare(actor, t=t, state=note)
+            return released
 
     async def reverse_crisis(
         self, main_id: str, *, t: str, because: str
@@ -418,6 +690,15 @@ class ActorRegistry:
 
         Reverses all three parts of the suspension together, for the reason
         ``suspend_for_crisis`` applies them together.
+
+        **This is the one path that puts the ceiling back in a single move, and
+        it is not a restore.** Story 6c makes ``release_ceiling`` refuse a jump
+        of more than one rung, because aftercare comes back a step at a time.
+        A reversal is the other thing entirely: it says the entry should never
+        have happened, so there is no aftercare period to come back from and no
+        ladder to climb. Making an operator step a falsely-capped main up one
+        rung at a time over six weeks would be applying a safety schedule to
+        somebody who was never in danger.
         """
         if not isinstance(because, str) or not because.strip():
             raise StoreError(

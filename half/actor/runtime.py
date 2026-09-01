@@ -38,8 +38,10 @@ from dataclasses import dataclass, field
 from half.actor.registry import Actor, ActorRegistry
 from half.channel.port import Channel, Inbound
 from half.context.build import build as build_context
+from half.crisis.aftercare import Schedule
 from half.crisis.gate import CrisisGate
 from half.crisis.handoff import Desk
+from half.crisis.safetyplan import Holder
 from half.errors import (
     HalfError,
     NotReachable,
@@ -86,10 +88,18 @@ class Runtime:
         # ``draft_link`` — the only route to a third party there is (AD-25).
         # It is wired here rather than left to a test, because a surface
         # reachable only from a test is a surface nobody has run.
+        # Aftercare and the held safety plan read the same registry, for the
+        # same reason: both are durable per-main state that has to survive
+        # eviction and restart, and both run on the main's own turn rather than
+        # on a schedule that does not exist. Wired here rather than left to a
+        # test, because a surface reachable only from a test is a surface
+        # nobody has run.
         self._gate = self.gate or CrisisGate(
             pipeline=self._pipeline,
             store=self.registry,
             desk=Desk(held=self.registry, drafter=self.channel),
+            schedule=Schedule(store=self.registry),
+            holder=Holder(held=self.registry),
         )
 
     async def run(self) -> None:

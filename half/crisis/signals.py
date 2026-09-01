@@ -185,6 +185,29 @@ SAFE_WORD_MIN_FUZZY: Final[int] = 4
 #: an apostrophe as a boundary, so without this ``don't`` is ``don`` + ``t``.
 _APOSTROPHES: Final[dict[int, None]] = {ord(char): None for char in "'’‘ʼ´`"}
 
+#: Line breaks and tabs, turned into spaces before splitting.
+#:
+#: **This is a detection fix, found in story 6c's review.** ``half.text.words``
+#: *removes* invisible characters rather than treating them as boundaries —
+#: correct for the index, where a zero-width joiner inside a word must not
+#: split it — and a newline is an invisible by that rule. So a main who typed
+#:
+#:     i want to
+#:     kill myself
+#:
+#: produced the tokens ``i want to killmyself``, matched no phrase in any table
+#: below, and was assessed as an ordinary Tuesday. A disclosure typed across
+#: two lines is not a rare shape; it is how people write when they are not
+#: composed, which is the whole population this subsystem exists for.
+#:
+#: Fixed here rather than in ``half.text`` because the two tokenizers want
+#: opposite things from an invisible character, and the index's reason for
+#: removing them is a good one. Nothing about the tables changes — this only
+#: widens what reaches them, which is the safe direction.
+_BREAKS: Final[dict[int, str]] = {
+    ord(char): " " for char in "\n\r\t\v\f\u2028\u2029\u0085"
+}
+
 
 def _tokens(text: object) -> tuple[str, ...]:
     """``text`` as folded comparison words.
@@ -199,7 +222,7 @@ def _tokens(text: object) -> tuple[str, ...]:
     """
     if not isinstance(text, str):
         return ()
-    stripped = text.translate(_APOSTROPHES)
+    stripped = text.translate(_BREAKS).translate(_APOSTROPHES)
     return tuple(folded for word in words(stripped) if (folded := normalize(word)))
 
 
@@ -490,6 +513,114 @@ NEGATIVE_SOURCE: Final[tuple[str, ...]] = (
 )
 
 
+# -- the answer to the aftercare question ------------------------------------
+#
+# **The same word answers two different questions with opposite costs, so it is
+# read two different ways** (CAP-12, story 6c).
+#
+# ``is_affirmative`` is deliberately generous: *maybe*, *sometimes* and *kind
+# of* are answers of yes to *"are you thinking about suicide?"*, and treating a
+# hedge as a no is what makes asking pointless. The cost of being wrong there
+# is a mode a main can wave away.
+#
+# The aftercare question — *"would you like me to start saying what I notice
+# about you again?"* — inverts that entirely. Its failure is resuming the
+# mirror on something that was not consent, which is the surveillance-resuming
+# the companion's open question exists to avoid. Silence is not consent, and
+# neither is *maybe*. So consent is a **narrow** table: the answers that can
+# only be a yes, with a hedge veto in front of them and the ordinary negative
+# veto in front of that.
+#
+# The cost of reading a real yes as a hedge is one more turn and one more
+# question. The cost of the reverse is the whole rule.
+
+CONSENT_SOURCE: Final[tuple[str, ...]] = (
+    "yes", "yes please", "yes i would", "yes id like that", "yes lets",
+    "id like that", "i would like that", "please do", "please start",
+    "go ahead", "go for it", "do it", "lets do it", "start again",
+    "yeah", "yep", "yup", "sure", "sounds good", "im ready", "i am ready",
+)
+
+#: A hedge. Not a yes and not a no — a main who has not decided, and the cap
+#: holding is what "has not decided" means. It is still an *answer*: it closes
+#: the standing question, so Half acknowledges it and asks again later rather
+#: than sitting on a question the main already responded to.
+CONSENT_HEDGE_SOURCE: Final[tuple[str, ...]] = (
+    "maybe", "perhaps", "possibly", "i guess", "i suppose", "kind of",
+    "sort of", "i think so", "not sure", "im not sure", "i dont know",
+    "dont know", "if you want", "up to you", "whatever", "i dont mind",
+)
+
+#: A refusal in its own words, beside the ordinary negative table. Every one of
+#: these is a *no* to this question specifically, and several of them contain no
+#: "no" at all — which is how *"yes, but please don't"* read as consent before
+#: this table existed.
+CONSENT_REFUSAL_SOURCE: Final[tuple[str, ...]] = (
+    "dont", "do not", "please dont", "please do not", "rather not",
+    "id rather not", "i would rather not", "not yet", "not now", "no thanks",
+    "no thank you", "not ready", "im not ready", "leave it", "leave it alone",
+    "stay quiet", "keep quiet",
+)
+
+#: Words that make a yes not a clean yes. On their own they mean nothing — a
+#: message about a cat can contain *but* — so they never constitute a refusal by
+#: themselves. Beside a consent phrase they do: *"yes but not the mirror
+#: stuff"* is a person saying no to the thing they were asked about.
+CONSENT_CONTRADICTION_SOURCE: Final[tuple[str, ...]] = (
+    "but", "however", "although", "though", "except", "unless", "not",
+    "later", "another time", "some other time", "one day",
+)
+
+#: *"No, and please stop asking."* Declining is not permanent — Half asks again
+#: after an interval — but asking must not be perpetual either, and a main who
+#: says stop is not asked every fortnight for the rest of their life.
+STOP_ASKING_SOURCE: Final[tuple[str, ...]] = (
+    "stop asking", "please stop asking", "stop asking me", "dont ask again",
+    "dont ask me again", "do not ask me again", "never ask me again",
+    "quit asking", "stop bringing it up", "dont bring it up again",
+    "stop asking me about it",
+)
+
+#: The main handing Half a plan to hold. A *marker*, not a parser: everything
+#: after the line it appears on is the document, kept exactly as it was sent.
+#: Half decides where the plan starts because the main said so, and nothing
+#: else about it.
+PLAN_INTAKE_SOURCE: Final[tuple[str, ...]] = (
+    "here is my safety plan", "this is my safety plan", "heres my safety plan",
+    "my safety plan is", "hold my safety plan", "keep my safety plan",
+    "save my safety plan", "here is the safety plan", "this is the plan we made",
+)
+
+#: How many words may follow a consent phrase and still leave the message an
+#: answer to a question. *"Yes please do"* is an answer; *"sure, I picked up
+#: the milk"* is a Tuesday, and reading it as consent resumed the mirror.
+CONSENT_TAIL: Final[int] = 2
+
+#: How long a message may be and still be read as a bare refusal. Beyond it,
+#: only a refusal the message *opens* with counts — a paragraph that mentions
+#: *not* somewhere in the middle is prose, not an answer.
+ANSWER_WORDS: Final[int] = 8
+
+
+# -- the held safety plan -----------------------------------------------------
+#
+# Asking for it is an ordinary request, not a crisis signal: it produces no
+# tier, enters no mode, records nothing and caps nothing. It is here rather
+# than beside the reader because this module owns one tokenizer and one way of
+# matching a phrase, and a second matcher written next to the safety plan is a
+# second matcher that folds case differently.
+#
+# Tight on purpose. *"My plan"* is a Tuesday — a plan for the weekend, a plan
+# for the quarter — and answering it with a safety plan would be Half deciding
+# what somebody meant at the worst possible moment.
+
+PLAN_REQUEST_SOURCE: Final[tuple[str, ...]] = (
+    "safety plan", "safety plans", "safety planning", "crisis plan",
+    "the plan we made", "the plan i made", "the plan we wrote",
+    "the plan my therapist", "the plan my doctor", "the plan my counsellor",
+)
+
+
 #: Every table, by name. The golden digest and the per-row behavioural tests
 #: both read this, so a table added later is pinned on the day it is written
 #: rather than on the day somebody remembers the test file exists.
@@ -513,6 +644,13 @@ VOCABULARY: Final[dict[str, tuple[str, ...]]] = {
     "topic": TOPIC_SOURCE,
     "affirmative": AFFIRMATIVE_SOURCE,
     "negative": NEGATIVE_SOURCE,
+    "consent": CONSENT_SOURCE,
+    "consent_hedge": CONSENT_HEDGE_SOURCE,
+    "consent_refusal": CONSENT_REFUSAL_SOURCE,
+    "consent_contradiction": CONSENT_CONTRADICTION_SOURCE,
+    "stop_asking": STOP_ASKING_SOURCE,
+    "plan_request": PLAN_REQUEST_SOURCE,
+    "plan_intake": PLAN_INTAKE_SOURCE,
     "claiming_explicit": CLAIMING_EXPLICIT_SOURCE,
     "claiming_loose": CLAIMING_LOOSE_SOURCE,
     "trailing_ok": TRAILING_OK_SOURCE,
@@ -551,6 +689,13 @@ _CRISIS_TARGETS = _compile(CRISIS_TARGET_SOURCE)
 _CARE_TARGETS = _compile(CARE_TARGET_SOURCE)
 _AFFIRMATIVE = _compile(AFFIRMATIVE_SOURCE)
 _NEGATIVE = _compile(NEGATIVE_SOURCE)
+_CONSENT = _compile(CONSENT_SOURCE)
+_CONSENT_HEDGE = _compile(CONSENT_HEDGE_SOURCE)
+_CONSENT_REFUSAL = _compile(CONSENT_REFUSAL_SOURCE)
+_CONSENT_CONTRADICTION = _compile(CONSENT_CONTRADICTION_SOURCE)
+_STOP_ASKING = _compile(STOP_ASKING_SOURCE)
+_PLAN_REQUEST = _compile(PLAN_REQUEST_SOURCE)
+_PLAN_INTAKE = _compile(PLAN_INTAKE_SOURCE)
 _CLAIMING_EXPLICIT = _compile(CLAIMING_EXPLICIT_SOURCE)
 _CLAIMING_LOOSE = _compile(CLAIMING_LOOSE_SOURCE)
 
@@ -766,6 +911,125 @@ def is_affirmative(text: object) -> bool:
 def is_negative(text: object) -> bool:
     """Whether ``text`` answers Half's own question with a no."""
     return _any(_tokens(text), _NEGATIVE)
+
+
+def _opens_with(tokens: tuple[str, ...], table: tuple[tuple[str, ...], ...]) -> int:
+    """How many words of ``tokens`` the longest phrase from ``table`` that
+    *begins* it covers, or zero.
+
+    Position is the whole repair. ``_any`` matches a phrase at any index and
+    looks at nothing after it, which is correct for a risk signal — *"and
+    suicide feels like the only option"* is a disclosure wherever it sits — and
+    wrong for an answer to a question, where a phrase buried in a sentence
+    about the shopping is not an answer at all.
+    """
+    best = 0
+    for phrase in table:
+        size = len(phrase)
+        if size > best and tokens[:size] == phrase:
+            best = size
+    return best
+
+
+def reads_as_consent(text: object) -> bool:
+    """Whether ``text`` is a clear yes to the aftercare question (story 6c).
+
+    **The strict counterpart of ``is_affirmative``, and the strictness is the
+    point.** That one enters a mode a main can wave away, so it reads a hedge
+    as a yes; the cost of being wrong is a moment of awkwardness. This one
+    lifts a cap on what Half will say about the main to their face, so every
+    doubt resolves the other way.
+
+    Three conditions, and all of them are required:
+
+    * **Consent opens the message.** Not *appears in* it. ``_any`` matching at
+      any index made *"sure, I picked up the milk"* and *"I'm ready to go to
+      bed"* both resume the mirror.
+    * **Consent is substantially the whole message.** At most ``CONSENT_TAIL``
+      words may follow it, so *"yes"*, *"yes please"* and *"yeah go ahead"* are
+      answers and a sentence that merely starts with one is not.
+    * **Nothing in it pulls the other way.** A negative, a refusal, a hedge or
+      a contradiction anywhere in the message wins outright — *"yes, but please
+      don't"* is a no, and it contains no "no".
+
+    Silence never reaches here at all: a main who says nothing sends no
+    message, and a message that is neither a consent nor a refusal leaves the
+    cap exactly where it was.
+    """
+    tokens = _tokens(text)
+    if not tokens:
+        return False
+    for table in (_NEGATIVE, _CONSENT_REFUSAL, _CONSENT_HEDGE,
+                  _CONSENT_CONTRADICTION):
+        if _any(tokens, table):
+            return False
+    covered = _opens_with(tokens, _CONSENT)
+    return covered > 0 and len(tokens) - covered <= CONSENT_TAIL
+
+
+def reads_as_refusal(text: object) -> bool:
+    """Whether ``text`` answers the aftercare question with anything but a yes.
+
+    A no, a *not yet*, and a *maybe* all land here, and that is deliberate: all
+    three leave the cap where it is, and all three are *answers* — the main
+    responded, so Half acknowledges it and asks again later rather than sitting
+    on a question they have already replied to. Only silence leaves a question
+    standing.
+
+    Bounded so that ordinary conversation is not read as an answer. A refusal
+    the message **opens** with counts at any length; otherwise the message has
+    to be short enough to be an answer at all. And a contradiction counts only
+    beside a consent phrase, because *"the cat is well but tired"* contains
+    *but* and answers nothing.
+    """
+    tokens = _tokens(text)
+    if not tokens:
+        return False
+    refusing = (_NEGATIVE, _CONSENT_REFUSAL, _CONSENT_HEDGE)
+    if any(_opens_with(tokens, table) for table in refusing):
+        return True
+    if len(tokens) <= ANSWER_WORDS and any(_any(tokens, t) for t in refusing):
+        return True
+    return _any(tokens, _CONSENT) and _any(tokens, _CONSENT_CONTRADICTION)
+
+
+def asks_to_stop(text: object) -> bool:
+    """Whether ``text`` asks Half to stop putting the question.
+
+    Declining is not permanent — Half asks again after an interval — but asking
+    is not perpetual either, and a main who says *"no, and please stop asking"*
+    should not be asked every fortnight for the rest of their life. The cap
+    still holds; what stops is the asking.
+    """
+    return _any(_tokens(text), _STOP_ASKING)
+
+
+def is_plan_intake(text: object) -> bool:
+    """Whether ``text`` is the main handing Half a plan to hold.
+
+    A marker and not a parser. Half stores everything after the **first** line,
+    exactly as it was sent — it decides where the document begins because the
+    main said so, and nothing else about it.
+
+    Read on the first line only, for the same reason: the marker announces the
+    document, so a plan that happens to contain the words *"here is my safety
+    plan"* on its fourth line is a document, not an announcement, and treating
+    it as one would silently drop the three lines above it.
+    """
+    if not isinstance(text, str):
+        return False
+    return _any(_tokens(text.split("\n", 1)[0]), _PLAN_INTAKE)
+
+
+def is_plan_request(text: object) -> bool:
+    """Whether ``text`` asks for the safety plan Half is holding.
+
+    Not a tier and not a signal: it enters no mode, records nothing, caps
+    nothing and scores nothing. A safety plan in a drawer is useless at three
+    in the morning, so producing a held one is an ordinary request that Half
+    answers immediately — in the mode or out of it.
+    """
+    return _any(_tokens(text), _PLAN_REQUEST)
 
 
 def assess(text: object) -> Assessment:

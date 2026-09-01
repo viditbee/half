@@ -43,4 +43,6 @@ markers = [
     "cap12: the crisis mode — the switch, the moment, and the never-list",
     "cap12_durable: crisis state that must survive eviction, restart and a full disk",
     "cap12_handoff: the warm handoff — the confirmed list, the versioned directory, the draft",
+    "cap12_aftercare: coming back — the thirty-day floor, the steps, the main's answer, the held plan",
+    "cap12_aftercare_property: the single-case structural rules aftercare and the safety plan rest on",
 ]

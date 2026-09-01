@@ -438,6 +438,21 @@ DELIVERING = frozenset({
 #: next year — has to be added here on purpose, in a diff somebody reads.
 ALLOWED_AWAITS = frozenset({
     "suspend_for_crisis", "_pipeline", "_suspend", "_respond_to_crisis",
+    # Story 6c. Four more, each argued for here rather than by exempting the
+    # two files they live in. ``_and_aftercare`` and ``evaluate`` are the gate
+    # reaching aftercare on the main's own turn; ``note_aftercare`` and
+    # ``restore_step`` are the two things aftercare writes — a record of what
+    # was said, and one rung of the cap. None of the four takes an address,
+    # none carries text anywhere, and the plan path is deliberately absent
+    # from this set because producing a held plan is synchronous and touches
+    # nothing outside the main's own store.
+    "_and_aftercare", "evaluate", "_evaluate", "_step", "_answer",
+    "note_aftercare", "restore_step", "hold_ceiling",
+    # Story 6c review round 1: the ingestion half. ``_plan_turn`` and
+    # ``receive`` are the gate taking a document the main handed over, and
+    # ``hold_safetyplan`` stores it. None takes an address and none carries
+    # text anywhere but into the main's own log.
+    "_plan_turn", "receive", "_receive", "hold_safetyplan",
 })
 
 

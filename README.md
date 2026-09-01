@@ -14,14 +14,25 @@ log *is* the thing. Everything else is folded from it and can be deleted.
 
 Your credentials are never in this tree.
 
+The set of record kinds the log may hold is closed and versioned: adding one is
+a deliberate change with a schema bump beside it, so an older build that meets
+a record it cannot read refuses to fold rather than skipping the line. It is at
+**v4** — `ceiling` joined at story 5a, `crisis` at 6a, and `aftercare` at 6c,
+which is what carries whether you were asked about the mirror and what you
+answered. A build that could not see that record would read somebody who
+declined as somebody who was never asked.
+
 ## Status
 
-Stories 1–5a and 6a of 12: the store, the Telegram channel, mail ingestion,
-retrieval, the two-channel context, the license ladder, and the crisis mode's
-switch and moment. Half can hold a conversation, remember it, derive claims
-from your mail without keeping the mail, rank what it knows against what you
-just said, decide which of it may be *said* as opposed to merely acted on, and
-step out of all of it when you are in danger.
+Stories 1–5a and 6a–6c of 12: the store, the Telegram channel, mail ingestion,
+retrieval, the two-channel context, the license ladder, and the whole of the
+crisis mode — the switch and the moment, the warm handoff, and coming back.
+Half can hold a conversation, remember it, derive claims from your mail without
+keeping the mail, rank what it knows against what you just said, decide which
+of it may be *said* as opposed to merely acted on, step out of all of it when
+you are in danger, hand you the hardest message you will ever send for you to
+send yourself, hold the safety plan you were given, and come back afterwards
+slowly and only with your permission.
 
 Every belief carries a license, and licenses are enforced when the context is
 **built** rather than by filtering what comes out. A claim licensed `assert`
@@ -78,6 +89,13 @@ mode after a sentence about lanterns, that is why — say so and it can be
 reversed. Tolerating the typo is worth the collision: the alternative is a
 safe word that fails on a shaking hand.
 
+A line break inside a sentence does not hide it. The index deliberately
+*removes* invisible characters so that a joiner inside a word does not split
+it, and a newline is an invisible by that rule — so a disclosure typed across
+two lines used to tokenize as one run-together word and match nothing. The
+crisis tokenizer turns a break into a space before it looks. Found reviewing
+story 6c, in code story 6a shipped.
+
 Crisis mode is a pre-filter ahead of the normal pipeline rather than a branch
 inside it (AD-10), so no route into an ordinary turn can skip it. Entering
 records the whole suspension at once, in your own log and under your actor's
@@ -87,7 +105,10 @@ license ceiling drops to `behave`, and the mode itself is recorded. All three
 come back together when your actor is rehydrated, so an eviction under memory
 pressure or a process restart cannot end the mode or quietly switch retrieval
 back on. Nothing in Half exits the mode: the question of who decides a crisis
-is over is a clinical one, and a timeout is not an answer to it.
+is over is a clinical one, and a timeout is not an answer to it. Aftercare
+below raises the *ceiling* back, a rung at a time and only with your word; it
+does not close the mode either, so in this build a restored ceiling has no
+visible effect until somebody qualified decides what mode exit is.
 
 Nothing may cost you a reply. Every durable step is best-effort and the reply
 is not: a corrupt log, a full disk or a refactored signature is caught, logged
@@ -129,9 +150,74 @@ That reverses all three parts of the suspension together and demands a reason
 that outlives whoever typed it. It is not a mode-exit policy and must never be
 automated.
 
-The warm handoff — a prefilled draft to a person you choose — is story 6b, and
-aftercare, which is what raises the ceiling again, is story 6c. If 6c slips,
-Half stays capped: quiet rather than loud, which is the safe failure.
+## Coming back
+
+Entering the mode drops your license ceiling to `behave` and nothing used to
+raise it again, so a single disclosure governed you silently for ever. That is
+what aftercare undoes, and it undoes it slowly and with your permission.
+
+**Thirty days is a floor, not a timer.** Nothing restores before it, by any
+path, and reaching it grants the *first* step only — `behave` back to `ask`,
+which is a return to ordinary conversation. That step is silent: announcing
+that Half may ask questions again would be a status update about Half in a
+conversation that is not about Half.
+
+**The mirror comes back only when you say so.** Two weeks after the first step,
+Half asks — *"would you like me to start saying what I notice about you
+again?"* — and the cap holds until you answer. Elapsed time is never the last
+condition. Silence is not consent, and neither is *maybe*: the answer has to be
+a clear yes, substantially the whole message, with nothing in it pulling the
+other way. *"Yes, but please don't"* is a no. A question you do not answer
+expires after a week rather than staying open for a later *yes* to land in.
+
+**Declining is not permanent, and asking is not perpetual.** Say no and the cap
+stays where it is; Half asks again a fortnight later. Say *"no, and please stop
+asking"* and it stops for good — the cap still holds, the asking ends.
+
+Aftercare is worked out on **your** next message. There is no scheduler here
+and none was built: the restore is a question about somebody who is already in
+the conversation. Caring Contacts — brief periodic messages with no demand
+attached — are the opposite kind of thing and wait for the scheduler in story 9.
+
+**A second crisis restarts the clock**, from the later disclosure and never the
+first. And once the mirror is back, aftercare is over: it does not go on owning
+your ceiling for the rest of your life.
+
+Every number here — the thirty-day floor, the fortnight before the mirror is
+offered, the fortnight between askings, the week a question stays answerable —
+is on the clinical reviewer's list along with the wording.
+
+### The safety plan
+
+Half **holds** a safety plan and must never write one. Writing one is clinical
+work; holding one is the entire point, because a safety plan in a drawer is
+useless at three in the morning.
+
+To give Half yours, send it in one message that starts with a line saying so:
+
+```
+here is my safety plan
+When I start pacing after two in the morning, that is the sign.
+Put the phone in the other room.
+Ring Asha. She knows.
+Dr Rao — Tuesdays, and the practice takes messages.
+```
+
+Everything after the first line is stored exactly as you sent it. Half decides
+where the document begins because you said so, and nothing else about it: no
+heading is supplied, no step is numbered, no missing section is noticed or
+filled in. Ask for it back with **"my safety plan"**, **"the plan we made"** or
+**"my crisis plan"**, in or out of crisis mode, and you get it word for word
+with two sentences around it. If Half is holding none, it says so plainly and
+offers nothing invented.
+
+Exactly one expression in the codebase can put a value into that field, it is a
+copy of its only argument, and a test asserts that every call site hands it
+something it was *given* rather than something built on the spot — because a
+guard that only forbids three ways of writing the field lets Half compose a
+plan out of its own memory and hand it to the blessed writer.
+
+The warm handoff — a prefilled draft to a person you choose — is story 6b.
 
 ## Running it
 
@@ -167,11 +253,11 @@ The suite is hermetic — it makes no network calls and needs no bot token.
 | `half/ingest/` | Connectors, secret scrubbing, independence, admission gates |
 | `half/retrieval/` | Strand weighting, contextual prefix, salience, bm25 fusion |
 | `half/context/` | The license split: content, directives, question candidates |
-| `half/governance/` | The license ladder: rung rules, quarantine, the ceiling |
+| `half/governance/` | The license ladder: rung rules, quarantine, the ceiling, and the aftercare schedule both the actor and crisis enforce |
 | `half/text.py` | One script-neutral tokenizer, shared by index and matcher |
 | `half/channel/` | The `Channel` port, reachability, the Telegram adapter |
 | `half/actor/` | One actor per main — an inbox and a mutex — and the wiring |
-| `half/crisis/` | Owns the inbound entrypoint: the tier table, the two actions, the templates |
+| `half/crisis/` | Owns the inbound entrypoint: the tier table, the two actions, the templates, the handoff, aftercare and the held safety plan |
 | `half/config.py` | Who counts as a main, from the environment |
 | `half/__main__.py` | The composition root |
 
@@ -188,6 +274,13 @@ is the crisis gate.
 
 `test_dependencies.py` enforces that the runtime imports only the standard
 library and pinned dependencies.
+
+`test_aftercare.py` and `test_safetyplan.py` are the coming-back gate: the
+thirty-day floor at every path that can raise a cap, the stepwise restore, the
+consent rules, and the clinical boundary around the safety plan. Their
+single-case structural rules — one writer of the plan field, no module knowing
+the shape of a plan, no clock, no tier — carry their own marker and their own
+floor, because a floor set to the count without them protects nothing.
 
 `test_crisis.py` is the CAP-12 gate. It observes what a person *receives*
 rather than what a function returned, and it closes sets rather than sampling

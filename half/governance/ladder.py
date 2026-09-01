@@ -124,6 +124,20 @@ def weaker(one: License, other: License) -> License:
     return one if _HEIGHT[one] <= _HEIGHT[other] else other
 
 
+def next_rung(rung: License) -> License | None:
+    """The rung one step above ``rung``, or ``None`` at the top.
+
+    The whole of *"restore is stepwise"* as arithmetic (CAP-12, story 6c): a
+    caller that wants to raise a ceiling asks the ladder what one step is
+    rather than naming a target, so there is no spelling of a restore that
+    skips a rung. Returning ``None`` at the top rather than raising, because
+    "already there" is an ordinary answer and the caller's response to it is to
+    do nothing.
+    """
+    step = _HEIGHT[rung] + 1
+    return RUNGS[step] if step < len(RUNGS) else None
+
+
 def rung_of(value: object) -> License:
     """The rung ``value`` names, or `behave`.
 

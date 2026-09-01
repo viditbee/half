@@ -305,6 +305,138 @@ DRAFT_CLINICIAN: Final = Line(
 DRAFT_LINES: Final[tuple[Line, ...]] = (DRAFT_PERSON, DRAFT_CLINICIAN)
 
 
+# -- aftercare: coming back ---------------------------------------------------
+#
+# Half **asks, and never announces** (CAP-12, story 6c). Coming off `behave` is
+# a return to ordinary conversation and follows time silently — there is no
+# line here for it, deliberately, because announcing *"I am allowed to ask
+# questions again"* is a status update about Half in a place that is not about
+# Half. Resuming the **mirror** is different: it restores Half's standing to
+# say what it notices about the main to their face, and the companion's first
+# open question is exactly that this must not feel like surveillance resuming.
+# So it is a question, and the cap holds until it is answered.
+#
+# **Silence is not consent, and neither is a hedge.** These lines are written so
+# that "no" is as easy to say as "yes" and costs nothing — a decline leaves the
+# cap where it is and Half asks again another time, which the closing line
+# promises out loud so that declining does not read as closing a door.
+#
+# No duration is named in any of them. Not because thirty days is secret, but
+# because a template that counts is a template that is wrong the moment the
+# floor moves, and because the number is not the thing being asked about.
+
+AFTERCARE_OPEN: Final = Line(
+    "aftercare-open",
+    "Some time has passed since you told me what was happening, and I have "
+    "kept myself quiet since then on purpose.",
+)
+
+AFTERCARE_ASK: Final = Line(
+    "aftercare-ask",
+    "I would rather ask than assume, so: would you like me to start saying "
+    "what I notice about you again?",
+)
+
+AFTERCARE_ASK_CLOSE: Final = Line(
+    "aftercare-ask-close",
+    "There is no rush, and no wrong answer here either. If you would rather I "
+    "stayed quiet, tell me and I will, and I will ask you again another time.",
+)
+
+#: The question, as the three paragraphs it is. Grouped here rather than
+#: assembled at the call site so that the shape of the ask is reviewable in the
+#: same file as its wording — and so that a caller cannot ask the question
+#: without the way out of it.
+AFTERCARE_ASK_LINES: Final[tuple[Line, ...]] = (
+    AFTERCARE_OPEN, AFTERCARE_ASK, AFTERCARE_ASK_CLOSE,
+)
+
+AFTERCARE_AGREED: Final = Line(
+    "aftercare-agreed",
+    "Alright. I will start doing that again, and you can tell me to stop at "
+    "any point without explaining why.",
+)
+
+#: The answer to anything that was not a clear yes — a no, a *not yet*, a
+#: *maybe*. One line for all three on purpose: Half is not going to tell
+#: somebody which of the three they meant, and the thing it does about all
+#: three is identical.
+AFTERCARE_DECLINED: Final = Line(
+    "aftercare-declined",
+    "Understood. I will leave things exactly as they are, and I will ask you "
+    "again another time rather than deciding it for you.",
+)
+
+#: The main asking not to be asked again. Declining is not permanent, but
+#: asking is not perpetual either — and a promise to stop is worth nothing
+#: unless Half says it out loud and then keeps it.
+AFTERCARE_STOPPED: Final = Line(
+    "aftercare-stopped",
+    "Then I will stop asking, and you will not hear me raise it again. "
+    "Nothing changes on my side, and you can tell me whenever you want to.",
+)
+
+
+# -- the safety plan ----------------------------------------------------------
+#
+# **Half must not author one — that is clinical work.** Half *holds* one made
+# with a professional and can produce it instantly, which is the entire point:
+# a safety plan in a drawer is useless at three in the morning. Steps three and
+# four of the Stanley–Brown plan are literally Half's data, which is what makes
+# authoring feel one field away, and a plan Half wrote would be produced at
+# three in the morning carrying the authority of one a clinician made.
+#
+# So these four lines are a *frame* and never a plan. They are what goes around
+# the main's own document; the document's own words are data, reproduced
+# unchanged, and there is no line here that could become a step, a heading, a
+# prompt for a missing section, or an encouraging summary of one.
+
+#: **It does not say who wrote it**, and that is a correction rather than a
+#: shortening. The first version said *"the safety plan you made with a
+#: professional"* — a claim about provenance Half cannot check, printed over a
+#: document it merely stores. What Half knows is that the main handed it over
+#: and that Half changed nothing, so that is what it says.
+PLAN_OPEN: Final = Line(
+    "plan-open",
+    "Here is the safety plan you gave me to hold, word for word as you sent "
+    "it. None of it is mine.",
+)
+
+PLAN_CLOSE: Final = Line(
+    "plan-close",
+    "That is the whole of it — nothing added, nothing left out. If any of it "
+    "belongs somewhere else now, the person you made it with is who changes "
+    "it.",
+)
+
+#: The main has just handed a plan over. Half repeats nothing back to them —
+#: quoting a document at somebody the moment they send it is not a receipt, it
+#: is a wall of their own worst day — and it claims nothing about what the
+#: document is.
+PLAN_HELD_NOW: Final = Line(
+    "plan-held-now",
+    "I have it, exactly as you sent it, and I have changed nothing in it. Ask "
+    "me for it any time and I will give it straight back.",
+)
+
+PLAN_ABSENT: Final = Line(
+    "plan-absent",
+    "I am not holding a safety plan for you. Writing one is clinical work and "
+    "it is not mine to do — but if you make one with a professional, I will "
+    "keep it and hand it straight back to you whenever you ask.",
+)
+
+#: Held, and unshowable: a line that would not survive being rendered, or a
+#: store that could not be read. Said plainly rather than repaired, because a
+#: plan produced with a section missing is worse than one not produced at all,
+#: and a guessed section is the authoring this whole module refuses.
+PLAN_UNREADABLE: Final = Line(
+    "plan-unreadable",
+    "I cannot get to a safety plan for you right now, and I would rather say "
+    "so than show you half of one or fill in the rest myself.",
+)
+
+
 #: Every line, in one place. A test asserts that every reply Half can produce
 #: is made only of these, so "no method content, in any phrasing" is a closed
 #: set rather than a filter over an open one.
@@ -335,6 +467,17 @@ LINES: Final[tuple[Line, ...]] = (
     OFFER_UNLISTED,
     DRAFT_PERSON,
     DRAFT_CLINICIAN,
+    AFTERCARE_OPEN,
+    AFTERCARE_ASK,
+    AFTERCARE_ASK_CLOSE,
+    AFTERCARE_AGREED,
+    AFTERCARE_DECLINED,
+    AFTERCARE_STOPPED,
+    PLAN_HELD_NOW,
+    PLAN_OPEN,
+    PLAN_CLOSE,
+    PLAN_ABSENT,
+    PLAN_UNREADABLE,
 )
 
 TEXTS: Final[frozenset[str]] = frozenset(line.text for line in LINES)
@@ -366,7 +509,14 @@ def _check_lines() -> None:
                 f"template {line.id!r} carries a line break or a control "
                 "character; every reviewed paragraph is one printable line"
             )
-    for group in (MACHINE_LINES, THANKS_LINES, DRAFT_LINES):
+    if AFTERCARE_ASK not in AFTERCARE_ASK_LINES:
+        raise CrisisError("the aftercare question does not contain the question")
+    if AFTERCARE_ASK_CLOSE not in AFTERCARE_ASK_LINES:
+        raise CrisisError(
+            "the aftercare question is missing the way out of it; a question "
+            "the main cannot decline is not a question"
+        )
+    for group in (MACHINE_LINES, THANKS_LINES, DRAFT_LINES, AFTERCARE_ASK_LINES):
         for line in group:
             if line not in LINES:
                 raise CrisisError(f"template {line.id!r} is grouped but unregistered")

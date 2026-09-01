@@ -153,6 +153,17 @@ REGION: Final[str] = "region"
 #: invisible to it.
 HANDOFF_FIELDS: Final[tuple[str, ...]] = (CONTACT, REGION)
 
+#: The safety plan a main made **with a professional** and gave Half to hold
+#: (CAP-12, story 6c). A list of lines, in the order they were written, kept
+#: exactly as they were given.
+#:
+#: Named here for the reason ``CONTACT`` is: the layer that owns record shapes
+#: owns which shapes may leave the store for the crisis path. A safety plan is
+#: not a claim Half derived — it is a document somebody else authored — and
+#: Half must be structurally unable to write one, which is why nothing in this
+#: module composes, completes or reformats the value it carries.
+PLAN: Final[str] = "plan"
+
 
 def handoff_record(record: Mapping[str, Any] | Any) -> bool:
     """Whether ``record`` is phone-book material.
@@ -192,6 +203,45 @@ def handoff_projection(record: Mapping[str, Any]) -> dict[str, Any]:
     whether either may be named.
     """
     return {name: record[name] for name in HANDOFF_VISIBLE if name in record}
+
+
+def plan_record(record: Mapping[str, Any] | Any) -> bool:
+    """Whether ``record`` holds a safety plan.
+
+    The narrowing, kept beside ``handoff_record`` and for the same reason:
+    crisis mode hard-disables ledger retrieval, and producing a held plan must
+    not become the route by which the ledger comes back. A record without a
+    non-empty ``plan`` list is a claim about the main and stays behind the
+    disabled retriever.
+    """
+    if not isinstance(record, Mapping):
+        return False
+    lines = record.get(PLAN)
+    return isinstance(lines, (list, tuple)) and bool(lines)
+
+
+#: The only fields of a plan record that leave the store: the plan itself, its
+#: id, and the pin the main can put on it. Nothing else — a belief that carries
+#: both a plan and a claim about the main hands over the plan and keeps the
+#: claim, which is the narrowing ``handoff_projection`` exists for, one field
+#: over.
+#: ``t`` travels because "the newest plan wins" has to be a fact about time.
+#: Sorting by id alone called itself supersession and was not: ids are opaque,
+#: so a replaced document came back as the current one whenever its id happened
+#: to sort last.
+PLAN_VISIBLE: Final[tuple[str, ...]] = ("id", "t", PLAN, QUARANTINED)
+
+
+def plan_projection(record: Mapping[str, Any]) -> dict[str, Any]:
+    """``record`` reduced to what the safety-plan path may see.
+
+    The plan's own lines travel **unchanged** — not stripped, not normalised,
+    not re-cased, not re-ordered. Whatever is done to them on the way out is
+    done by a renderer that can be read; a projection that tidied them would
+    make the verbatim guarantee depend on this function having tidied them the
+    same way twice.
+    """
+    return {name: record[name] for name in PLAN_VISIBLE if name in record}
 
 
 #: Fields that, once set on a belief, survive every later append for that
@@ -252,6 +302,11 @@ _TYPED_FIELDS: Final[dict[str, type | tuple[type, ...]]] = {
     HANDLE: str,
     IS_CLINICIAN: bool,
     REGION: str,
+    # The held safety plan, validated at the append for the reason the phone
+    # book is: the log is append-only, so a plan stored as a bare string — or
+    # as a list with a number in it — is a document Half can never render and
+    # can never remove either.
+    PLAN: (list, tuple),
 }
 
 
@@ -283,6 +338,14 @@ def validate_fields(fields: dict[str, Any]) -> None:
         isinstance(item, str) for item in support
     ):
         raise ValueError("field 'support' must hold source ids as strings")
+    lines = fields.get(PLAN)
+    if isinstance(lines, (list, tuple)) and not all(
+        isinstance(item, str) for item in lines
+    ):
+        # Refused at the append rather than skipped at the render: a plan is
+        # produced whole or not at all, and a line this build cannot show is a
+        # section missing from a document a clinician wrote.
+        raise ValueError(f"field {PLAN!r} must hold the plan's own lines as strings")
     for value in fields.values():
         _reject_untokenizable(value)
 

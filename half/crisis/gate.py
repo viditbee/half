@@ -40,12 +40,29 @@ nothing written, nothing durable. If the answer is no, it is over.
    across eviction and restart, because it is read back from the log at
    hydration. A disabled retriever raises; it never returns an empty set a
    caller could read as *"this main has nothing"*.
-3. *The license ceiling drops to `behave`*, durably. Restoring it is story 6c,
-   so a slipped 6c leaves Half quiet rather than loud.
-4. *The mode is held* — in the log, not in memory. Nothing here exits it: the
-   companion leaves *who decides it is over* an open question, and a build that
-   answered it with a timeout, a keyword or a process restart would be
-   answering a clinical question by accident.
+3. *The license ceiling drops to `behave`*, durably. Story 6c brings it back,
+   a rung at a time and never faster than a floor of thirty days.
+4. *The mode is held* — in the log, not in memory. **Nothing exits it, in this
+   story or in 6c**: the companion leaves *who decides it is over* an open
+   question, and a build that answered it with a timeout, a keyword or a
+   process restart would be answering a clinical question by accident.
+
+**Coming back, and where it happens** (story 6c). Aftercare is evaluated on the
+main's own turn — there is no scheduler and none is built — and whatever it has
+to say is appended to the reply this turn was already producing. It restores
+the ceiling one rung at a time from a thirty-day floor, silently for the first
+step, and it *asks* before the mirror resumes: elapsed time is never the last
+condition, and a main who does not answer stays where they are. A main who
+declines is asked again later, because declining once must not mean never being
+asked again. The floor runs from the most recent entry, so a fresh disclosure
+inside the mode restarts it.
+
+**The plan Half holds, produced the moment it is asked for.** A safety plan in
+a drawer is useless at three in the morning, so a request for one is answered
+on the turn it arrives, in the mode or out of it, from a document a professional
+wrote. Half never authors one — see ``half.crisis.safetyplan``, where the
+absence of an authoring surface is a property of the file rather than a rule
+about it.
 
 **Reversing a false entry.** A durable cap with no way back is a trap rather
 than a safety feature, so there is one documented, deliberate, recorded path:
@@ -105,13 +122,17 @@ from typing import Awaitable, Callable, Protocol, runtime_checkable
 from half.channel.port import Inbound
 from half.crisis import handoff
 from half.crisis import respond
+from half.crisis.aftercare import Schedule
 from half.crisis.handoff import Desk
+from half.crisis.safetyplan import Holder
 from half.crisis.signals import (
     Action,
     Assessment,
     Tier,
     assess,
     is_affirmative,
+    is_plan_intake,
+    is_plan_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -135,11 +156,15 @@ class CrisisStore(Protocol):
         ...
 
     async def suspend_for_crisis(
-        self, main_id: str, *, t: str, tier: str, score: int
+        self, main_id: str, *, t: str, tier: str, score: int, fresh: bool = True
     ) -> None:
         """Record the entry, drop the ceiling, disable retrieval — atomically
         enough that no two of the three can be observed apart, and under the
-        main's own mutex (AD-1)."""
+        main's own mutex (AD-1).
+
+        ``fresh`` says whether this turn detected something new, as against the
+        mode simply being open already. A fresh disclosure is a new entry, and
+        aftercare's floor runs from the most recent one (story 6c)."""
         ...
 
 
@@ -161,7 +186,7 @@ class VolatileCrisisStore:
         return main_id in self.open_for
 
     async def suspend_for_crisis(
-        self, main_id: str, *, t: str, tier: str, score: int
+        self, main_id: str, *, t: str, tier: str, score: int, fresh: bool = True
     ) -> None:
         self.open_for.add(main_id)
 
@@ -175,9 +200,17 @@ class CrisisGate:
         store: CrisisStore | None = None,
         *,
         desk: Desk | None = None,
+        schedule: Schedule | None = None,
+        holder: Holder | None = None,
     ) -> None:
         self._pipeline = pipeline
         self._store: CrisisStore = store if store is not None else VolatileCrisisStore()
+        # Aftercare, and the plan Half holds. Both are wired the way the desk
+        # is: a gate built without them behaves exactly as it did before this
+        # story — nothing restores, and Half says it holds no plan — rather
+        # than failing on the path where failing is the catastrophe.
+        self._schedule: Schedule = schedule if schedule is not None else Schedule()
+        self._holder: Holder = holder if holder is not None else Holder()
         # The handoff. A desk with nothing wired offers nothing, which is the
         # same outcome as a main who has confirmed nobody — so a gate built
         # without one behaves exactly as it did before story 6b rather than
@@ -203,31 +236,149 @@ class CrisisGate:
 
         Returns the reply text, or ``None`` for silence — which is a first-class
         outcome for an *ordinary* turn (AD-27) and never one for a crisis turn.
+
+        A turn *inside* an open mode is assessed a second time, and only there:
+        the reply is the held plan whatever the message says, but a fresh
+        disclosure is still an event that restarts aftercare's floor. See
+        ``_renewed``.
         """
         decision = self._decide(inbound)
+        # The plan is handled once, before anything else, because whether this
+        # turn was about it changes what aftercare may say afterwards. Nothing
+        # is read or written unless a phrase matched.
+        #
+        # Never on a turn about somebody else. A message like *"my friend said
+        # she wants to kill herself, should i make her a safety plan"* is both
+        # a third-party disclosure and a plan phrase, and answering it with the
+        # main's own document would be Half changing the subject to them at the
+        # moment they are frightened for somebody else — the same rule that
+        # keeps aftercare silent there.
+        wanted = (
+            "" if decision.action is Action.SURFACE
+            else await self._plan_turn(inbound)
+        )
+
         # The override hook is consulted only when the tier table did not
         # already decide, so an ordinary turn costs one assessment and a crisis
         # turn costs one assessment.
         if decision.enters or self._is_crisis(inbound, decision=decision):
             self._asked.pop(inbound.main_id, None)
-            await self._suspend(inbound, decision)
-            return await self._respond_to_crisis(inbound, decision=decision)
+            await self._suspend(inbound, decision, self._renewed(inbound, decision))
+            reply = await self._respond_to_crisis(inbound, decision=decision)
+            return await self._and_aftercare(inbound, reply, wanted=wanted)
 
         if decision.action is Action.SURFACE:
             # Somebody other than the main. A resource the main can share, and
             # it stops here: the mode is not entered, no ceiling moves, and the
             # pipeline is not called — so no belief about that person is
-            # written to any store.
+            # written to any store. Aftercare stays quiet on this turn: the
+            # subject is somebody else, and Half's own question does not belong
+            # underneath it.
             self._asked.pop(inbound.main_id, None)
-            return respond.reply_for(decision)
+            return await self._and_aftercare(
+                inbound, respond.reply_for(decision), wanted=wanted, quiet=True
+            )
 
         if decision.action is Action.ASK:
+            # Half has just asked one direct question. Aftercare stays quiet
+            # underneath it: two questions in one message is nagging in the
+            # register where nagging is unforgivable, and it would leave the
+            # main's next *yes* answering whichever of them the code looked at
+            # first.
             self._asked[inbound.main_id] = inbound.external_id
-            return respond.reply_for(decision)
+            return await self._and_aftercare(
+                inbound, respond.reply_for(decision), wanted=wanted, quiet=True
+            )
 
         # Any other resolution answers or abandons a standing question.
         self._asked.pop(inbound.main_id, None)
-        return await self._pipeline(inbound)
+        return await self._and_aftercare(
+            inbound, await self._pipeline(inbound), wanted=wanted
+        )
+
+    # -- aftercare, and the plan (story 6c) -----------------------------------
+
+    async def _plan_turn(self, inbound: Inbound) -> str:
+        """What this turn has to say about the safety plan, or "". Never raises.
+
+        Two things a main does with a plan, in the order they can happen on one
+        message: hand one over, or ask for the one Half has. Handing one over
+        wins, because a message that is both is a main giving Half a document
+        and there is nothing yet to produce.
+        """
+        try:
+            if is_plan_intake(inbound.text):
+                return await self._holder.receive(
+                    inbound.main_id, inbound.text, t=inbound.t
+                )
+        except Exception:
+            # No content, no plan text, no message text (AD-22).
+            logger.exception(
+                "a safety plan could not be taken for main=%s; the rest of the "
+                "reply stands", inbound.main_id
+            )
+            return ""
+        return self._wants_plan(inbound)
+
+    def _wants_plan(self, inbound: Inbound) -> str:
+        """The held safety plan as text to append, or "". Never raises.
+
+        Produced on the turn it is asked for, in the mode or out of it, because
+        a safety plan in a drawer is useless at three in the morning. Nothing
+        here writes: producing a plan records no belief, moves no ceiling, and
+        neither enters nor exits the mode.
+
+        Broad on purpose, for the reason ``_door`` is broad. ``Holder.produce``
+        already swallows its own failures and answers with a sentence rather
+        than with nothing; this catches the phrase check and the rendering, and
+        a failure costs the plan rather than the reply.
+        """
+        try:
+            if not is_plan_request(inbound.text):
+                return ""
+            return self._holder.produce(inbound.main_id)
+        except Exception:
+            # No content, no plan text, no message text (AD-22).
+            logger.exception(
+                "a safety plan could not be produced for main=%s; the rest of "
+                "the reply stands", inbound.main_id
+            )
+            return ""
+
+    async def _and_aftercare(
+        self,
+        inbound: Inbound,
+        reply: str | None,
+        *,
+        wanted: str = "",
+        quiet: bool = False,
+    ) -> str | None:
+        """This turn's reply, with the plan and whatever aftercare says.
+
+        **Evaluated on the main's own turn, and never pushed.** There is no
+        scheduler here and none is built: the restore is a question about
+        somebody who is already in the conversation, so it is asked where they
+        are rather than by interrupting them to ask permission to interrupt.
+
+        The order is the moment's. Whatever this turn was about comes first,
+        then the door if there was one, then the plan if the main asked for it,
+        and only then Half's own question — which is not asked at all on a turn
+        that was already about something else (``quiet``).
+
+        Silence stays available. An ordinary turn with nothing to say and no
+        aftercare due still returns ``None`` (AD-27); it stops being silence
+        only when there is something Half owes the main.
+        """
+        said = await self._schedule.evaluate(
+            inbound.main_id,
+            now=inbound.t,
+            text=inbound.text,
+            quiet=quiet or bool(wanted),
+        )
+        parts = [part for part in (reply, wanted, said) if part]
+        if not parts:
+            return reply  # ``None`` for silence, "" for an empty ordinary reply
+        return respond.SEPARATOR.join(parts)
 
     # -- the two seams --------------------------------------------------------
 
@@ -353,7 +504,37 @@ class CrisisGate:
             )
             return False
 
-    async def _suspend(self, inbound: Inbound, decision: Assessment) -> None:
+    def _renewed(self, inbound: Inbound, decision: Assessment) -> Assessment | None:
+        """The signal this turn found, if it is a *new* one. Pure.
+
+        ``_decide`` short-circuits to ``HELD`` the moment the mode is open,
+        because the mode outranks everything and the reply is the held plan
+        whatever the message says. That is still true of the *reply*. It is not
+        true of the *record*: a main who discloses again a fortnight into
+        aftercare has had a second crisis, and CAP-12's floor runs from the
+        most recent entry rather than from the first (story 6c), so the entry
+        has to exist in the log with its own stamp.
+
+        So a held turn is assessed a second time, and only a held turn. The
+        cost is one pure function over one message; the alternative was a floor
+        that could not restart, or a ``HELD`` reply carrying a tier it did not
+        act on.
+
+        ``None`` means nothing new was found — the ordinary case inside a long
+        conversation in the mode, where one record per message would be a log
+        full of the same fact.
+        """
+        if decision.tier is not Tier.HELD:
+            return decision
+        found = assess(inbound.text)
+        return found if found.enters else None
+
+    async def _suspend(
+        self,
+        inbound: Inbound,
+        decision: Assessment,
+        renewed: Assessment | None = None,
+    ) -> None:
         """Enter the mode for this main. Never raises.
 
         Broad on purpose. The narrow version caught ``HalfError`` only, and the
@@ -367,12 +548,21 @@ class CrisisGate:
         ``CancelledError`` is not caught: shutdown is not a message failure.
         """
         self._fallback.add(inbound.main_id)
+        # A fresh signal is recorded as itself — *disclosure*, not *held* — so
+        # the one record a clinical reviewer reads says what fired and when.
+        found = renewed if renewed is not None else decision
         try:
             await self._store.suspend_for_crisis(
                 inbound.main_id,
                 t=inbound.t,
-                tier=str(decision.tier),
-                score=decision.score,
+                tier=str(found.tier),
+                score=found.score,
+                # False only when this turn found nothing new and the mode was
+                # simply already open. That difference is what lets aftercare's
+                # floor run from the most recent disclosure rather than from
+                # the first (story 6c), while a long conversation inside the
+                # mode still appends one record rather than one per turn.
+                fresh=renewed is not None,
             )
         except Exception:
             # Loud, because a suspension that did not persist is a main who

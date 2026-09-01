@@ -25,7 +25,15 @@ from typing import Final
 #: build that could not see a crisis record would fold a main in the mode to a
 #: main who is not, and answer their next message through the ordinary
 #: pipeline — a silent mode exit, which CAP-12 forbids outright.
-SCHEMA_VERSION: Final[int] = 3
+#:
+#: v4 added ``aftercare`` (story 6c), and the bump is not optional for the
+#: reason the last two were not. The record is what carries the main's *answer*
+#: about resuming the mirror, and a build that could not see one would read a
+#: main who declined — or who was asked and said nothing — as a main who was
+#: never asked. Silence is not consent, and a schema rollback that turned a
+#: recorded decline into an unasked question would be the one restore CAP-12
+#: forbids arriving by accident.
+SCHEMA_VERSION: Final[int] = 4
 
 
 class Op(StrEnum):
@@ -66,6 +74,23 @@ class Op(StrEnum):
     #: **Content-free** (AD-22). The record carries the tier, a signal count and
     #: the state — never the message, never a phrase, never a claim.
     CRISIS = "crisis"
+    #: The aftercare conversation about resuming the mirror (CAP-12, story 6c).
+    #:
+    #: Not the *steps*: a step is a ceiling move and a ceiling record already
+    #: says what moved and why. This op carries the one thing no other record
+    #: can — whether Half has put the question, and what the main answered.
+    #:
+    #: Durable for a reason a ceiling record cannot cover. A question held in
+    #: memory is a question re-asked after every eviction, which is nagging in
+    #: the one register where nagging is unforgivable; and a *decline* held in
+    #: memory is a decline that disappears at the next restart, leaving the
+    #: next turn free to read some later "yes" as the answer to a question the
+    #: main already said no to. Silence is not consent, and neither is a lost
+    #: refusal.
+    #:
+    #: **Content-free** (AD-22). The record carries a state and a time — never
+    #: the message, never the answer's wording, and nothing about recovery.
+    AFTERCARE = "aftercare"
 
 
 #: The two states a ``crisis`` record may carry. Named here, beside the op, so
@@ -74,6 +99,26 @@ class Op(StrEnum):
 CRISIS_ENTERED: Final[str] = "entered"
 CRISIS_REVERSED: Final[str] = "reversed"
 CRISIS_STATES: Final[frozenset[str]] = frozenset({CRISIS_ENTERED, CRISIS_REVERSED})
+
+#: The three states an ``aftercare`` record may carry, here for the reason the
+#: crisis states are: the fold validates them and the registry writes them, and
+#: two spellings of the same word is how a decline folds to nothing.
+#:
+#: There is deliberately no *granted* state. A step is a ceiling record, and a
+#: second place recording the same event is a second place for it to disagree.
+#:
+#: ``declined`` is *anything that was not a clear yes* — a no, a "not yet", a
+#: "maybe". Half does not infer which of the three somebody meant; what the log
+#: needs is that they answered and did not consent, which is what schedules the
+#: next asking. ``stopped`` is the main asking not to be asked again: the cap
+#: still holds, the asking ends.
+AFTERCARE_ASKED: Final[str] = "asked"
+AFTERCARE_DECLINED: Final[str] = "declined"
+AFTERCARE_AGREED: Final[str] = "agreed"
+AFTERCARE_STOPPED: Final[str] = "stopped"
+AFTERCARE_STATES: Final[frozenset[str]] = frozenset(
+    {AFTERCARE_ASKED, AFTERCARE_DECLINED, AFTERCARE_AGREED, AFTERCARE_STOPPED}
+)
 
 
 #: Frozen membership test. Kept separate from the enum so a lookup never

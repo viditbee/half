@@ -91,7 +91,33 @@ SAFE_WORD = "lantern hour"
 # is deliberately **not** pinned here: it is data, and build requirement 5 says
 # it must be refreshable without a release, which a digest would forbid. Its
 # own gate is ``reviewed``, which the shipped file sets to false.
-TEMPLATES = "967269e10bf585f93ad711669932c44c"
+#
+# Re-pinned again for story 6c, which added eleven lines and changed none. Six
+# are the aftercare question, its two answers, and what Half says when the main
+# asks it to stop asking. Five are the frame around a document somebody else
+# wrote: the two paragraphs either side of a held plan, the acknowledgement when
+# a main hands one over, the sentence for a main who has none, and the sentence
+# for a plan Half is holding and cannot show whole. None of the eleven is a plan
+# or a step; the plan's own words are data, and no digest here covers them,
+# because they are the main's clinician's and not this product's.
+#
+# **One line was rewritten in review round 1**, and it is the only wording this
+# story changes rather than adds. ``plan-open`` said *"the safety plan you made
+# with a professional"* over a document Half merely stores and cannot check the
+# provenance of. It now says what Half actually knows — that the main gave it
+# and that Half changed nothing — because a claim about who wrote a clinical
+# document is not a claim to make on somebody's behalf at three in the morning.
+#
+# Seven vocabulary tables joined across the two rounds. ``consent`` is the
+# strict reading of a yes that the aftercare question needs — the inverse of the
+# generous reading crisis entry uses, because the two questions fail in opposite
+# directions — with ``consent_hedge``, ``consent_refusal`` and
+# ``consent_contradiction`` beside it, added in review round 1 after
+# *"yes, but please don't"* and *"sure, I picked up the milk"* both resumed the
+# mirror. ``stop_asking`` is a main asking not to be asked again.
+# ``plan_request`` is how a main asks for the document Half is holding, and
+# ``plan_intake`` is how they hand one over.
+TEMPLATES = "316a5e2c7817c9676356c383b5ba5ed2"
 PLANS = "bff98dbf54f79dde63156fd8aa128fec"
 ACTIONS = "82218c538a9a409b87c4a8b72e464f11"
 CONSTANTS = "7579d7e37990280768f4e627b2fda8ad"
@@ -100,6 +126,10 @@ VOCABULARY_PINS: dict[str, tuple[str, int]] = {
     "care_target": ("6252167d8554be8ca92d2477b5659794", 9),
     "claiming_explicit": ("8dac8c71fc026355063df1692ad830e3", 12),
     "claiming_loose": ("d6b9d44c72007088967e12334d13584f", 8),
+    "consent": ("4b9cd9946c33dc66840592bee5956e7d", 21),
+    "consent_contradiction": ("93442c63c010aa6a9d8644b7c1ef9aa9", 11),
+    "consent_hedge": ("6324cae8dafc4224c75bc57cf8d8f4ba", 16),
+    "consent_refusal": ("796fb1b8e8a1ce2db8a59c30519475fe", 17),
     "contact": ("449763ba124e90caf276a709ae97e3a3", 31),
     "crisis_target": ("1a70534cbd01be0a4a9bfc67fa40b1bb", 11),
     "farewell": ("e9c0ec38bcd2e07cc3c3275cfa96fa70", 13),
@@ -110,12 +140,15 @@ VOCABULARY_PINS: dict[str, tuple[str, int]] = {
     "other_markers": ("7a1f2e8c31f223bc8c6fee36fa6a9012", 46),
     "other_risk": ("b99bdad2d31575eb9ef0fa4aa9210f7e", 41),
     "outcome": ("45029138009dad47092fe8cad20a8db3", 12),
+    "plan_intake": ("1906935134acebf75690916b9a79ec48", 9),
+    "plan_request": ("20f40a21f487405d50986235bca76af9", 10),
     "preparatory": ("936ca54e7c70e48e5d7807b5c8d631ba", 19),
     "request": ("9c2d63a5e3c5864f9ef42ff521fdc800", 16),
     "risk": ("e30b614f0dae30e30fd4e44bdaccbb28", 23),
     "self_markers": ("bd1375c7f37fae93ef4c2dbbc5a82833", 8),
     "short_only": ("8271d06e29b75ad677fb3bbdacab053d", 5),
     "slang": ("aa539795854138b991e6d500bab15aab", 14),
+    "stop_asking": ("9e3cb97cc9d7576a3f05ec98328649f4", 11),
     "topic": ("4dee438fb7578bf90535e735aedd312d", 34),
     "trailing_ok": ("7c678f40d155188c833d3c30f2cb8c56", 13),
 }

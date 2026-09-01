@@ -39,6 +39,11 @@ PURE_MODULES = (
     "half/store/ops.py",
     "half/store/records.py",
     "half/governance/ladder.py",
+    # The aftercare schedule. It computes elapsed days from two stamps the
+    # caller supplies, and the whole point of writing the civil-date
+    # arithmetic out by hand was that it could not reach a clock — so the scan
+    # that says so has to include it.
+    "half/governance/aftercare.py",
 )
 
 ROOT = Path(__file__).resolve().parents[1]

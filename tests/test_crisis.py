@@ -1626,3 +1626,48 @@ def test_the_assessment_is_pure():
     for text in (SAFE_WORD, "i want to kill myself", "my friend is suicidal",
                  "whats the point", "an ordinary Tuesday"):
         assert len({assess(text) for _ in range(50)}) == 1
+
+
+# =============================================================================
+# review finding (story 6c): a line break is a boundary, not an invisible
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["i want to\nkill myself", "i want\nto kill\nmyself", "im\tsuicidal",
+     "i\r\nwant to die", "everything is fine\ni want to kill myself"],
+    ids=["one-break", "two-breaks", "tab", "crlf", "second-line"],
+)
+def test_a_disclosure_typed_across_two_lines_is_not_missed(text):
+    """A defect found reviewing story 6c, in code story 6a shipped.
+
+    ``half.text.words`` removes invisible characters rather than treating them
+    as boundaries — which is right for the index, where a zero-width joiner
+    inside a word must not split it, and wrong here: a newline is an invisible
+    by that rule, so *"i want to\\nkill myself"* tokenized as ``i want to
+    killmyself``, matched no phrase in any table, and was answered by the
+    ordinary pipeline as an ordinary Tuesday.
+
+    A disclosure typed across two lines is not a rare shape. It is how people
+    write when they are not composed, which is the whole population this
+    subsystem exists for. The fix is local to ``half.crisis.signals``, because
+    the index's reason for removing invisibles is a good one and the two
+    tokenizers want opposite things from the same character.
+    """
+    assert assess(text).enters, repr(text)
+
+
+def test_the_line_break_fix_widens_and_never_narrows():
+    """It changes what reaches the tables and nothing about the tables. Every
+    phrase that entered before still enters, on one line and on two."""
+    for phrase in VOCABULARY["main_risk"]:
+        assert assess(phrase).enters, phrase
+        assert assess(phrase.replace(" ", "\n", 1)).enters, phrase
+
+
+def test_a_line_break_does_not_manufacture_a_signal():
+    """The other direction: breaking an ordinary sentence does not make one."""
+    for text in ("the film was\nabout a submarine", "i finished\nthe report"):
+        assert not assess(text).enters, repr(text)
+        assert not assess(text).asks, repr(text)
