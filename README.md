@@ -71,6 +71,13 @@ word, or with its letters spaced apart — enters the mode immediately. Nothing
 is scored, no threshold has to be cleared, and nothing can outvote it. It never
 changes.
 
+The typo tolerance has one known cost, documented here rather than left to be
+discovered: **`lantern our`** also matches, because *our* is one letter from
+*hour* and the two words have to be adjacent. If Half answers you in crisis
+mode after a sentence about lanterns, that is why — say so and it can be
+reversed. Tolerating the typo is worth the collision: the alternative is a
+safe word that fails on a shaking hand.
+
 Crisis mode is a pre-filter ahead of the normal pipeline rather than a branch
 inside it (AD-10), so no route into an ordinary turn can skip it. Entering
 records the whole suspension at once, in your own log and under your actor's

@@ -51,6 +51,8 @@ from half.crisis.gate import CrisisGate, VolatileCrisisStore
 from half.crisis.signals import (
     ACTION_FOR,
     ASKING_TABLES,
+    CLAIMING_ASKING_TABLES,
+    CLAIMING_ENTERING_TABLES,
     ENTERING_TABLES,
     SAFE_WORD,
     SURFACING_TABLES,
@@ -576,18 +578,111 @@ def test_a_risk_signal_about_someone_else_surfaces_a_resource_and_stops(text):
     assert not one.in_crisis("vidit"), "a third party never opens the main's mode"
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "she is suicidal and so am i",
+        "she is suicidal and i am too",
+        "my friend and i are both suicidal",
+    ],
+    ids=["so-am-i", "i-am-too", "both"],
+)
+def test_an_elliptical_self_disclosure_is_the_mains_and_enters(text):
+    """English lets you disclose without a subject, a verb, or the word at all.
+    All three of these were read as somebody else's crisis and answered with a
+    leaflet about helping a friend — which is worse than a miss, because it
+    misreads the person at the moment it matters most.
+
+    A first-person pronoun with an auxiliary echoing the risk predicate leaves
+    nothing to interpret, so it enters.
+    """
+    found = assess(text)
+    assert found.tier is Tier.DISCLOSURE, (text, found.tier)
+    assert found.enters
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "my brother is suicidal, me too",
+        "he wants to die and honestly same",
+        "my friend is suicidal and same here",
+    ],
+    ids=["me-too", "same", "same-here"],
+)
+def test_a_bare_elliptical_claim_asks_rather_than_surfacing(text):
+    """A bare *me too* or *same* is a claim about something in the previous
+    sentence and usually the risk — but not always. The two-action design means
+    that uncertainty does not have to be resolved: asking is cheap and cannot
+    be wrong in a way that matters, and what must never happen is handing this
+    person a resource for somebody else."""
+    found = assess(text)
+    assert found.action is Action.ASK, (text, found.tier)
+    assert found.action is not Action.SURFACE
+
+
+@pytest.mark.parametrize("phrase", sorted(
+    phrase for table in CLAIMING_ENTERING_TABLES for phrase in VOCABULARY[table]
+))
+def test_every_explicit_claim_still_claims_the_risk_for_the_main(phrase):
+    """Matrix: phrase removed, for the claiming tables. These entries mean
+    nothing alone, so they are pinned in the construction they exist for."""
+    found = assess(f"my friend is suicidal and {phrase}")
+    assert found.enters, phrase
+    assert found.tier is Tier.DISCLOSURE
+
+
+@pytest.mark.parametrize("phrase", sorted(
+    phrase for table in CLAIMING_ASKING_TABLES for phrase in VOCABULARY[table]
+))
+def test_every_loose_claim_asks_and_never_surfaces(phrase):
+    found = assess(f"my friend is suicidal and {phrase}")
+    assert found.action is Action.ASK, phrase
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "my sister is suicidal and i am worried about her",
+        "my friend is suicidal and i am too tired to help",
+        "my brother wants to kill himself and i dont know what to say",
+        "she is suicidal and so is her sister",
+    ],
+    ids=["worried", "too-tired", "dont-know", "her-sister"],
+)
+def test_a_genuine_third_party_message_still_surfaces(text):
+    """The inverse, and the half a new rule is most likely to break. *"i am too
+    tired to help"* contains an explicit claim phrase and is not a claim: the
+    only thing separating it from *"i am too"* is what follows, which is why
+    the trailing words are a closed list."""
+    assert assess(text).action is Action.SURFACE, text
+
+
+def test_a_claim_with_nobody_to_claim_from_is_not_a_signal():
+    """*me too* after a third-party disclosure is a disclosure. *me too* after
+    a sentence about lunch is a sentence about lunch."""
+    for text in ("me too", "same", "so am i", "i love that book, me too"):
+        assert assess(text).tier is Tier.NONE, text
+
+
 @pytest.mark.cap12_durable
 def test_a_third_party_signal_records_no_belief_about_that_person(tmp_path):
     """Matrix: third party at risk, error column. Driven through the real
     runtime, because 'records nothing' is a property of the whole turn."""
     root = tmp_path / "mains"
-    transport, registry = run_turns(root, [("123", "my friend is suicidal")])
+    transport, registry = run_turns(root, [
+        ("123", "my friend is suicidal"),
+        ("123", "my sister is suicidal and i am worried about her"),
+    ])
     registry.close()
 
-    assert transport.sent, "the main must still get a reply"
+    assert len(transport.sent) == 2, "the main must still get a reply"
+    for _, sent in transport.sent:
+        assert templates.OTHER_RESOURCE.text in sent
     with Store(root / "vidit") as store:
         assert store.state().beliefs == {}, "a turn about someone else wrote a belief"
         assert store.state().crisis is None
+        assert store.state().ceiling is None
 
 
 @pytest.mark.cap12_durable

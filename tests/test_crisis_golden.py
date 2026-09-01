@@ -89,6 +89,8 @@ CONSTANTS = "7579d7e37990280768f4e627b2fda8ad"
 VOCABULARY_PINS: dict[str, tuple[str, int]] = {
     "affirmative": ("c5b82ac8c4ebea4ca4e7a9ac6ea0ade0", 34),
     "care_target": ("6252167d8554be8ca92d2477b5659794", 9),
+    "claiming_explicit": ("8dac8c71fc026355063df1692ad830e3", 12),
+    "claiming_loose": ("d6b9d44c72007088967e12334d13584f", 8),
     "contact": ("449763ba124e90caf276a709ae97e3a3", 31),
     "crisis_target": ("1a70534cbd01be0a4a9bfc67fa40b1bb", 11),
     "farewell": ("e9c0ec38bcd2e07cc3c3275cfa96fa70", 13),
@@ -106,6 +108,7 @@ VOCABULARY_PINS: dict[str, tuple[str, int]] = {
     "short_only": ("8271d06e29b75ad677fb3bbdacab053d", 5),
     "slang": ("aa539795854138b991e6d500bab15aab", 14),
     "topic": ("4dee438fb7578bf90535e735aedd312d", 34),
+    "trailing_ok": ("7c678f40d155188c833d3c30f2cb8c56", 13),
 }
 
 

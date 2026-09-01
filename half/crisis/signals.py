@@ -402,6 +402,40 @@ CARE_TARGET_SOURCE: Final[tuple[str, ...]] = (
     "my doctor", "my gp", "mental health team", "mental health service",
 )
 
+#: **Elliptical self-reference: the main claiming a third party's risk
+#: statement as their own.** English lets you disclose without a subject, a
+#: verb or the word at all — *"she is suicidal and so am i"* — and the first
+#: version read all four of these as somebody else's crisis and handed the main
+#: a leaflet about helping a friend. That is worse than a miss: it misreads the
+#: person at the moment it matters most.
+#:
+#: Split by how much the construction actually says. A first-person pronoun
+#: with an auxiliary echoing the risk predicate leaves nothing to interpret, so
+#: it enters. A bare *me too* or *same* is a claim about *something* in the
+#: previous sentence and usually the risk, but not always — so it asks, which
+#: costs a question and cannot be wrong in a way that matters. Neither may
+#: surface a resource for somebody else.
+CLAIMING_EXPLICIT_SOURCE: Final[tuple[str, ...]] = (
+    "so am i", "as am i", "i am too", "i am as well",
+    "so do i", "i do too", "so have i", "i have too",
+    "so was i", "i was too", "so did i", "i did too",
+)
+
+CLAIMING_LOOSE_SOURCE: Final[tuple[str, ...]] = (
+    "me too", "me as well", "same", "same here", "same for me",
+    "same with me", "ditto", "and me",
+)
+
+#: Words allowed to trail a claim without breaking it. The list is short and
+#: closed on purpose: *"i am too"* claims the risk, *"i am too tired to help"*
+#: does not, and the only thing separating them is what follows. Anything not
+#: named here ends the claim rather than qualifying it.
+TRAILING_OK_SOURCE: Final[tuple[str, ...]] = (
+    "honestly", "really", "sadly", "unfortunately", "lately", "sometimes",
+    "now", "today", "tonight", "tbh", "actually", "obviously", "though",
+)
+
+
 # -- attribution --------------------------------------------------------------
 
 #: Relationship words and reflexives. In the window before a risk phrase, they
@@ -479,6 +513,9 @@ VOCABULARY: Final[dict[str, tuple[str, ...]]] = {
     "topic": TOPIC_SOURCE,
     "affirmative": AFFIRMATIVE_SOURCE,
     "negative": NEGATIVE_SOURCE,
+    "claiming_explicit": CLAIMING_EXPLICIT_SOURCE,
+    "claiming_loose": CLAIMING_LOOSE_SOURCE,
+    "trailing_ok": TRAILING_OK_SOURCE,
 }
 
 #: The tables whose every entry must produce ``Action.ENTER`` on its own, and
@@ -490,6 +527,14 @@ ASKING_TABLES: Final[tuple[str, ...]] = (
     "hedging", "slang", "preparatory", "farewell",
 )
 SURFACING_TABLES: Final[tuple[str, ...]] = ("other_risk",)
+
+#: Tables whose entries mean nothing alone and everything after somebody else's
+#: risk statement. Pinned by their own contract in ``tests/test_crisis.py``:
+#: each entry, appended to a third-party disclosure, must claim it for the main
+#: — entering for the explicit table, asking for the loose one — and must never
+#: leave the message surfacing a resource about somebody else.
+CLAIMING_ENTERING_TABLES: Final[tuple[str, ...]] = ("claiming_explicit",)
+CLAIMING_ASKING_TABLES: Final[tuple[str, ...]] = ("claiming_loose",)
 
 _MAIN_RISK = _compile(MAIN_RISK_SOURCE)
 _OTHER_RISK = _compile(OTHER_RISK_SOURCE)
@@ -506,6 +551,10 @@ _CRISIS_TARGETS = _compile(CRISIS_TARGET_SOURCE)
 _CARE_TARGETS = _compile(CARE_TARGET_SOURCE)
 _AFFIRMATIVE = _compile(AFFIRMATIVE_SOURCE)
 _NEGATIVE = _compile(NEGATIVE_SOURCE)
+_CLAIMING_EXPLICIT = _compile(CLAIMING_EXPLICIT_SOURCE)
+_CLAIMING_LOOSE = _compile(CLAIMING_LOOSE_SOURCE)
+
+_TRAILING_OK = frozenset(TRAILING_OK_SOURCE)
 
 _OTHER_MARKERS = frozenset(OTHER_MARKER_SOURCE)
 _SELF_MARKERS = frozenset(SELF_MARKER_SOURCE)
@@ -661,6 +710,31 @@ def _about_the_main(tokens: tuple[str, ...], start: int) -> bool:
     return any(word in _SELF_MARKERS for word in before)
 
 
+def _claimed_by_the_main(
+    tokens: tuple[str, ...], spans: list[range]
+) -> tuple[tuple[str, ...], ...] | None:
+    """The table a claim on ``spans`` belongs to, or ``None`` if there is none.
+
+    A claim has to come *after* somebody else's risk statement — that is what
+    makes it elliptical rather than a sentence of its own — and it has to end
+    the message, give or take a word from ``TRAILING_OK_SOURCE``. Both halves
+    are load-bearing: without the first, a bare "same" claims a risk nobody
+    mentioned; without the second, *"my friend is suicidal and i am too tired
+    to help"* is a disclosure.
+    """
+    if not spans:
+        return None
+    earliest = min(span.stop for span in spans)
+    for table in (_CLAIMING_EXPLICIT, _CLAIMING_LOOSE):
+        for phrase in table:
+            for start in _starts(tokens, phrase):
+                if start < earliest:
+                    continue
+                if all(t in _TRAILING_OK for t in tokens[start + len(phrase):]):
+                    return table
+    return None
+
+
 def has_safe_word(text: object) -> bool:
     """Whether the documented phrase appears anywhere in ``text``.
 
@@ -715,7 +789,8 @@ def _score(tokens: tuple[str, ...]) -> Assessment:
     1. the main's own explicit words about themselves — enter;
     2. an unattributed risk phrase the main has claimed by standing next to it,
        with nothing saying it is a topic — enter;
-    3. risk that belongs to somebody else — a resource, and it stops;
+    3. risk that belongs to somebody else — unless the main claimed it in the
+       same breath — a resource, and it stops;
     4. reaching a crisis line, or reaching care while in distress — enter,
        gently;
     5. everything else that might be distress — ask.
@@ -733,7 +808,7 @@ def _score(tokens: tuple[str, ...]) -> Assessment:
         for phrase in _OTHER_RISK
         for start in _starts(tokens, phrase)
     ]
-    mine = other = loose = 0
+    mine = loose = 0
     for phrase in _RISK:
         for start in _starts(tokens, phrase):
             if any(start in span for span in elsewhere):
@@ -741,15 +816,22 @@ def _score(tokens: tuple[str, ...]) -> Assessment:
             if _about_the_main(tokens, start):
                 mine += 1
             elif _about_another(tokens, start):
-                other += 1
+                elsewhere.append(range(start, start + len(phrase)))
             else:
                 loose += 1
     if mine:
         return Assessment(Tier.DISCLOSURE, Action.ENTER, score=mine)
-    if other or elsewhere:
+    if elsewhere:
+        # The main may have claimed it. *"she is suicidal and so am i"* is a
+        # disclosure, and answering it with a leaflet about helping a friend
+        # misreads the person at the moment it matters most.
+        claimed = _claimed_by_the_main(tokens, elsewhere)
+        if claimed is _CLAIMING_EXPLICIT:
+            return Assessment(Tier.DISCLOSURE, Action.ENTER, score=len(elsewhere))
+        if claimed is _CLAIMING_LOOSE:
+            return Assessment(Tier.INFERENCE, Action.ASK, score=len(elsewhere))
         return Assessment(
-            Tier.THIRD_PARTY_AT_RISK, Action.SURFACE,
-            score=other + len(elsewhere),
+            Tier.THIRD_PARTY_AT_RISK, Action.SURFACE, score=len(elsewhere),
         )
 
     reaching = _any(tokens, _CONTACT)
@@ -804,7 +886,8 @@ def _check_table() -> None:
             raise CrisisError(f"the {name} table repeats a phrase")
         if any(not _tokens(phrase) for phrase in table):
             raise CrisisError(f"the {name} table has a phrase that tokenizes to nothing")
-    for group in (ENTERING_TABLES, ASKING_TABLES, SURFACING_TABLES):
+    for group in (ENTERING_TABLES, ASKING_TABLES, SURFACING_TABLES,
+                  CLAIMING_ENTERING_TABLES, CLAIMING_ASKING_TABLES):
         for name in group:
             if name not in VOCABULARY:
                 raise CrisisError(f"{name} is pinned by contract but is not a table")
