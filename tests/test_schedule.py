@@ -1039,11 +1039,12 @@ def test_a_derived_view_from_the_previous_shape_is_discarded_not_reused(tmp_path
     the deliberate acknowledgement that gate is asking for: what it forbids is
     a bump that *nobody noticed*, and the stale view it plants is one version
     behind whatever the current one is. Story 10 bumped it to 10 for the
-    ``touches`` table and the ``last_touch`` row.
+    ``touches`` table, and its review to 11 when the day marker stopped being
+    "the last raise of any loop".
     """
     from half.store import db
 
-    assert db.DERIVED_VERSION == 10
+    assert db.DERIVED_VERSION == 11
 
     reg = ActorRegistry(tmp_path)
     set_due(reg, "vidit", NOON + 500)
@@ -1053,7 +1054,7 @@ def test_a_derived_view_from_the_previous_shape_is_discarded_not_reused(tmp_path
     import sqlite3
 
     conn = sqlite3.connect(tmp_path / "vidit" / "half.db")
-    conn.execute("PRAGMA user_version = 9")
+    conn.execute("PRAGMA user_version = 10")
     conn.commit()
     conn.close()
 
@@ -1078,13 +1079,13 @@ def test_the_schema_version_moved_with_the_op(store):
     from half.errors import SchemaVersionError
     from half.store.records import decode
 
-    assert SCHEMA_VERSION == 6
+    assert SCHEMA_VERSION == 7
     store.record(Op.SCHEDULE, "sc_1", "2026-09-01T12:00Z",
                  next_pass_at="2026-09-02T03:41:00Z", zone="UTC", told_zone=False)
-    assert store.fold().schedule["v"] == 6
+    assert store.fold().schedule["v"] == 7
     with pytest.raises(SchemaVersionError):
         decode('{"t":"2026-09-01T12:00Z","op":"schedule","id":"sc_1",'
-               '"next_pass_at":"2026-09-02T03:00:00Z","zone":"UTC","v":7}',
+               '"next_pass_at":"2026-09-02T03:00:00Z","zone":"UTC","v":8}',
                path="t", lineno=1)
 
 

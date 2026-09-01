@@ -80,6 +80,11 @@ PURE_MODULES = (
     # ``tests/test_schedule.py``, which is strictly stronger.
     "half/surface/touch.py",
     "half/surface/choose.py",
+    # The narrowed projection the surface is handed (AD-28). It copies fields
+    # and returns a frozen value, and it must stay a pure function of the fold:
+    # a view that read a clock, an environment variable or a store of its own
+    # would be a second, un-replayable answer to *what may this main be told*.
+    "half/surface/view.py",
 )
 
 #: **``half/schedule/due.py`` is deliberately not in that list**, and the reason

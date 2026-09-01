@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import asyncio
 import re
+
+from half import civil
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -48,7 +50,6 @@ from half.store.ops import (
     CRISIS_REVERSED,
     Op,
 )
-from half.store.fold import State
 from half.store.records import (
     NEXT_PASS_AT,
     TOUCH_FIELDS,
@@ -61,6 +62,14 @@ from half.store.records import (
     zone_record,
 )
 from half.store.store import Store
+from half.surface.touch import spoken_on
+from half.surface.view import (
+    CLAIM_ALREADY,
+    CLAIM_CRISIS,
+    CLAIMED,
+    SurfaceView,
+    narrowed,
+)
 from half.tensions.states import STATE as TENSION_STATE
 
 #: A main_id becomes a directory name, so it is validated before it can reach
@@ -729,64 +738,116 @@ class ActorRegistry:
     # a second, private route to a main's log, because the single writer is
     # what lets the store skip a journal (AD-1).
 
-    async def surface_view(self, main_id: str) -> tuple[State, Ceiling]:
-        """This main's folded state and their ceiling, read **together**.
+    async def surface_view(self, main_id: str) -> SurfaceView:
+        """This main's state, **narrowed** to what a morning may consult.
 
-        One read under one mutex, which is a correctness rule rather than a
-        convenience — the same rule ``tension_view`` exists for. The surface
-        asks four questions of one main: what they believe, what wantings they
-        have, when Half last raised each of those, and what their cap is. A cap
-        read a moment after the beliefs is a cap that a crisis landing in the
-        gap has already moved, and the surface would then resolve a rung under
-        the cap that was there a moment ago — which is the one window AD-28
-        exists to close.
+        Two things about this are corrections review had to make.
 
-        **Not narrowed, and deliberately so.** ``belief_history`` narrows hard
-        because the pass has business with no claim text; the surface's whole
-        job is to decide what may be *said* about a claim, so narrowing the
-        claim away would leave it with nothing to decide. What narrows here is
-        the ladder and the context builder, one layer up, which is where AD-18
-        puts it.
+        **Narrowed, not the fold.** It used to return ``State`` entire, which
+        carries the crisis and aftercare records — so ``if state.aftercare is
+        not None: return Silence(...)`` could be written inside the surface
+        with no new import and no new door, defeating AD-28 while every scan
+        stayed green. ``half.surface.view`` is the allowlist; what is not on it
+        is unreachable rather than merely unread.
 
-        Held only for the read. The touch is appended afterwards, outside this,
+        **From the log, not from SQLite.** ``Store.append`` writes the line and
+        *then* rebuilds the derived view, so a crash between the two leaves the
+        view behind the log — and the two rules that read it, the day marker
+        and the nagging bound, would both answer *never*. The log is the
+        authority (AD-3), and once a day per main is where a fold costs least.
+        The ceiling comes out of the same fold for the same reason: a cap read
+        from a stale view is a capped main reading as uncapped, which is the
+        one window AD-28 exists to close.
+
+        Held only for the read. The day is claimed afterwards, outside this,
         because a surface that held the mutex from its read to its write would
-        block the main's own turn for the length of the whole morning.
+        block the main's own turn for the length of the whole morning — and the
+        claim re-reads under its own acquire precisely because this one was
+        released.
         """
         async with self.acquire(main_id) as actor:
-            return actor.store.state(), actor.ceiling
+            state = actor.store.fold()
+            return narrowed(state, Ceiling(state.ceiling))
 
-    async def note_touch(
-        self, main_id: str, *, t: str, fields: Mapping[str, Any]
-    ) -> None:
-        """Record that Half raised a loop, under the mutex (AD-1, AD-3, CAP-8).
+    async def claim_day(
+        self,
+        main_id: str,
+        *,
+        t: str,
+        day: str,
+        records: Sequence[Mapping[str, Any]],
+    ) -> str:
+        """Spend this main's one unprompted message for ``day``, or refuse.
 
-        **Takes the fields, never the parts.** ``half.surface.touch.fields``
-        composes them and refuses an origin outside the closed set, so the
-        registry does not know what a traceable surface is and must not start
-        deciding.
+        **One serialized operation, and that is the point.** The check and the
+        append happen inside a single ``acquire``: the surface used to read the
+        marker under one mutex and append under a later one, so two overlapping
+        runs both read yesterday and both sent. Nothing else in this class had
+        that shape, because nothing else in this class had a rule that says
+        *at most once per day*.
 
-        Appended under an id built from the **stamp**, never from the loop's
-        slug. ``BeliefLog.expunge_bodies`` keeps a tombstoned record's id, and a
-        slug is a phrase the main chose about their own life — so a slug in the
-        id would survive the erasure that exists to remove it, which is the
-        mistake the loop transitions' own ids (``l_1``) avoid.
+        **The mode is re-asserted here**, not only at the top of the morning. A
+        main who enters crisis while their message is being assembled must not
+        receive it, and this is the last point at which that is still true.
 
-        **A touch carries the loop it raised and what it cited, and nothing
-        else.** Refused here as well as at the append gate, one layer earlier,
-        where the caller can still be told which field it was — the shape
-        ``note_transition`` uses, for the reason it uses it: a ``claim`` or a
-        ``last_movement`` riding in beside the loop is, respectively, belief
-        content made permanent (AD-22) and Half's own attention recorded as the
-        main's progress.
+        **Read from the log**, for the reason ``surface_view`` reads from the
+        log: a derived view that lags a crash would report the day as unspent.
+
+        ``records`` is composed by ``half.surface.touch`` — the day marker
+        first, then a raise for every further loop the message touches — so the
+        registry does not know what a day marker is and must not start
+        deciding. They are appended together, so a crash cannot leave the day
+        spent with the loops unbounded or the reverse.
+
+        Returns one of ``CLAIM_OUTCOMES``; raises only when the append genuinely
+        did not land. That distinction matters: ``Store.append`` writes the line
+        before it rebuilds the derived view, so a rebuild that fails leaves the
+        record durable — and treating that as a failure would spend the day and
+        report that nothing was written, costing the main a message that was
+        already paid for. So a failure is re-read against the log before it is
+        believed.
         """
-        stray = sorted(set(fields) - TOUCH_FIELDS)
-        if stray:
+        if civil.instant(t) is None:
+            # Refused before the append, on the same terms as a schedule
+            # record's due time: a raise whose stamp nothing can read is a loop
+            # whose bound has no measure, and the log is append-only.
             raise TouchError(
-                f"a touch carries the loop Half raised and what it cited; "
-                f"refusing {stray}"
+                f"claim_day: {t!r} is not an instant this build can read; a "
+                f"raise with no readable time is a bound with no measure"
             )
         async with self.acquire(main_id) as actor:
-            actor.store.record(Op.TOUCH, f"tc_{t}", t, **dict(fields))
+            state = actor.store.fold()
+            if mode_is_open(state.crisis):
+                return CLAIM_CRISIS
+            if spoken_on(state.spoke, day) is True:
+                return CLAIM_ALREADY
+            # Checked over **every** record before any of them is appended,
+            # which is what makes this batch atomic. The append gate refuses
+            # the same set one layer down, so a single record would be caught
+            # either way; a batch would not — a stray field on the second
+            # record would leave the first one durable, spending the day with
+            # the loops half bound.
+            for fields in records:
+                stray = sorted(set(fields) - TOUCH_FIELDS)
+                if stray:
+                    raise TouchError(
+                        f"a touch carries the loop Half raised, the day it "
+                        f"spent and what it cited; refusing {stray}"
+                    )
+            for index, fields in enumerate(records):
+                ident = f"tc_{t}" if index == 0 else f"tc_{t}_{index}"
+                try:
+                    actor.store.record(Op.TOUCH, ident, t, **dict(fields))
+                except Exception:
+                    # Did it land anyway? ``Store.append`` appends the line and
+                    # then rebuilds; a failure in the rebuild leaves a durable
+                    # record and a stale view, and the log is what says so.
+                    if not any(
+                        record.id == ident and record.op is Op.TOUCH
+                        for record in actor.store.log
+                    ):
+                        raise
+            return CLAIMED
 
     async def suspend_for_crisis(
         self, main_id: str, *, t: str, tier: str, score: int, fresh: bool = True

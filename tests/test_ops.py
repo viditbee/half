@@ -270,13 +270,15 @@ def test_state_carries_only_durable_objects(store):
     later transition on it was silently dropped.
 
     ``schedule`` joins them in story 9a and belongs to the same category as the
-    ``touches`` and ``last_touch`` join them in story 10, and they are the same
+    ``touches`` and ``spoke`` join them in story 10, and they are the same
     category one more time: not how the main is right now but *what Half
-    raised, and when*. A raise held in memory is a raise forgotten at the next
-    eviction, and the rule it feeds — never faster than the loop's own
-    timescale — would then have to survive a year in RAM for a years-loop. They
-    are content-free (AD-22): a loop slug, and the kind and id of what was
-    cited.
+    raised, and which of the main's days it spent*. A raise held in memory is a
+    raise forgotten at the next eviction, and the rule it feeds — never faster
+    than the loop's own timescale — would then have to survive a year in RAM
+    for a years-loop. They are two fields rather than one because a raise and a
+    spent day are different events: CAP-10's interrupt will raise a loop
+    without consuming a morning. Both are content-free (AD-22): a loop slug, a
+    civil date, a flag, and the kind and id of what was cited.
 
     ``schedule`` and the
     ceiling: it is not *how the main is right now* but when they are next due —
@@ -288,7 +290,7 @@ def test_state_carries_only_durable_objects(store):
     names = {f.name for f in dataclasses.fields(store.state())}
     assert names == {"beliefs", "tensions", "loops", "expunged",
                      "expunged_loops", "ceiling", "crisis", "aftercare",
-                     "schedule", "touches", "last_touch"}
+                     "schedule", "touches", "spoke"}
 
 
 # ── findings from review: gaps the original suite could not observe ─────────

@@ -35,7 +35,7 @@ CEILING_KEY: Final[str] = "ceiling"
 CRISIS_KEY: Final[str] = "crisis"
 AFTERCARE_KEY: Final[str] = "aftercare"
 SCHEDULE_KEY: Final[str] = "schedule"
-LAST_TOUCH_KEY: Final[str] = "last_touch"
+SPOKE_KEY: Final[str] = "spoke"
 
 #: Shape of the derived view. Bumped whenever a column or an FTS table changes.
 #: SQLite here is derived and disposable (AD-3), so a mismatch is resolved by
@@ -43,12 +43,17 @@ LAST_TOUCH_KEY: Final[str] = "last_touch"
 #: would be a second way for derived state to exist that the log does not
 #: describe.
 #:
-#: v10 added the ``touches`` table and the ``last_touch`` row (story 10). A
-#: view built by v9 has nowhere to put either, so a stale one surviving the
-#: upgrade would report every loop as never raised and every day as one on
-#: which Half had said nothing — the nagging bound and the one-a-day rule both
-#: answering *yes* for the whole population, produced by the derived store
-#: rather than by the log. Discard and replay (AD-3).
+#: v11 reshaped what story 10 added: the ``last_touch`` row became ``spoke``,
+#: which holds the newest **day marker** rather than the newest raise of any
+#: loop. A v10 view surviving the upgrade would have no ``spoke`` row at all
+#: and would read every main as never having spoken — a second unprompted
+#: message on a day one was already sent, produced by the derived store rather
+#: than by the log. Discard and replay (AD-3).
+#:
+#: v10 added the ``touches`` table and story 10's governance row. A view built
+#: by v9 has nowhere to put either, so a stale one surviving the upgrade would
+#: report every loop as never raised — the nagging bound answering *yes* for
+#: the whole population.
 #:
 #: v9 changed the fold's **tension** semantics (story 9c), and the bump is not
 #: optional even though no table changed. Two things moved at once: a tension
@@ -73,7 +78,7 @@ LAST_TOUCH_KEY: Final[str] = "last_touch"
 #: loop in the shared ``expunged`` set, where the new transition guard does not
 #: look — so a stale view surviving the upgrade would have a main's ranking
 #: function disagree with their own log about which wantings are still open.
-DERIVED_VERSION: Final[int] = 10
+DERIVED_VERSION: Final[int] = 11
 
 #: Every object this module owns, in an order safe to drop: the FTS table
 #: references ``beliefs`` as its external content.
@@ -259,9 +264,9 @@ def rebuild(
         if state.schedule is not None:
             conn.execute("INSERT INTO governance (key, value) VALUES (?,?)",
                          (SCHEDULE_KEY, _dump(state.schedule)))
-        if state.last_touch is not None:
+        if state.spoke is not None:
             conn.execute("INSERT INTO governance (key, value) VALUES (?,?)",
-                         (LAST_TOUCH_KEY, _dump(state.last_touch)))
+                         (SPOKE_KEY, _dump(state.spoke)))
         for ident, data in state.tensions.items():
             conn.execute("INSERT INTO tensions (id, data) VALUES (?,?)",
                          (ident, _dump(data)))
@@ -315,8 +320,8 @@ def read_state(conn: sqlite3.Connection) -> State:
                        (SCHEDULE_KEY,)).fetchone()
     state.schedule = json.loads(row["value"]) if row is not None else None
     row = conn.execute("SELECT value FROM governance WHERE key = ?",
-                       (LAST_TOUCH_KEY,)).fetchone()
-    state.last_touch = json.loads(row["value"]) if row is not None else None
+                       (SPOKE_KEY,)).fetchone()
+    state.spoke = json.loads(row["value"]) if row is not None else None
     return state
 
 

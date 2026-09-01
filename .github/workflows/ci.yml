@@ -732,27 +732,31 @@ jobs:
         # becomes twenty-four hours instead of the main's own civil day, the
         # traceability check learns to accept a candidate that cites nothing,
         # the surface starts reaching into the ledger when a pass found
-        # nothing, or *sending* quietly becomes the only success case. The
-        # suite stays green and a main gets a cheerful daily message, which is
-        # the product this one exists not to be.
+        # nothing, or *sending* quietly becomes the only success case.
         #
         # Marker-selected rather than file-selected, for the reason the AD-9,
         # CAP-6, CAP-7 and CAP-12 steps are: it must not go green because
         # another step happened to run one of the same files.
         #
-        # **The floor carries margin that is not the cases it protects**, the
-        # rule review has had to establish for four stories running. 148
-        # selected, 120 required — and the two halves that carry the story are
-        # marked separately and gated below, at 67 and 57 cases. Either
-        # deletion therefore fails *twice*: its own gate collects nothing, and
-        # this one drops far beneath its floor, because the margin here (28) is
-        # smaller than the smaller of the two subsets.
+        # **The floor is sized against the subsets, not against the total**,
+        # which is the correction review round 2 forced. The old numbers looked
+        # careful and protected nothing: deleting the whole AST separation wall
+        # (6 cases) or the three structural ceiling cases left both this gate
+        # and the sub-gate green, and the 24 cases this gate alone guards — the
+        # wiring and the determinism guarantees among them — fitted inside its
+        # own margin.
+        #
+        # 184 selected, 174 required. The margin is 10, and it is deliberately
+        # smaller than every protected subset: silence (80), nagging (72),
+        # structure (13) and the 25 cases held by this gate alone. Deleting any
+        # one of them drops this gate beneath its floor **and** fails whichever
+        # sub-gate names it.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap8 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-8 cases collected: $collected"
-          if [ "$collected" -lt 120 ]; then
+          if [ "$collected" -lt 174 ]; then
             echo "::error::the CAP-8 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -760,40 +764,37 @@ jobs:
 
       - name: 'CAP-8: silence is the ordinary outcome, and the ceiling holds it'
         # A second gate over the half that carries the story, for the reason the
-        # CAP-12 durability, CAP-6 firewall and CAP-7 resolution gates exist: a
-        # floor on the superset cannot stop this half being hollowed out.
+        # CAP-12 durability, CAP-6 firewall and CAP-7 resolution gates exist.
         #
         # What it covers: that a quiet night sends nothing and logs no warning;
         # that a pass which moved nothing produces no candidate at all, so most
-        # days are silent by construction rather than by a check; that a
-        # candidate which cannot cite the preceding pass is not surfaced under
-        # any of six shapes; that crisis, an already-spent day, an unreachable
+        # days are silent by construction; that a candidate which cannot cite
+        # the preceding pass — or whose origin the main erased overnight — is
+        # not surfaced; that crisis, an already-spent day, an unreachable
         # platform, a `behave` ceiling and the nagging bound each silence a
         # morning **alone**, and every pair of them in both orders; that a main
-        # capped at `behave` receives nothing at every rung on the ladder, swept
-        # over ``ladder.RUNGS`` so a fourth rung is covered the day it exists;
-        # and that a touch which could not be written stops the send.
+        # capped at `behave` receives nothing at every rung, swept over
+        # ``ladder.RUNGS``; and that a day which could not be claimed stops the
+        # send.
         #
-        # **And the two structural cases that make the ceiling a property
-        # rather than an anecdote.** A single behavioural case with a capped
-        # main passes just as happily against an ``if in_aftercare: return
-        # Silence(...)`` branch, which is the implementation AD-28 exists to
-        # forbid. So the surface's ledger protocol is pinned to four doors,
-        # none of which can answer a question about aftercare; nothing under
-        # ``half/surface/`` may import anything that could; and every call in
-        # the package to a function that resolves a rung — the set **derived
-        # from the ladder itself**, so a new resolver is covered on the day it
-        # is written — must pass a ceiling. Together those mean a new surface
-        # cannot be written that bypasses the cap, which is the sentence AD-28
-        # is made of.
+        # **And the four one-a-day orderings review reproduced**, each of which
+        # sent a second message on a day one had already gone out: a marker
+        # stamped ahead of now; a main who moves west overnight and has
+        # yesterday's marker recomputed under today's zone; two overlapping
+        # runs that both read an unspent day; and a derived view left behind
+        # the log by a crash between the append and the rebuild.
         #
-        # 67 selected, 55 required.
+        # It also carries the alert and the counter that review found missing
+        # from the unreadable-marker path, and the per-loop half of the same
+        # finding.
+        #
+        # 80 selected, 72 required.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap8_silence -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-8 silence cases collected: $collected"
-          if [ "$collected" -lt 55 ]; then
+          if [ "$collected" -lt 72 ]; then
             echo "::error::the CAP-8 silence gate collected $collected cases; silence is now unguarded"
             exit 1
           fi
@@ -809,34 +810,60 @@ jobs:
         # period, swept over all four timescales against one interval so a
         # single shared cooldown — the reference implementation's shape — fails
         # by name; that both sides of the boundary are pinned at every
-        # timescale, so `>` cannot silently become `>=` or a fortnight; that
-        # every way the bound cannot be computed refuses rather than permits,
-        # including a loop with no period at all, which is *not* raised even
-        # the first time; that a raise is recorded as an append, superseded per
-        # loop, erased with the loop, and keyed on a record id carrying no
-        # slug; and that a touch may carry nothing but the loop and its
-        # citation.
+        # timescale; that a loop with no period is not raised even the first
+        # time; that a raise whose time cannot be read at all is treated as no
+        # raise, which is the correction that stopped one corrupt record
+        # silencing a wanting for ever; and that a raise **spends no day**,
+        # which is what keeps CAP-10's interrupt from eating the morning budget
+        # the day it lands.
         #
-        # **Plus the wall, asserted by AST in both directions.** The module
-        # that writes a raise cannot name a movement date or a state, the
-        # open-loop package cannot name a raise, and the fold's touch case
-        # cannot reach the loop table. Story 8 refused to record Half's own
-        # contact precisely because conflating it with the main's progress is
-        # the mistake one helpful line makes, and a behavioural test cannot see
-        # that line until a year of nudges has been read back as a year of
-        # advancement.
-        #
-        # 57 selected, 48 required.
+        # 72 selected, 64 required.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap8_nagging -q --collect-only \
             | grep -c '::' || true)
           echo "nagging-bound cases collected: $collected"
-          if [ "$collected" -lt 48 ]; then
+          if [ "$collected" -lt 64 ]; then
             echo "::error::the nagging gate collected $collected cases; the bound is unguarded"
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap8_nagging
+
+      - name: 'CAP-8: the structural rules the morning surface rests on'
+        # A third gate, small and separate, for the reason
+        # ``cap12_aftercare_property`` and ``cap6_structure`` exist — and this
+        # story needed it demonstrated rather than argued: review deleted the
+        # six AST separation cases and the three structural ceiling cases and
+        # both larger gates stayed green, because a floor on a superset cannot
+        # protect a handful of single cases inside it.
+        #
+        # What it covers, and none of it is behavioural:
+        #
+        #   the surface is handed a **projection** and not the fold, so
+        #   ``if state.aftercare is not None: return Silence(...)`` — which
+        #   review wrote, and which passed 3182 tests while permanently
+        #   silencing a main whose aftercare had finished — is an
+        #   ``AttributeError`` rather than a line a scan has to be clever
+        #   enough to see; that the allowlist is read from the module rather
+        #   than copied into the test; that every call in the package to a
+        #   function returning a ``License`` — the set **derived from the
+        #   ladder itself** — passes a ceiling; that the module writing a raise
+        #   cannot name a movement and the open-loop package cannot name a
+        #   raise; that the fold's touch case cannot reach the loop table; and
+        #   that no model and no network is reachable from the package at all.
+        #
+        # 13 selected, 12 required. A small gate on purpose: every case here is
+        # the only one asserting its rule, so losing even two is losing a rule.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap8_structure -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-8 structural cases collected: $collected"
+          if [ "$collected" -lt 12 ]; then
+            echo "::error::the CAP-8 structure gate collected $collected cases; a rule with one case has lost it"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap8_structure
 
       - name: 'AD-5 and AD-30: retrieval degrades, and never writes'
         # The reranker fallback, the salience-is-derived assertions, the

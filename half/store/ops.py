@@ -41,17 +41,22 @@ from typing import Final
 #: no-op — it is the scheduler deciding, on every tick after a rollback, that
 #: nobody has ever been scheduled, and rewriting a fresh due time for the whole
 #: population at once. The refusal to fold is the correct outcome.
-#: v6 added ``touch`` (story 10), and the bump is not optional for the reason
-#: the last four were not — with a twist that is this op's own. The record is
-#: the only place the log says **what Half raised and when**, which is a
-#: different fact from a loop having *moved* (story 8 refused to conflate
-#: them). A build that could not see one would fold every main to *never
-#: raised*: the per-loop nagging bound would compute *may raise* for every loop
-#: on every pass, and the one-a-day rule would read every day as a day nothing
-#: was said. A schema rollback would therefore not lose a nicety — it would
-#: turn the two rules that exist to keep Half quiet into rules that always say
-#: yes. Refusing to fold is the correct outcome.
-SCHEMA_VERSION: Final[int] = 6
+#: v7 reshaped ``touch`` after review (story 10). A v6 touch carried a loop and
+#: nothing about days, so the one-a-day rule read *the last raise of any loop*
+#: — which CAP-10's interrupt would have silently consumed the moment it landed.
+#: A v7 touch carries the day it spent as its own field, and may carry a loop,
+#: a day, or both. A build reading v6 records under v7 rules would see a log
+#: full of raises that mark no day and conclude the main has never been spoken
+#: to. The bump is what makes that a refusal rather than a second message every
+#: morning.
+#:
+#: v6 added ``touch``, and the bump was not optional for the reason the last
+#: four were not — with a twist that is this op's own. The record is the only
+#: place the log says **what Half raised and when**, which is a different fact
+#: from a loop having *moved* (story 8 refused to conflate them). A build that
+#: could not see one would fold every main to *never raised*: the per-loop
+#: nagging bound would compute *may raise* for every loop on every pass.
+SCHEMA_VERSION: Final[int] = 7
 
 
 class Op(StrEnum):

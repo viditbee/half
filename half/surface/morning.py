@@ -1,93 +1,100 @@
-"""The morning surface: reachability, the ladder, one a day, or silence.
+"""The morning surface: the choice, the ladder, one a day, or silence.
 
 CAP-8, AD-7, AD-27, AD-28, AD-32. The first thing in Half that speaks first.
 
 **Silence is the ordinary outcome, not a degraded one** (AD-27). Every gate
-below returns a ``Silence`` carrying a reason, and every one of those reasons
-is a normal thing to find on a normal morning. Nothing here logs a silent day
-as a failure, nothing retries, nothing escalates, and there is no branch that
-looks for something to say because saying nothing felt like a bug. On most days
-the pass moves nothing, so there are no candidates, and this module returns
-``Silence(NOTHING_TO_SAY)`` without reading a ledger at all.
+below returns a ``Silence`` carrying a reason, and most of those reasons are
+normal things to find on a normal morning: nothing worth saying, a loop still
+inside its own period, a day already spent. Nothing retries, nothing escalates,
+and there is no branch that looks for something to say because saying nothing
+felt like a bug. On most days the pass moves nothing, so there are no
+candidates and this module answers before it asks a platform anything.
 
-**The ceiling is honoured, so aftercare is silent — and there is no aftercare
-branch here** (AD-28). This is the rule the module is shaped around. A surface
-speaks only from material the ladder resolves to `ask` or above *under this
-main's ceiling*; a main capped at `behave` therefore has every belief and every
-tension resolve to `behave`, nothing reaches ``speech``, and the outcome is
-``Silence(NOTHING_MAY_BE_SAID)``. Nothing in this file names aftercare, asks
-whether it is running, or knows it exists. That is AD-28's stated reason for
-existing: aftercare implemented as per-feature suppression is suppression the
-*next* feature forgets, so the cap is applied where licenses are resolved and a
-new surface cannot be written that bypasses it — ``ladder.permitted`` and
-``context.build`` both take ``ceiling`` as a keyword with no default, so
-omitting it is a ``TypeError`` and never an uncapped surface.
+*Three of the reasons are genuine faults and are logged as such* —
+``UNREADABLE``, ``UNRECORDED`` and ``UNSENT``. The rule is not *"a silent
+morning is never an error"*; it is that **an ordinary silence is never an
+error**, and the three that are not ordinary say so at ``error`` while every
+other one says nothing above ``debug``. An earlier docstring here claimed the
+stronger sentence and the code did not implement it.
+
+**Every outcome is counted** (AD-32, and the matrix's *one main fails →
+counted*). ``Silence`` exists because *"one unit returning None for silence and
+another returning a reason leaves the metrics path with nothing to count"* —
+which was true of this module until review, because ``MorningPass`` discarded
+what it was handed. ``Mornings`` is that counter: counts by reason, never
+content.
+
+**The ceiling is honoured, so aftercare is silent — and this module cannot ask
+about aftercare** (AD-28). A surface speaks only from material the ladder
+resolves to `ask` or above *under this main's ceiling*; a main capped at
+`behave` therefore has every record resolve to `behave`, nothing reaches
+``speech``, and the outcome is ``Silence(NOTHING_MAY_BE_SAID)``. The guarantee
+does not rest on nobody writing ``if in_aftercare``: what this module is handed
+is a ``SurfaceView``, which has no aftercare field, so the branch is an
+``AttributeError`` rather than a line a scan has to be clever enough to see.
+See ``half.surface.view``, which exists because review wrote that branch and
+passed 3182 tests with it.
 
 **Crisis is a branch, and deliberately unlike aftercare.** *"Crisis suspends
 the surface entirely"* is a statement about the mode rather than about
-licenses: a main in the mode gets nothing unprompted from this path at all,
-whatever any record permits. The scheduler already refuses to run a pass for a
-main in the mode, so this is the second of two independent refusals, which is
-what CAP-12 asks for.
+licenses: a main in the mode gets nothing unprompted whatever any record
+permits. It is asked twice — once before any work, and again inside the mutex
+that spends the day — because a main who enters the mode while their morning is
+being assembled must not receive it.
 
 **The ladder decides what may be said; the context builder decides how**
-(story 5a, story 4b). Nothing here re-implements either. The material is handed
-to ``half.context.build``, which resolves each record's rung under the ceiling
-and puts `assert` material in the content channel, `ask` material in the
-question channel and `behave` material in the directive channel — where it
-shapes the surface and is never quoted in it (AD-18). This module then speaks
-from the first two channels and never the third.
+(story 5a, story 4b). Nothing here re-implements either.
 
 **No model call, and no prose.** The wording of a morning message is a later
 story; what this one delivers is the choice of *what* to say and the proof that
-it may be said. So the text is the context builder's own rendering of the
-channels a surface may speak from — deterministic, assembled, byte-identical
-for one log and one ``now``, and carrying nothing the ladder did not admit.
-Nothing here reaches ``half.model``.
+it may be said. The text is the context builder's own rendering of the channels
+a surface may speak from — deterministic, byte-identical for one log and one
+``now``, and carrying nothing the ladder did not admit.
 
-**The touch is recorded before the send, and that ordering is the rule.** A
-surface whose *"already said something today"* marker could not be written has
-not earned the right to send — the same asymmetry ``Scheduler._advance`` makes
-for a due time, and for the same reason: at-most-once is the only semantics
-compatible with *"at most one unprompted message a day"*. A send that fails
-after the touch landed costs the main that day's message; a touch that fails
-after the send landed would cost them a second message.
+**The day is claimed before the send, in one serialized operation.** A surface
+whose *"already said something today"* marker could not be written has not
+earned the right to send — the same asymmetry ``Scheduler._advance`` makes for
+a due time. And the check and the append happen inside **one** acquire, because
+reading the marker under the mutex and appending under a later one let two
+overlapping runs both read yesterday and both send.
 
 **Nothing here raises.** One main's unreadable record costs that main their
-morning and never the pass, and never anybody else's (AD-9 isolates mains from
-each other; this isolates a main's surface from their own pass). Every outcome
-is a value.
+morning and never the pass, and never anybody else's.
 """
 
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Final, Protocol
 
-from half.channel.port import Channel, Reachability
-from half.civil import instant
+from half.channel.port import Channel, Reachability, SendResult
 from half.consolidate.pass_ import PassResult, completed
 from half.context.build import build as build_context
 from half.context.channels import Context, Item
-from half.governance.ladder import Ceiling, License, height
+from half.governance.ladder import License, height
 from half.retrieval.port import Candidate as RankedBelief
 from half.schedule.clock import Now
 from half.schedule.due import local_day, zone_of
-from half.store.fold import State
 from half.surface import touch as touch_module
 from half.surface.choose import Candidate, Choice, choose
-from half.surface.touch import Origin
+from half.surface.touch import Origin, spoken_on
+from half.surface.view import (
+    CLAIM_ALREADY,
+    CLAIM_CRISIS,
+    CLAIMED,
+    SurfaceView,
+)
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "ALREADY_TODAY", "CRISIS", "MorningSurface", "NOTHING_MAY_BE_SAID",
-    "MorningPass", "NOTHING_TO_SAY", "Outcome", "REASONS", "SPEAKS_AT",
-    "Silence",
-    "SPOKEN_CHANNELS", "SurfaceLedger", "Surfaced", "UNREADABLE",
-    "UNRECORDED", "UNSENT", "speech",
+    "ALREADY_TODAY", "CRISIS", "MorningPass", "MorningSurface", "Mornings",
+    "NOTHING_MAY_BE_SAID", "NOTHING_TO_SAY", "Outcome", "REASONS", "SPEAKS_AT",
+    "SPOKEN_CHANNELS", "Silence", "SurfaceLedger", "Surfaced", "UNREADABLE",
+    "UNREADABLE_MARKER", "UNRECORDED", "UNSENT", "speech",
 ]
 
 
@@ -98,16 +105,12 @@ __all__ = [
 #: not a rung anything is said from, and an unprompted morning message is the
 #: purest case of saying something: nobody asked. `ask` is the first rung that
 #: permits Half to raise a thing at all.
-#:
-#: Named once, here, and read by the runtime *and* by the tests, so that a
-#: change to what a surface may speak from is one edit and cannot be made
-#: accidentally by a new branch spelling a rung inline.
 SPEAKS_AT: Final[License] = License.ASK
 
 #: A main in crisis mode. The mode suspends Half's ordinary behaviour entirely
 #: (CAP-12), and an unprompted message is ordinary behaviour.
 CRISIS: Final[str] = "crisis"
-#: Half has already surfaced something in this main's own local day.
+#: Half has already spent this main's day.
 ALREADY_TODAY: Final[str] = "already-today"
 #: The preceding pass produced nothing worth saying, or nothing that may be
 #: touched today. **The ordinary case**, on most days, for most mains.
@@ -116,25 +119,34 @@ NOTHING_TO_SAY: Final[str] = "nothing-to-say"
 #: main capped at `behave` lands, without this module knowing why they are
 #: capped.
 NOTHING_MAY_BE_SAID: Final[str] = "nothing-may-be-said"
-#: The touch could not be recorded, so nothing was sent — see the module note.
+#: The day marker could not be read, so the day was spent on a repair rather
+#: than on a message. Costs one morning; the next one reads cleanly.
+UNREADABLE_MARKER: Final[str] = "unreadable-marker"
+#: The day could not be claimed, so nothing was sent — see the module note.
 UNRECORDED: Final[str] = "unrecorded"
-#: The send itself failed. The day is spent; nothing is retried.
+#: The send itself failed, or the channel reported that nothing was delivered.
+#: The day is spent; nothing is retried.
 UNSENT: Final[str] = "unsent"
 #: A record this build could not read. Counted, never guessed at.
 UNREADABLE: Final[str] = "unreadable"
 
+#: The reasons that are **faults** rather than ordinary quiet. Named once and
+#: read by the logger, so *"an ordinary silence is never logged as an error"*
+#: is a property of one set rather than of three call sites somebody kept in
+#: step.
+FAULTS: Final[frozenset[str]] = frozenset({UNREADABLE, UNRECORDED, UNSENT})
+
 #: Every reason a morning can be silent, beside the platform's own. Closed, so
 #: that a caller counting silences counts constants and never a message — an
 #: exception message quotes the value that caused it, and here that is a record
-#: out of a main's own ledger (AD-22). ``Reachability``'s own values join them:
-#: *"Half may not send unprompted right now"* is the port's answer and the port
-#: owns its spelling (AD-7).
+#: out of a main's own ledger (AD-22). ``Reachability``'s own refusals join
+#: them: *"Half may not send unprompted right now"* is the port's answer and
+#: the port owns its spelling (AD-7).
 REASONS: Final[frozenset[str]] = frozenset(
     {
         CRISIS, ALREADY_TODAY, NOTHING_TO_SAY, NOTHING_MAY_BE_SAID,
-        UNRECORDED, UNSENT, UNREADABLE,
-        *(str(answer) for answer in Reachability
-          if not answer.may_send_freeform),
+        UNREADABLE_MARKER, UNRECORDED, UNSENT, UNREADABLE,
+        *(str(answer) for answer in Reachability if not answer.may_send_freeform),
     }
 )
 
@@ -146,14 +158,19 @@ class Silence:
     A typed outcome rather than ``None``, and the reason is required rather
     than optional: one unit returning ``None`` for silence and another
     returning a reason leaves the metrics and telemetry paths with nothing to
-    count, which is the failure AD-32 is written against.
+    count, which is the failure AD-32 is written against — and which this
+    module shipped anyway until ``Mornings`` existed to receive it.
 
     Silence is **not** a failure, a timeout or an exception. Most of these are
-    ordinary — ``NOTHING_TO_SAY`` is what a quiet night looks like — and none
-    of them is logged as an error.
+    ordinary; the three in ``FAULTS`` are not, and only those are logged as
+    such.
     """
 
     reason: str
+
+    @property
+    def fault(self) -> bool:
+        return self.reason in FAULTS
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,13 +188,72 @@ class Surfaced:
     to a worldwide product (see ``half.context.channels``).
     """
 
-    loop: str
+    loops: tuple[str, ...]
     origin: Origin
     entries: tuple[str, ...]
+    day: str
     text: str
 
 
 Outcome = Surfaced | Silence
+
+
+@dataclass(slots=True)
+class Mornings:
+    """What the mornings did. Counts and reasons only — never content (AD-22).
+
+    The metrics path ``Silence``'s own docstring is written for. Before review
+    every outcome was discarded: ``MorningPass`` logged at debug and returned
+    ``None``, ``TickResult`` had no field for a morning, and the matrix row
+    *one main fails → counted* was satisfied by nothing. A permanently silent
+    main was therefore indistinguishable from a main with a quiet life, which
+    is the one thing an operator most needs to be able to tell apart.
+
+    Not a telemetry client and not a store: it holds integers in memory, is
+    owned by the composition root, and is read by ``flush``. AD-22's *counts,
+    never content* is a property of the type — there is nowhere here to put a
+    claim, a message or a main's own words. ``main_id`` is deliberately absent
+    too: what an operator needs is *how many*, and a per-main breakdown of who
+    was silent is a shape of the ledger.
+    """
+
+    sent: int = 0
+    silences: Counter[str] = field(default_factory=Counter)
+    #: Loops raised without a measurable bound — see ``choose.Bound``. Counted
+    #: because it is the shape of a corruption nobody would otherwise notice.
+    degraded: int = 0
+
+    @property
+    def silent(self) -> int:
+        return sum(self.silences.values())
+
+    @property
+    def faults(self) -> int:
+        return sum(n for reason, n in self.silences.items() if reason in FAULTS)
+
+    def note(self, outcome: Outcome) -> None:
+        if isinstance(outcome, Surfaced):
+            self.sent += 1
+            return
+        self.silences[outcome.reason] += 1
+
+    def note_degraded(self, loops: Sequence[str]) -> None:
+        self.degraded += len(loops)
+
+    def flush(self) -> None:
+        """Report what the mornings did, once. Counts only.
+
+        At ``info`` rather than ``debug``, and only when something happened, so
+        an operator sees the shape of a week without a line per main per day
+        training them to ignore the file.
+        """
+        if not (self.sent or self.silent or self.degraded):
+            return
+        logger.info(
+            "mornings: sent=%d silent=%d faults=%d degraded=%d by_reason=%s",
+            self.sent, self.silent, self.faults, self.degraded,
+            dict(sorted(self.silences.items())),
+        )
 
 
 #: Which of a built context's three channels carries which rung, weakest last.
@@ -186,9 +262,7 @@ Outcome = Surfaced | Silence
 #: has to turn *"which rung may a surface speak from"* into *"which channels
 #: does it read"*, and the two must not be able to drift apart: the sweep in
 #: ``tests/test_surface.py`` runs every rung on the ladder through the real
-#: builder and asserts this table is what the builder actually does — so a
-#: fourth rung, or a channel that changes hands, fails by name rather than by
-#: a surface quietly speaking from a rung it may not.
+#: builder and asserts this table is what the builder actually does.
 _CHANNELS: Final[tuple[tuple[str, License], ...]] = (
     ("content", License.ASSERT),
     ("questions", License.ASK),
@@ -216,27 +290,27 @@ def speech(context: Context) -> tuple[Item, ...]:
 
     Asking the *context* rather than re-resolving licenses is deliberate: the
     builder already resolved every rung once, under the ceiling, and a second
-    resolution here would be a second opinion about one question — exactly the
-    disagreement ``half.store.db`` deleted its ``license`` column to remove.
+    resolution here would be a second opinion about one question.
     """
     if not isinstance(context, Context):
         return ()
     return tuple(
-        item
-        for name in SPOKEN_CHANNELS
-        for item in getattr(context, name, ())
+        item for name in SPOKEN_CHANNELS for item in getattr(context, name, ())
     )
 
 
 class SurfaceLedger(Protocol):
     """The four doors the surface needs into a main's durable state.
 
-    A protocol rather than the concrete ``ActorRegistry``, for the reason
-    ``half.schedule.tick.Registry`` and ``half.consolidate.pass_.Ledger`` are
-    protocols: two narrowed reads, one read under the mutex and one write that
-    goes through it, is the whole dependency. Nothing here opens a store — a
-    surface with its own path to the log would be a second writer, and the
-    single writer is what lets the store skip a journal (AD-1).
+    A protocol rather than the concrete ``ActorRegistry`` because that is the
+    whole dependency: two narrowed reads and one serialized claim-and-append.
+    Nothing here opens a store — a surface with its own path to the log would
+    be a second writer, and the single writer is what lets the store skip a
+    journal (AD-1).
+
+    **``surface_view`` is narrowed by construction.** It hands back a
+    ``SurfaceView`` and not the fold, so the crisis record, the aftercare
+    record and the schedule are not merely unread here — they are unreachable.
     """
 
     def crisis_open(self, main_id: str) -> bool:
@@ -245,12 +319,17 @@ class SurfaceLedger(Protocol):
     def zone_records(self, main_id: str) -> Sequence[Mapping[str, Any]]:
         ...
 
-    async def surface_view(self, main_id: str) -> tuple[State, Ceiling]:
+    async def surface_view(self, main_id: str) -> SurfaceView:
         ...
 
-    async def note_touch(
-        self, main_id: str, *, t: str, fields: Mapping[str, Any]
-    ) -> None:
+    async def claim_day(
+        self,
+        main_id: str,
+        *,
+        t: str,
+        day: str,
+        records: Sequence[Mapping[str, Any]],
+    ) -> str:
         ...
 
 
@@ -265,27 +344,42 @@ class MorningSurface:
 
     ledger: SurfaceLedger
     channel: Channel
+    #: Where outcomes are counted. Optional so a caller can drive the surface
+    #: without one, and constructed by default so the shipped path always has
+    #: somewhere to put them.
+    mornings: Mornings = field(default_factory=Mornings)
 
     async def surface(
         self, main_id: str, *, now: Now, candidates: Sequence[Candidate]
     ) -> Outcome:
-        """Say one thing, or say nothing. Never raises.
+        """Say one thing, or say nothing. Never raises, and always counts.
 
-        The gates below are independent: each of them, alone, produces silence,
-        so the *outcome* does not depend on the order they are asked in — only
-        the reason does, and ``tests/test_surface.py`` sweeps every pair of
-        them in both orders rather than trusting that.
+        The gates are independent: each of them, alone, produces silence, so
+        the *outcome* does not depend on the order they are asked in — only the
+        reason does, and ``tests/test_surface.py`` sweeps every pair of them in
+        both orders rather than trusting that.
 
-        The order that *is* deliberate is the first one: the mode is asked
-        before anything else, because *"crisis suspends the surface entirely"*
-        is the one rule here that may never be answered by a license.
-
-        ``candidates`` comes from the preceding pass and is the only source of
-        anything that may be surfaced. There is no branch that reaches into the
-        ledger for something to say when the pass produced nothing: *"every
-        surface traces to the preceding pass"* is a property of this signature,
-        not a rule this body follows.
+        Two orderings *are* deliberate. The mode is asked first, because
+        *"crisis suspends the surface entirely"* is the one rule here that may
+        never be answered by a license. And reachability is asked **after** the
+        choice, because asking first made a morning on which the bound rejected
+        everything report ``never_contacted`` — skewing the very reason set
+        ``Silence`` exists to make countable.
         """
+        outcome = await self._counted(main_id, now=now, candidates=candidates)
+        self.mornings.note(outcome)
+        if isinstance(outcome, Silence) and outcome.fault:
+            logger.error(
+                "the morning for main=%s ended in %s; nothing was sent",
+                main_id, outcome.reason,
+            )
+        else:
+            logger.debug("morning for main=%s: %s", main_id, _label(outcome))
+        return outcome
+
+    async def _counted(
+        self, main_id: str, *, now: Now, candidates: Sequence[Candidate]
+    ) -> Outcome:
         try:
             return await self._surface(main_id, now=now, candidates=candidates)
         except Exception as exc:  # noqa: BLE001 - one main, never the pass
@@ -296,8 +390,8 @@ class MorningSurface:
             # anybody else's morning — and because there is a correct outcome
             # for "we could not tell" and it is saying nothing.
             logger.error(
-                "the morning surface could not run for main=%s (%s); nothing "
-                "was sent", main_id, type(exc).__name__,
+                "the morning surface could not run for main=%s (%s)",
+                main_id, type(exc).__name__,
             )
             return Silence(UNREADABLE)
 
@@ -305,149 +399,189 @@ class MorningSurface:
         self, main_id: str, *, now: Now, candidates: Sequence[Candidate]
     ) -> Outcome:
         # 1. The mode suspends everything (CAP-12). Not a license question and
-        #    not answerable by one: a main in crisis gets nothing unprompted
-        #    from this path whatever any record permits.
+        #    not answerable by one. Asked again inside the claim, below.
         if self.ledger.crisis_open(main_id):
             return Silence(CRISIS)
 
         # 2. Nothing came out of last night's pass. The ordinary case, on most
-        #    mornings, for most mains — and it is answered before the platform
-        #    is asked anything and before a word is written, so a quiet morning
-        #    costs a fold read and nothing else.
+        #    mornings, for most mains — answered before the platform is asked
+        #    anything and before a word is written.
         if not candidates:
             return Silence(NOTHING_TO_SAY)
 
-        # 3. One a day, per main, in the main's **own** local day. Read from
-        #    the fold's last touch, which is durable — so a restart cannot buy
-        #    a second message, and neither can an eviction.
-        state, ceiling = await self.ledger.surface_view(main_id)
+        view = await self.ledger.surface_view(main_id)
         zone = zone_of(self.ledger.zone_records(main_id))
-        if self._spoken_today(state, zone=zone, now=now):
+        today = local_day(now.epoch, zone)
+
+        # 3. One a day, per main, in the main's **own** local day, read from
+        #    the stored marker rather than recomputed under today's zone.
+        covered = spoken_on(view.spoke, today)
+        if covered is None:
+            # The marker is unreadable. Silent today — the rule is an Always
+            # and reading an unmeasurable marker as *yesterday* buys a second
+            # message on a day one was already sent — but **repaired**, because
+            # the marker is replaced only by a later one and a later one is
+            # written only when Half is about to speak: without this, a single
+            # corrupt record silenced a main for ever.
+            return await self._repair(main_id, now=now, day=today)
+        if covered:
             return Silence(ALREADY_TODAY)
 
-        # 4. Reachability is asked, never assumed (AD-7). If the platform will
-        #    not carry an unprompted message right now, Half does not send one,
-        #    and that is silence rather than an error.
+        # 4. The choice: traceable to something the log still holds, bounded by
+        #    each loop's own timescale, and deterministic given this log and
+        #    this instant.
+        choice = choose(candidates, view=view, now=now.stamp)
+        if choice is None:
+            return Silence(NOTHING_TO_SAY)
+        if choice.degraded:
+            self.mornings.note_degraded(choice.degraded)
+            logger.warning(
+                "main=%s has %d loop(s) whose last raise could not be measured; "
+                "they are treated as never raised", main_id,
+                len(choice.degraded),
+            )
+
+        # 5. What may be said, and how. The ladder resolves each record's rung
+        #    under this main's ceiling and the context builder splits content
+        #    from directives; this reads the answer and never re-decides it.
+        text = self._speech(view, choice=choice, now=now)
+        if not text:
+            return Silence(NOTHING_MAY_BE_SAID)
+
+        # 6. Reachability is asked, never assumed (AD-7) — and asked here, once
+        #    there is actually something to send, so a morning the bound
+        #    silenced is not reported as an unreachable one.
         reach = self.channel.capability_query(main_id)
         if not reach.may_send_freeform:
             return Silence(str(reach))
 
-        # 5. The choice: traceable, bounded by each loop's own timescale, and
-        #    deterministic given this log and this instant.
-        choice = choose(
-            candidates,
-            beliefs=state.beliefs,
-            loops=state.loops,
-            touches=state.touches,
-            now=now.stamp,
-        )
-        if choice is None:
-            return Silence(NOTHING_TO_SAY)
-
-        # 6. What may be said, and how. The ladder resolves each record's rung
-        #    under this main's ceiling and the context builder splits content
-        #    from directives; this reads the answer and never re-decides it.
-        text = self._speech(state, choice=choice, ceiling=ceiling, now=now)
-        if not text:
-            return Silence(NOTHING_MAY_BE_SAID)
-
-        # 7. The touch first, then the send. A surface whose "already said
-        #    something today" marker could not be written has not earned the
-        #    right to send.
-        try:
-            await self.ledger.note_touch(
-                main_id,
-                t=now.stamp,
-                fields=touch_module.fields(choice.loop, origin=choice.origin),
-            )
-        except Exception as exc:  # noqa: BLE001 - the day, not the main
-            logger.error(
-                "could not record a touch for main=%s (%s); nothing was sent",
-                main_id, type(exc).__name__,
-            )
+        # 7. The day is claimed, then the message is sent. Claiming is one
+        #    serialized operation: it re-asserts the mode, re-reads the marker
+        #    and appends, all inside one acquire.
+        claim = await self._claim(main_id, now=now, day=today, choice=choice)
+        if claim == CLAIM_CRISIS:
+            return Silence(CRISIS)
+        if claim == CLAIM_ALREADY:
+            return Silence(ALREADY_TODAY)
+        if claim != CLAIMED:
             return Silence(UNRECORDED)
 
         try:
-            await self.channel.send(main_id, text)
+            result = await self.channel.send(main_id, text)
         except Exception as exc:  # noqa: BLE001 - the day, not the main
-            # Nothing is retried and nothing is queued. The touch has already
-            # landed, so this main's day is spent — which is the correct
-            # asymmetry: a failed send costs one message, a retry loop costs
-            # the one-a-day rule.
+            # Nothing is retried and nothing is queued. The day has already
+            # been claimed, so it is spent — which is the correct asymmetry: a
+            # failed send costs one message, a retry loop costs the one-a-day
+            # rule.
             logger.error(
                 "the morning surface for main=%s could not be sent (%s); it is "
                 "not retried and nothing is queued", main_id,
                 type(exc).__name__,
             )
             return Silence(UNSENT)
+        if not _delivered(result):
+            # An adapter may report non-delivery by return value rather than by
+            # raising — ``TelegramChannel.send`` answers ``parts=0`` for a body
+            # the platform would reject. Discarding the result recorded that as
+            # a message sent and spent the day for it.
+            logger.error(
+                "the channel carried no part of the morning for main=%s", main_id
+            )
+            return Silence(UNSENT)
 
         return Surfaced(
-            loop=choice.loop,
+            loops=choice.loops,
             origin=choice.origin,
             entries=choice.entries,
+            day=today,
             text=text,
         )
 
-    # -- the two questions this module answers itself ------------------------
+    # -- the pieces ----------------------------------------------------------
 
-    def _spoken_today(
-        self, state: State, *, zone: object, now: Now
-    ) -> bool:
-        """Whether Half has already surfaced something in this main's own day.
+    async def _repair(self, main_id: str, *, now: Now, day: str) -> Outcome:
+        """Spend the day on a readable marker so tomorrow is not lost too.
 
-        A **local civil day**, not twenty-four hours, and the difference is the
-        whole rule: two messages at 23:50 and 00:10 are two days' worth ten
-        minutes apart, and two at 00:10 and 23:50 are one day's worth almost a
-        day apart. The zone is the one the main told Half, resolved through the
-        same door the due-time queue uses, so the two can never disagree about
-        what day it is — and a main who has told Half nothing gets the recorded
-        fallback rather than a guess (AD-9).
+        Writes a day marker that says plainly that **no message was sent**
+        (``touch.repaired``), which is true, cites nothing because nothing was
+        surfaced, and supersedes the record nothing could read. Costs one
+        morning; every morning after it reads cleanly.
 
-        **Fails closed.** A last touch whose stamp this build cannot read is
-        treated as *today*, so the answer is silence. That direction is
-        deliberate and it is the asymmetry the rule is written on: reading an
-        unmeasurable stamp as *yesterday* buys a second unprompted message on a
-        day one was already sent, and reading it as *today* costs one quiet
-        morning. One a day is an Always; a quiet morning is the ordinary
-        outcome.
-
-        The branch is not unreachable, which is why it is written rather than
-        asserted away. ``records.make`` checks a stamp's *shape* and not its
-        calendar, so ``2026-02-31T00:00Z`` becomes durable and
-        ``half.civil.instant`` then refuses it — a real, if rare, log. Whether
-        the append gate should validate every ``t`` as an instant is a change
-        to a shared writer for every op, which is an Ask-First edit and not
-        this story's.
+        **Warned as well as counted.** It is not a fault — nothing failed, and
+        the morning ends the way an ordinary quiet one does — but it is not
+        ordinary either, and review's whole finding about the permanent version
+        was that there was *"no recovery, no alert and no counter"*. There are
+        now all three.
         """
-        last = state.last_touch
-        if not isinstance(last, Mapping):
-            return False
-        stamp = last.get("t")
-        if not isinstance(stamp, str) or not stamp.strip():
-            return True
-        at = instant(stamp)
-        if at is None:
-            return True
-        return local_day(at, zone) == local_day(now.epoch, zone)
+        logger.warning(
+            "main=%s has a day marker this build cannot read; the day is spent "
+            "on a repair and nothing was sent", main_id,
+        )
+        claim = await self._append(
+            main_id, now=now, day=day, records=[touch_module.repaired(day=day)]
+        )
+        if claim == CLAIM_CRISIS:
+            return Silence(CRISIS)
+        if claim in (CLAIM_ALREADY, CLAIMED):
+            # ``already`` means somebody else repaired it first, which is the
+            # same outcome for this morning.
+            return Silence(UNREADABLE_MARKER)
+        return Silence(UNRECORDED)
 
-    def _speech(
-        self, state: State, *, choice: Choice, ceiling: Ceiling | None, now: Now
+    async def _claim(
+        self, main_id: str, *, now: Now, day: str, choice: Choice
     ) -> str:
+        """Spend the day, and record a raise for every loop this touches.
+
+        One record marks the day and carries the first loop; the rest are
+        raises that mark no day, because a candidate touching three wantings
+        bounds three wantings and spends one morning. All of them are appended
+        inside one acquire, so a crash cannot leave a day spent with the loops
+        unbounded or the reverse.
+        """
+        records: list[Mapping[str, Any]] = [
+            touch_module.spoke(day=day, origin=choice.origin, loops=choice.loops)
+        ]
+        records.extend(
+            touch_module.raised(slug, origin=choice.origin)
+            for slug in choice.loops[1:]
+        )
+        return await self._append(main_id, now=now, day=day, records=records)
+
+    async def _append(
+        self,
+        main_id: str,
+        *,
+        now: Now,
+        day: str,
+        records: Sequence[Mapping[str, Any]],
+    ) -> str:
+        try:
+            return await self.ledger.claim_day(
+                main_id, t=now.stamp, day=day, records=records
+            )
+        except Exception as exc:  # noqa: BLE001 - the day, not the main
+            logger.error(
+                "could not claim the day for main=%s (%s); nothing was sent",
+                main_id, type(exc).__name__,
+            )
+            return UNRECORDED
+
+    def _speech(self, view: SurfaceView, *, choice: Choice, now: Now) -> str:
         """The text this choice licenses, or the empty string.
 
-        The material is the belief records the choice names, handed to the
-        context builder with this main's ceiling. What comes back is split into
-        three channels; a surface speaks from two of them and never from the
-        third, so a `behave` belief shapes what is said — it is in the context,
-        it is what the withholding guard measures other lines against — and is
-        never quoted in it.
+        The material is the belief records the choice names — **all** of them,
+        never narrowed to one loop's — handed to the context builder with this
+        main's ceiling. What comes back is split into three channels; a surface
+        speaks from two of them and never from the third, so a `behave` belief
+        shapes what is said and is never quoted in it.
 
         The rendering is the builder's own (``Context.render``), over a context
-        with the directive channel removed. Rendering the *whole* context would
+        with the directive channel removed. Rendering the whole context would
         put internal shaping vocabulary on the wire; re-rendering the two
-        channels by hand would be a second renderer outside the guard that
-        makes AD-18 true. Dropping a channel cannot introduce a leak, because
-        every line that survives already passed the guard.
+        channels by hand would be a second renderer outside the guard that makes
+        AD-18 true. Dropping a channel cannot introduce a leak, because every
+        line that survives already passed the guard.
 
         The empty string is where a main capped at `behave` lands, and where a
         main whose only material is `behave` lands, and this function cannot
@@ -456,16 +590,15 @@ class MorningSurface:
         material = tuple(
             RankedBelief(
                 id=ident,
-                claim=_claim_of(state.beliefs.get(ident)),
+                claim=_claim_of(view.beliefs.get(ident)),
                 prefix="",
                 bm25=None,
-                belief=state.beliefs.get(ident) or {},
+                belief=view.beliefs.get(ident) or {},
             )
             for ident in choice.entries
         )
-        context = build_context(material, now=now.stamp, ceiling=ceiling)
-        sayable = speech(context)
-        if not sayable:
+        context = build_context(material, now=now.stamp, ceiling=view.ceiling)
+        if not speech(context):
             return ""
         return replace(context, directives=()).render()
 
@@ -497,13 +630,11 @@ class MorningPass:
     **The surface runs even when a transition could not be written.** A night
     with one failed append still moved nine other tensions, and those are worth
     saying; the incompleteness is raised *after*, so the scheduler still counts
-    the main under ``failed`` and the log still shows what is missing. Raising
-    first would make one failed write cost the main their morning as well as
-    their transition.
+    the main under ``failed``. Raising first would make one failed write cost
+    the main their morning as well as their transition.
 
     **The surface never raises**, so nothing it does can turn a completed pass
-    into a failed one. A main whose morning could not be read is a main who was
-    sent nothing, which is a first-class outcome (AD-27) and not a tick failure.
+    into a failed one — and its outcome is counted rather than discarded.
     """
 
     consolidate: ConsolidationPass
@@ -513,18 +644,27 @@ class MorningPass:
         """The ``Pass`` protocol's method. Returns ``None``; raises only when a
         transition this main's log should be carrying is not in it."""
         result = await self.consolidate.evaluate(main_id, now)
-        outcome = await self.surface.surface(
+        await self.surface.surface(
             main_id, now=now, candidates=result.candidates
         )
-        # Counts and ids only, never content (AD-22) — and at debug, because a
-        # silent morning is the ordinary morning and a log line per main per
-        # day saying so is noise that trains an operator to ignore the file.
-        logger.debug(
-            "morning for main=%s: %s",
-            main_id,
-            "sent" if isinstance(outcome, Surfaced) else outcome.reason,
-        )
         completed(result, main_id=main_id)
+
+
+def _label(outcome: Outcome) -> str:
+    return "sent" if isinstance(outcome, Surfaced) else outcome.reason
+
+
+def _delivered(result: object) -> bool:
+    """Whether the channel says it carried anything.
+
+    Tolerant of an adapter that returns nothing at all: the port's contract is
+    a ``SendResult``, and an adapter that answers ``None`` has not said it
+    failed. Only an explicit *no parts* is read as non-delivery, so a stricter
+    reading cannot silence a working adapter.
+    """
+    if isinstance(result, SendResult):
+        return result.parts > 0
+    return True
 
 
 def _claim_of(record: Mapping[str, Any] | None) -> str:

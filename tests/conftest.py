@@ -169,7 +169,7 @@ def tier_change_log(tmp_path):
         # the stamp and never from the slug, for the same reason — a tombstone
         # keeps its id.
         s.record(Op.TOUCH, "tc_2026-08-14T12:00Z", "2026-08-14T12:00Z",
-                 **touch_module.fields(
+                 **touch_module.raised(
                      "sell-the-flat",
                      origin=touch_module.Origin(kind=TOUCH_TENSION, id="x_2"),
                  ))
@@ -221,10 +221,26 @@ def tier_change_log(tmp_path):
         # computed from: losing it in a rebuild buys a second unprompted
         # message on a day one was already sent.
         #
-        # The second shape — a raise on a loop the main afterwards erased — is
-        # seeded above, beside that erasure.
+        # The raise on a loop the main afterwards erased is seeded above,
+        # beside that erasure.
         s.record(Op.TOUCH, "tc_2026-08-16T03:10Z", "2026-08-16T03:10Z",
-                 **touch_module.fields(
+                 **touch_module.spoke(
+                     day="2026-08-16",
+                     origin=touch_module.Origin(kind=TOUCH_TENSION, id="x_1"),
+                     loops=("swim-weekly",),
+                 ))
+        # A day marker that raised nothing and sent nothing — the repair path.
+        # Here because it is the one touch shape carrying neither a loop nor an
+        # origin, and a fold that required either would drop it silently,
+        # leaving the main's day unspent after every rebuild.
+        s.record(Op.TOUCH, "tc_2026-08-17T03:10Z", "2026-08-17T03:10Z",
+                 **touch_module.repaired(day="2026-08-17"))
+        # And a raise that spends no day — the shape CAP-10's interrupt will
+        # use. It must round-trip as a raise on the loop's bound *without*
+        # becoming the day marker, which is the distinction story 10's review
+        # had to introduce.
+        s.record(Op.TOUCH, "tc_2026-08-18T09:00Z", "2026-08-18T09:00Z",
+                 **touch_module.raised(
                      "swim-weekly",
                      origin=touch_module.Origin(kind=TOUCH_TENSION, id="x_1"),
                  ))

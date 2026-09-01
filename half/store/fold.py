@@ -69,6 +69,7 @@ from half.errors import CorruptLogError
 from half.store.ops import AFTERCARE_STATES, CRISIS_STATES, Op
 from half.store.records import (
     LAST_MOVEMENT,
+    LOCAL_DAY,
     LOOP,
     NEXT_PASS_AT,
     STATE,
@@ -169,34 +170,26 @@ class State:
     #: *never faster than the loop's own timescale*, which for a years-loop
     #: means the memory would have to survive a year.
     touches: dict[str, dict[str, Any]] = field(default_factory=dict)
-    #: The last touch of **any** loop, in log order, or ``None`` if Half has
-    #: never raised anything. What *"at most one unprompted message a day"* is
-    #: computed from (CAP-8).
+    #: The last **day marker**: the newest touch carrying a ``local_day``, or
+    #: ``None`` if Half has never spent one of this main's days (CAP-8).
     #:
-    #: **The log's own order, not the largest stamp.** Within a shard that is
-    #: append order, so a raise stamped earlier but appended later is the last
-    #: one — which is what a max-by-``t`` would get wrong, letting a clock that
-    #: stepped backwards buy a second message on a day one was already sent.
-    #: (Across a month boundary the order is the shard order, which is
-    #: ``t``-ordered, because ``BeliefLog`` shards by month. That is the fold
-    #: reading the log rather than a second opinion about it, and every stamp
-    #: this op carries is the tick's own instant.)
+    #: **A day marker, not "the last raise of any loop"**, and the difference
+    #: is a rule rather than a nicety. CAP-10's interrupt is a second thing that
+    #: will raise a loop, and on the day it lands it would silently consume the
+    #: morning budget if every raise counted — with no change anywhere near the
+    #: surface to say so. A raise carries a ``loop``; a spent day carries a
+    #: ``local_day``; a record may carry either, both, or — for the repair path
+    #: — only the day.
     #:
-    #: A field of its own rather than a max over ``touches``, because the two
-    #: are different questions — *"when did Half last raise this loop"* and
-    #: *"has Half spoken today at all"* — and only the second one has to be
-    #: answered without comparing stamps.
+    #: The day is the **stored** one. Recomputing it from the record's stamp
+    #: under whatever zone is current is how a main who moves west gets two
+    #: messages five hours apart, which review reproduced.
     #:
-    #: **An erasure takes this with it**, and that is a decision rather than an
-    #: oversight: a main who erases the only loop Half has raised loses the
-    #: record of that morning, because the record is a fact about a loop that
-    #: no longer exists and a loop slug is a phrase about a person's life. The
-    #: cost is bounded to a single, deliberate action inside one day — the
-    #: scheduler gives each main one due time per day (AD-9), so a second
-    #: surface would need a second trigger between the erasure and midnight —
-    #: and the alternative is a slug surviving the erasure that exists to
-    #: remove it.
-    last_touch: dict[str, Any] | None = None
+    #: In log order rather than by comparing days, so that the newest marker is
+    #: the one the rule reads. (Within a shard that is append order; across a
+    #: month boundary it is the shard order, which is ``t``-ordered, because
+    #: ``BeliefLog`` shards by month.)
+    spoke: dict[str, Any] | None = None
     #: The last ``schedule`` record, or ``None`` if this main has never been
     #: scheduled (AD-9, story 9a). Raw fields, for the reason ``crisis`` and
     #: ``aftercare`` hold raw fields: *whether* a main is due is the
@@ -228,7 +221,7 @@ class State:
                 "aftercare": self.aftercare,
                 "schedule": self.schedule,
                 "touches": self.touches,
-                "last_touch": self.last_touch,
+                "spoke": self.spoke,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -341,6 +334,22 @@ def fold(records: Iterable[Record]) -> State:
                 if isinstance(loop_target, str) and loop_target:
                     state.expunged_loops.add(loop_target)
                     state.loops.pop(loop_target, None)
+                    # **And every raise Half made on it** (CAP-8, story 10).
+                    # A raise is not a wanting — the firewall still holds and
+                    # nothing here demotes anything — but a raise *names* one,
+                    # so a loop slug would otherwise survive in the derived view
+                    # and be written straight back into the ``touches`` table by
+                    # ``db.rebuild``. A slug is a phrase the main chose about
+                    # their own life, and surviving an erasure is not an
+                    # erasure. ``Store.expunge`` also tombstones the bodies,
+                    # which is why this branch had no test until review wrote
+                    # one against the bare op.
+                    state.touches.pop(loop_target, None)
+                    if (
+                        isinstance(state.spoke, dict)
+                        and state.spoke.get(LOOP) == loop_target
+                    ):
+                        state.spoke = None
                 # ``target`` is optional on a record that names a loop, and
                 # that is the second half of keeping the namespaces apart. A
                 # loop-only erasure writing its slug into ``expunged`` would
@@ -441,41 +450,49 @@ def fold(records: Iterable[Record]) -> State:
                         entry[key] = record.data[key]
 
             case Op.TOUCH:
-                # Fatal on a missing loop, for the reason a transition is: a
-                # touch the fold cannot attribute to a loop is a raise that
-                # bounds nothing, and folding it to nothing is the silent
-                # omission AD-29 exists to prevent — the loop would answer
-                # *never raised* on every pass for ever, which is the nagging
-                # the bound exists to make impossible.
+                # Fatal only when the record does **neither** of the two jobs a
+                # touch has — it names no loop and marks no day — because that
+                # is a record this build cannot attribute to anything, and
+                # folding it to nothing is the silent omission AD-29 exists to
+                # prevent: the loop would answer *never raised* on every pass
+                # for ever, or the day would answer *never spent*.
                 #
-                # Tolerant of everything else, deliberately. ``origin_kind``
-                # and ``origin_id`` are refused before the record is durable
-                # (``records.validate_touch_fields``), which is where a closed
-                # vocabulary belongs; refusing an unknown one *here* as well
-                # would mean a log written by a later build took a main's whole
-                # store down over a word, where carrying it through costs that
-                # one raise its provenance. The surface refuses to cite an
-                # origin it cannot read, which is silence — a first-class
-                # outcome (AD-27) — rather than a bricked store.
+                # Tolerant of everything else, deliberately. The origin, the
+                # day's shape and the ``sent`` flag are refused before the
+                # record is durable (``records.validate_touch_fields``), which
+                # is where a closed vocabulary belongs; refusing an unknown one
+                # *here* as well would mean a log written by a later build took
+                # a main's whole store down over a word.
                 loop_id = record.data.get(LOOP)
-                if not isinstance(loop_id, str) or not loop_id:
+                day = record.data.get(LOCAL_DAY)
+                raises = isinstance(loop_id, str) and bool(loop_id)
+                marks = isinstance(day, str) and bool(day)
+                if not raises and not marks:
                     raise CorruptLogError(
-                        f"{record.op} record {record.id!r} has no {LOOP!r}",
+                        f"{record.op} record {record.id!r} names neither "
+                        f"{LOOP!r} nor {LOCAL_DAY!r}",
                         path="<fold>", line=0,
                     )
                 # ``expunged_loops``, never ``expunged`` — the same split the
                 # transition case makes, for the same reason. A raise on a loop
                 # the main erased is erased with it: the tombstone pass has
                 # already removed the ones written before the erasure, and this
-                # is what stops one written after it coming back.
-                if loop_id in state.expunged_loops:
+                # is what stops one written after it coming back. The day
+                # marker on such a record goes with it, which is the one place
+                # an erasure can hand a main a second message in a day — a
+                # bounded cost, because it takes a deliberate erasure between
+                # two triggers inside one day and the scheduler gives one due
+                # time per day (AD-9).
+                if raises and loop_id in state.expunged_loops:
                     continue
                 touch = copy.deepcopy(dict(record.data))
-                state.touches[loop_id] = touch
-                # The same object in both places, deliberately: they are one
-                # record read two ways, and a copy in each would be two facts
-                # that could drift.
-                state.last_touch = touch
+                if raises:
+                    state.touches[loop_id] = touch
+                if marks:
+                    # The same object in both places when a record does both
+                    # jobs: they are one record read two ways, and a copy in
+                    # each would be two facts that could drift.
+                    state.spoke = touch
 
             case Op.CEILING:
                 rung = record.data.get("rung")

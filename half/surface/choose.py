@@ -19,25 +19,40 @@ in both directions at once — nagging a workout routine and never once reaching
 a farmland loop. The *shape* is theirs: a durable record of every fire, keyed on
 the thing raised, probed before the next one. The derivation is Half's.
 
-**Silence is the ordinary outcome, and every branch here is written for it**
-(AD-27). There is no fallback period, no default timescale, no *"we could not
-tell, so raise it anyway"*. A loop whose bound cannot be computed is not a
-candidate — because the alternative is holding a wanting to a cadence borrowed
-from a wanting it is nothing like, and `half.loops.timescale` refuses to invent
-one for exactly that reason. Most nights produce no candidates at all, which is
-not a degraded pass; it is what a quiet night is.
+**A candidate may touch no loop at all, and that is what lets the feature
+speak.** The first version required one, and composed with a second true fact —
+that nothing in the product writes a ``loop`` onto a belief — into a surface
+that was silent for every main for ever, with a green suite, because the
+fixtures hand-wrote the association the product never makes. A candidate whose
+entries sit on no wanting is bounded by the *other* two rules instead: it exists
+only because a transition landed in the log, and it spends the main's one
+unprompted message for the day. A loop with no *timescale* is a different case
+and is still refused — there the wanting exists and its cadence does not, so
+raising it would be raising it on a borrowed clock.
 
-**Every candidate cites the pass it came from** (CAP-8). A candidate carries an
-``Origin`` — a kind out of a closed set and an id — and one whose origin is not
-``traceable`` is dropped before it is ranked. Nothing here invents a
-provenance, and there is no branch that surfaces something because it looked
-important.
+**A candidate touches every loop its entries name, all or nothing.** Splitting a
+candidate per loop and narrowing its entries to that loop's — which the first
+version did — made Half speak about a tension while showing one of the two
+entries that disagree, and a tension *is* the pair. So the whole candidate
+stands or falls: every loop it names must pass the bound, and a raise is
+recorded for each.
+
+**Silence is the ordinary outcome, and every branch here is written for it**
+(AD-27). There is no fallback period and no default timescale. Most nights
+produce no candidates at all, which is not a degraded pass; it is what a quiet
+night is.
+
+**Every candidate cites something the log still holds** (CAP-8). A candidate
+carries an ``Origin`` — a kind out of a closed set and an id — and one whose
+origin is not ``traceable``, or whose origin the main erased overnight, is
+dropped before it is ranked. Nothing here invents a provenance, and there is no
+branch that surfaces something because it looked important.
 
 **The choice is deterministic given the log and an injected ``now``.** The
-ordering is total: how many of its *own periods* the loop has been silent,
-then the loop id, then the origin's kind and id. Nothing is ordered by dict
-iteration, by a float that could tie, or by a collation — so two builds reading
-one log pick the same thing or pick nothing.
+ordering is total: how many of its *own periods* the quietest loop it touches
+has been silent, then the loops it names, then the origin's kind and id.
+Nothing is ordered by dict iteration, by a float that could tie, or by a
+collation — so two builds reading one log pick the same thing or pick nothing.
 
 Pure and clockless, like every module it reads from: ``now`` is the stamp the
 caller was handed (AD-30).
@@ -61,13 +76,15 @@ from half.loops.timescale import (
     moment,
     period_days,
 )
+from half.store.ops import TOUCH_INGESTED, TOUCH_LOOP_TRANSITION, TOUCH_TENSION
 from half.surface.touch import Origin, raised_at
+from half.surface.view import SurfaceView
 
 __all__ = [
     "Bound", "Candidate", "Choice", "NAGGING", "NOT_LIVE", "NO_LOOP",
-    "NO_ORIGIN", "NO_TIMESCALE", "REASONS", "UNKNOWN_TIMESCALE",
-    "UNREADABLE_NOW", "UNREADABLE_TOUCH", "candidates_for", "choose",
-    "eligible", "touchable",
+    "NO_TIMESCALE", "ORIGIN_GONE", "REASONS", "UNKNOWN_TIMESCALE",
+    "UNREADABLE_NOW", "UNREADABLE_TOUCH", "choices_for", "choose", "eligible",
+    "live_origin", "touchable",
 ]
 
 # Why a loop may not be touched now. Reasons rather than a bare ``False``, for
@@ -84,17 +101,19 @@ __all__ = [
 #: Half raised this loop more recently than one of its own periods ago. The
 #: bound firing, which is the ordinary reason a good candidate is not surfaced.
 NAGGING: Final[str] = "nagging"
-#: The touch record's own stamp could not be read, so the interval cannot be
-#: measured. Refused rather than assumed fresh — see ``touchable``.
+#: The raise on this loop carries neither a readable stamp nor a readable day,
+#: so the interval cannot be measured. **Not a refusal** — see ``touchable``.
 UNREADABLE_TOUCH: Final[str] = "unreadable-touch"
-#: The candidate names no loop the ledger holds. A surface that touches no
-#: wanting is bounded by nothing.
+#: The candidate names a loop the ledger does not hold.
 NO_LOOP: Final[str] = "no-loop"
 #: The loop is `achieved`, `abandoned-but-unadmitted`, or in a state this build
 #: does not recognise. Finished is not silent, and answered is not unasked.
 NOT_LIVE: Final[str] = "not-live"
 #: The candidate could not say where in the preceding pass it came from.
 NO_ORIGIN: Final[str] = "no-origin"
+#: The thing it cited is no longer in the log — the main erased it between the
+#: night's pass and the morning.
+ORIGIN_GONE: Final[str] = "origin-gone"
 
 #: The closed set. Every value this module puts in a ``Bound`` is one of these,
 #: so that a caller logging a reason logs a constant and never a message — an
@@ -102,7 +121,7 @@ NO_ORIGIN: Final[str] = "no-origin"
 #: out of a main's own ledger (AD-22).
 REASONS: Final[frozenset[str]] = frozenset(
     {
-        NAGGING, UNREADABLE_TOUCH, NO_LOOP, NOT_LIVE, NO_ORIGIN,
+        NAGGING, UNREADABLE_TOUCH, NO_LOOP, NOT_LIVE, NO_ORIGIN, ORIGIN_GONE,
         NO_TIMESCALE, UNKNOWN_TIMESCALE, UNREADABLE_NOW,
     }
 )
@@ -114,8 +133,8 @@ class Candidate:
 
     A value, and deliberately a thin one. It carries **what it came from** and
     **which entries it would be built from** — and no loop, no rank, no score
-    and no text. The loop is attached here, from the main's own belief records,
-    rather than by the pass: the pass reads a narrowed projection of the log
+    and no text. The loops are attached here, from the main's own belief
+    records, rather than by the pass: the pass reads a projection of the log
     that drops every field but the id, the stamp and the support set (AD-22,
     ``records.HISTORY_VISIBLE``), so it cannot see which wanting an entry sits
     on and must not be widened until it can.
@@ -140,13 +159,17 @@ class Bound:
     *"may raise"* flag would be a fact about the moment it was written, and
     keeping it current means writing on a read (AD-4, AD-30).
 
-    ``may_touch`` is never true while ``reason`` is set. There is no path here
-    from *"we cannot tell"* to *"go ahead"*.
+    ``may_touch`` is true with ``reason`` set in exactly one case —
+    ``UNREADABLE_TOUCH``, where the measure is gone and the loop is treated as
+    never raised rather than as raised a moment ago. ``degraded`` says so, so a
+    caller can count and log it instead of discovering it a year later.
     """
 
     may_touch: bool = False
-    #: Set exactly when ``may_touch`` is false. One of ``REASONS``.
+    #: Set whenever the bound has something to report. One of ``REASONS``.
     reason: str | None = None
+    #: True when ``may_touch`` was reached without a measurement.
+    degraded: bool = False
     #: The loop's own period in days — never a borrowed default.
     period_days: int | None = None
     #: Days since Half last raised this loop. ``None`` when it never has, or
@@ -156,21 +179,26 @@ class Bound:
 
 @dataclass(frozen=True, slots=True)
 class Choice:
-    """One candidate, attached to the loop it would touch. The unit of ranking.
+    """One candidate with the loops it would touch. The unit of ranking.
 
-    ``entries`` is narrowed to the entries sitting on **this** loop, which is
-    what makes a candidate spanning two loops into two self-contained choices
-    rather than one raise that quietly touches a second wanting the bound never
-    saw.
+    ``entries`` is the candidate's **whole** entry set, never narrowed to one
+    loop's: a tension is a record of two entries that disagree, and speaking
+    about it while showing one of them is not speaking about a tension.
+
+    ``loops`` may be empty. A candidate built from beliefs that sit on no
+    wanting raises nothing, is bounded by the day marker and by the transition
+    rule, and is the shape a belief the product itself writes actually takes.
     """
 
     candidate: Candidate
-    loop: str
+    loops: tuple[str, ...]
     entries: tuple[str, ...]
-    #: How many of its own periods this loop has been silent, or ``None`` when
-    #: that is not detectable — which is ordinary for a loop that has a period
-    #: but has not moved yet.
+    #: How many of its own periods the **quietest** loop this touches has been
+    #: silent, or ``None`` when there is no loop or that is not detectable.
     periods: float | None = None
+    #: Loops whose bound could not be measured and were treated as never
+    #: raised. Carried so the surface can log and count it (see ``Bound``).
+    degraded: tuple[str, ...] = ()
 
     @property
     def origin(self) -> Origin:
@@ -180,25 +208,61 @@ class Choice:
     def order(self) -> tuple[float, str, str, str]:
         """The total order two builds must agree on.
 
-        Silence in the loop's **own periods** first, longest first: that is the
-        unit ``half.loops.timescale`` exists to provide, so *"quieter"* means
-        the same thing for a routine and for a farmland loop, and one
-        comparison can mean the right thing for both. Then the loop id, then
-        the origin's kind and id — three strings that are unique together, so
-        the order is total and no tie is broken by dict iteration or by a
-        float comparison that happens to land equal.
+        Silence in the loops' **own periods** first, quietest first: that is
+        the unit ``half.loops.timescale`` exists to provide, so *"quieter"*
+        means the same thing for a routine and for a farmland loop, and one
+        comparison can mean the right thing for both. Raw days would rank a
+        days-loop thirty days quiet — thirty of its own periods — below a
+        farmland loop four hundred days quiet, which is barely one of its own,
+        and ``tests/test_surface.py`` pins exactly that pair so the unit cannot
+        revert without a case failing.
 
-        Undetectable silence sorts as zero rather than being excluded: a loop
-        with a period that has simply never moved is a perfectly ordinary
-        candidate, and *"we cannot tell how quiet it is"* is a reason to rank
-        it last, not a reason to refuse it.
+        Then the loops it names, then the origin's kind and id — strings that
+        are unique together, so the order is total and no tie is broken by dict
+        iteration or by a float comparison that happens to land equal.
+
+        A candidate with no loop, or one whose silence is not detectable, sorts
+        as zero: it is the least anchored thing that could be said, so it goes
+        last rather than being refused.
         """
         return (
             -(self.periods or 0.0),
-            self.loop,
+            " ".join(self.loops),
             self.origin.kind,
             self.origin.id,
         )
+
+
+def live_origin(origin: Origin, *, view: SurfaceView) -> bool:
+    """Whether the thing ``origin`` cites is still in the log.
+
+    *"Nothing is surfaced that cannot say where it came from"* has a second
+    half review had to point out: the thing cited must still be **there**. A
+    tension expunged between the night's pass and the morning left a candidate
+    that Half would still speak, and a touch that permanently cited an id
+    nothing can resolve.
+
+    Checked per kind, and every kind is checkable, which is why there is no
+    default branch: a fourth kind added to ``TOUCH_ORIGINS`` fails here rather
+    than passing unchecked.
+
+    * a **tension** must still be in the tension table;
+    * a **loop transition** must name a loop the ledger still holds;
+    * an **ingested item** must still be the belief it was admitted as.
+
+    An id in ``expunged`` is gone whatever else says: an erasure is an erasure.
+    """
+    if not isinstance(origin, Origin) or not origin.traceable:
+        return False
+    if origin.id in view.expunged:
+        return False
+    if origin.kind == TOUCH_TENSION:
+        return origin.id in view.tensions
+    if origin.kind == TOUCH_LOOP_TRANSITION:
+        return origin.id not in view.expunged_loops and origin.id in view.loops
+    if origin.kind == TOUCH_INGESTED:
+        return origin.id in view.beliefs
+    return False
 
 
 def touchable(
@@ -221,26 +285,34 @@ def touchable(
     its own periods has passed; at exactly one period it may not. That matches
     ``Silence.silent = days > period`` rather than inventing a second
     convention for the same comparison, and it errs toward the quiet side —
-    which is the correct direction here, because the cost of the two mistakes
-    is not symmetric: one nag is felt, one quiet day is not.
+    which is the correct direction here, because one nag is felt and one quiet
+    day is not.
 
-    ``None`` for every case where the answer would have to be guessed, and each
-    of them is a refusal rather than a permission:
+    Refused where the answer would have to be guessed:
 
     * a loop that is `achieved`, `abandoned-but-unadmitted`, or in a state this
       build does not recognise — finished is not silent, an answered question
       is not an unasked one, and a later build's state is not something to act
       on. This is ``ledger.silent``'s filter, asked here for the same reason;
     * a loop with no timescale, or one this build cannot read. **A loop with no
-      period is not raised at all**, even the first time. The bound is *"never
+      period is not raised at all**, even the first time: the bound is *"never
       faster than its own timescale"*, and a wanting with no timescale has no
-      own clock to be held to — raising it would be raising it on a borrowed
-      cadence, which is precisely what ``half.loops.timescale`` refuses to
-      invent. Recording the loop without a period is honest; raising it anyway
-      is not;
-    * a touch whose stamp, or a ``now``, that is not a real instant. Refusing
-      is the safe direction: reading an unmeasurable interval as *long enough*
-      is how a bound stops bounding.
+      own clock to be held to. (A candidate that names **no loop** is a
+      different thing and is allowed — it touches no wanting, so there is
+      nothing to pace, and the day marker paces it instead.)
+    * a ``now`` that is not a real instant.
+
+    **One case answers *yes* without a measurement, and it is a correction.**
+    A raise whose stamp *and* stored day are both unreadable used to refuse —
+    on the reasoning that refusing is the safe direction. That reasoning
+    weighed one nag against one quiet day; it did not weigh one nag against
+    *permanent* silence on a wanting, which is what it actually bought: the
+    entry is replaced only by a later raise on that loop, a later raise happens
+    only when the loop is chosen, and this branch is what stopped it being
+    chosen. So an unmeasurable raise is treated as **no raise**, ``degraded``
+    says so, and the surface logs and counts it. The cost is at most one extra
+    raise on one loop, after which a readable record exists; and both sources
+    are validated at the append, so producing the situation takes a hand edit.
     """
     if not isinstance(loop, Loop):
         return Bound(reason=NO_LOOP)
@@ -252,6 +324,12 @@ def touchable(
     if period is None:
         return Bound(reason=UNKNOWN_TIMESCALE)
 
+    at = moment(now)
+    if at is None:
+        # The caller's own stamp, not the log's — reported separately because
+        # the fix is a different one, exactly as ``timescale.silence`` does.
+        return Bound(reason=UNREADABLE_NOW, period_days=period)
+
     table = touches if isinstance(touches, Mapping) else {}
     last = table.get(loop.id)
     if last is None:
@@ -260,14 +338,12 @@ def touchable(
         return Bound(may_touch=True, period_days=period)
     raised = moment(raised_at(last))
     if raised is None:
-        return Bound(reason=UNREADABLE_TOUCH, period_days=period)
-    at = moment(now)
-    if at is None:
-        # The caller's own stamp, not the log's — reported separately because
-        # the fix is a different one, exactly as ``timescale.silence`` does.
-        return Bound(reason=UNREADABLE_NOW, period_days=period)
+        return Bound(
+            may_touch=True, reason=UNREADABLE_TOUCH, degraded=True,
+            period_days=period,
+        )
 
-    # Clamped, so a touch dated in the future cannot buy a loop a negative age
+    # Clamped, so a raise dated in the future cannot buy a loop a negative age
     # and let it be raised again immediately. The same clamp ``silence``
     # applies, for the same reason.
     days = max(0.0, (at - raised) / DAY)
@@ -276,70 +352,77 @@ def touchable(
     return Bound(reason=NAGGING, period_days=period, since_days=days)
 
 
-def candidates_for(
+def choices_for(
     candidate: Candidate,
     *,
-    beliefs: Mapping[str, Mapping[str, Any]] | None,
+    view: SurfaceView,
     loops: Mapping[str, Loop],
     now: object,
-) -> list[Choice]:
-    """``candidate`` split into one ``Choice`` per loop it would touch.
+) -> Choice | None:
+    """``candidate`` as the one choice it is, or ``None``.
 
-    Empty for every candidate that must not be surfaced, and the emptiness is
+    ``None`` for every candidate that must not be surfaced, and the refusal is
     the enforcement:
 
-    * an origin that cannot say where it came from — *"nothing is surfaced that
-      cannot say where it came from"* (CAP-8), asked through
-      ``Origin.traceable`` so that a new way of failing to cite anything is
-      caught by the same predicate as a known one;
+    * an origin that cannot say where it came from, or one the log no longer
+      holds — see ``live_origin``;
     * entries the fold no longer holds. A candidate over an entry a correction
       removed is a candidate about something that is not there any more, and
-      quoting it would be quoting a claim the main has already taken back;
-    * entries that sit on no loop the ledger holds. A surface that touches no
-      wanting is bounded by nothing, and unbounded is the failure this module
-      exists to prevent.
+      quoting it would be quoting a claim the main has already taken back. **A
+      candidate loses none of its entries and keeps going**: if one of a
+      tension's two sides is gone, the tension is not a disagreement any more
+      and the whole candidate goes;
+    * any loop its entries name that the bound refuses. All or nothing: a raise
+      that quietly touched a second wanting the bound never saw is a second
+      wanting nagged with no record of it.
 
-    A candidate whose entries sit on **two** loops becomes two choices, each
-    narrowed to its own loop's entries. That is deliberate rather than
-    convenient: one raise quietly touching a second wanting is a second wanting
-    nagged with no record of it, and the bound only protects the loop the touch
-    names.
+    A candidate whose entries name **no** loop is kept. It raises nothing, so
+    there is nothing for the nagging bound to say about it, and the day marker
+    plus the transition rule are what hold it.
     """
-    if not isinstance(candidate, Candidate) or not candidate.origin.traceable:
-        return []
-    held: Mapping[str, Mapping[str, Any]] = (
-        beliefs if isinstance(beliefs, Mapping) else {}
-    )
-    by_loop: dict[str, list[str]] = {}
+    if not isinstance(candidate, Candidate):
+        return None
+    if not live_origin(candidate.origin, view=view):
+        return None
+    if not candidate.entries:
+        return None
+
+    named: list[str] = []
     for entry in candidate.entries:
-        record = held.get(entry) if isinstance(entry, str) else None
+        record = view.beliefs.get(entry) if isinstance(entry, str) else None
         if not isinstance(record, Mapping):
-            continue
+            return None  # a side that is gone is not a side
         slug = record.get(LOOP)
-        if not isinstance(slug, str) or slug not in loops:
-            continue
-        by_loop.setdefault(slug, []).append(entry)
-    return [
-        Choice(
-            candidate=candidate,
-            loop=slug,
-            entries=tuple(entries),
-            periods=_periods(loops[slug], now=now),
-        )
-        # Sorted so that the *construction* order does not depend on the order
-        # ``entries`` happened to arrive in either. Everything below this
-        # module is deterministic; nothing above it should have to hope so.
-        for slug, entries in sorted(by_loop.items())
-    ]
+        if isinstance(slug, str) and slug and slug not in named:
+            named.append(slug)
+
+    quietest: float | None = None
+    degraded: list[str] = []
+    for slug in named:
+        bound = touchable(loops.get(slug), touches=view.touches, now=now)
+        if not bound.may_touch:
+            return None
+        if bound.degraded:
+            degraded.append(slug)
+        held = loops.get(slug)
+        periods = _periods(held, now=now) if held is not None else None
+        if periods is not None and (quietest is None or periods > quietest):
+            quietest = periods
+
+    return Choice(
+        candidate=candidate,
+        # Sorted so that construction order does not depend on the order the
+        # entries happened to arrive in. Everything below this module is
+        # deterministic; nothing above it should have to hope so.
+        loops=tuple(sorted(named)),
+        entries=tuple(candidate.entries),
+        periods=quietest,
+        degraded=tuple(sorted(degraded)),
+    )
 
 
 def eligible(
-    candidates: Iterable[Candidate] | None,
-    *,
-    beliefs: Mapping[str, Mapping[str, Any]] | None,
-    loops: Mapping[str, Mapping[str, Any]] | None,
-    touches: Mapping[str, Mapping[str, Any]] | None,
-    now: object,
+    candidates: Iterable[Candidate] | None, *, view: SurfaceView, now: object
 ) -> tuple[Choice, ...]:
     """Every choice that may be raised at ``now``, best first.
 
@@ -355,35 +438,26 @@ def eligible(
     nagging — one that has candidates and says nothing — which is a different
     and worse rule than the one this story states.
     """
-    held = read_loops(loops)
+    held = read_loops(view.loops)
     found: list[Choice] = []
     seen: set[tuple[str, str, str]] = set()
     for candidate in candidates or ():
-        for choice in candidates_for(
-            candidate, beliefs=beliefs, loops=held, now=now
-        ):
-            if not touchable(
-                held.get(choice.loop), touches=touches, now=now
-            ).may_touch:
-                continue
-            # Deduplicated on exactly the key the ordering breaks ties with, so
-            # a pass that produced the same candidate twice cannot make the
-            # order depend on how many times it did.
-            key = (choice.loop, choice.origin.kind, choice.origin.id)
-            if key in seen:
-                continue
-            seen.add(key)
-            found.append(choice)
+        choice = choices_for(candidate, view=view, loops=held, now=now)
+        if choice is None:
+            continue
+        # Deduplicated on exactly the key the ordering breaks ties with, so a
+        # pass that produced the same candidate twice cannot make the order
+        # depend on how many times it did.
+        key = (choice.order[1], choice.origin.kind, choice.origin.id)
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(choice)
     return tuple(sorted(found, key=lambda choice: choice.order))
 
 
 def choose(
-    candidates: Iterable[Candidate] | None,
-    *,
-    beliefs: Mapping[str, Mapping[str, Any]] | None,
-    loops: Mapping[str, Mapping[str, Any]] | None,
-    touches: Mapping[str, Mapping[str, Any]] | None,
-    now: object,
+    candidates: Iterable[Candidate] | None, *, view: SurfaceView, now: object
 ) -> Choice | None:
     """The one thing worth saying at ``now``, or ``None``.
 
@@ -398,9 +472,7 @@ def choose(
     ``Choice`` and there is no plural door out of this module onto the send
     path.
     """
-    found = eligible(
-        candidates, beliefs=beliefs, loops=loops, touches=touches, now=now
-    )
+    found = eligible(candidates, view=view, now=now)
     return found[0] if found else None
 
 

@@ -37,7 +37,7 @@ from half.model.budget import Budget
 from half.model.port import Classifier
 from half.model.tier import Tiers
 from half.schedule.tick import Scheduler
-from half.surface.morning import MorningPass, MorningSurface
+from half.surface.morning import MorningPass, Mornings, MorningSurface
 from half.secrets import FileSecretStore
 from half.store.sources import LocalSourceStore
 from half.store.store import Store
@@ -58,6 +58,12 @@ class Wiring:
     #: can assert without starting a process — the failure this story exists to
     #: end is a surface reachable only from tests.
     scheduler: Scheduler
+    #: What the mornings did — counts by reason, never content (AD-22, AD-32).
+    #: Owned here rather than inside the surface so that the outcome of every
+    #: morning has somewhere to go in the shipped process: before review each
+    #: one was discarded, which made a permanently silent main indistinguishable
+    #: from a main with a quiet life.
+    mornings: Mornings
     #: The crisis classifier's holders, one per main that has both a tier and a
     #: key (story 6d). Always constructed and possibly empty: a deployment with
     #: neither gets story 6a's offline gate, which is a supported shape rather
@@ -122,18 +128,21 @@ def build(config: Config, token: str) -> Wiring:
     # one of them: what it excludes is a second drain of this queue, not a
     # second write to one main — that is still the actor's mutex, and the tick
     # goes through it like everything else.
+    mornings = Mornings()
     scheduler = Scheduler(
         registry=registry,
         mains=tuple(config.mains.values()),
         root=config.root,
         work=MorningPass(
             consolidate=TensionPass(ledger=registry),
-            surface=MorningSurface(ledger=registry, channel=channel),
+            surface=MorningSurface(
+                ledger=registry, channel=channel, mornings=mornings
+            ),
         ),
     )
 
     return Wiring(channel=channel, registry=registry, secrets=secrets,
-                  sources=sources, scheduler=scheduler,
+                  sources=sources, scheduler=scheduler, mornings=mornings,
                   second=second_opinion(config, secrets))
 
 
@@ -235,6 +244,10 @@ async def serve(config: Config, token: str) -> None:
                 # about people on a schedule.
                 ticker.cancel()
     finally:
+        # What the mornings did, once, on the way out — counts only (AD-22).
+        # Without it a process that ran for a month and never once spoke would
+        # end with nothing anywhere saying so.
+        wiring.mornings.flush()
         # What the classifier did, once, on the way out — counts only (AD-22).
         # Without it a process that ran for a week with a wholly failing
         # classifier could end without ever reaching a round number.

@@ -70,6 +70,7 @@ markers = [
     "cap7_neutrality: neither side of a tension is wrong — nothing ranks the two entries or records one as mistaken",
     "cap8: the morning surface — at most one unprompted message a day, traceable to the preceding pass, and silence when there is nothing worth saying",
     "cap8_silence: silence is the ordinary outcome and not a degraded one — every gate, in every order, and the ceiling that makes aftercare silent with no aftercare branch",
-    "cap8_nagging: a loop is never touched faster than its own timescale — the bound derived per loop, the record it reads, and its separation from movement",
+    "cap8_nagging: a loop is never touched faster than its own timescale — the bound derived per loop, the record it reads, and its separation from both movement and a spent day",
+    "cap8_structure: the single-case structural rules the surface rests on — the narrowed view, the ceiling that cannot be bypassed, and the walls between a raise, a movement and a day",
     "offline: the suite reaches no network, asserted at the socket rather than by convention",
 ]

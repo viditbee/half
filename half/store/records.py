@@ -214,8 +214,7 @@ ZONE: Final[str] = "zone"
 NEXT_PASS_AT: Final[str] = "next_pass_at"
 TOLD_ZONE: Final[str] = "told_zone"
 
-#: What a ``touch`` record cites: the kind of thing in the preceding pass it
-#: came from, and that thing's id (CAP-8, story 10).
+#: What a ``touch`` record carries besides the loop it raised (CAP-8, story 10).
 #:
 #: Named here for the reason ``ZONE`` and ``NEXT_PASS_AT`` are: the layer that
 #: owns record shapes owns the spelling, and ``half.surface`` — which sits
@@ -224,24 +223,73 @@ TOLD_ZONE: Final[str] = "told_zone"
 #: open-loop package sits *below* this module, and a touch names its loop in
 #: exactly that field, so that ``BeliefLog.expunge_bodies`` tombstones a touch
 #: on an erased loop by the same match that tombstones its transitions.
+#:
+#: ``ORIGIN_KIND``/``ORIGIN_ID`` are what a surface cites — where in the
+#: preceding pass it came from.
+#:
+#: ``LOCAL_DAY`` is **the day marker**, and it is the record's second, separate
+#: job. A touch may raise a loop, may spend a main's one unprompted message for
+#: a day, or may do both, and the two facts have to be distinguishable: CAP-10's
+#: interrupt is a second thing that will raise a loop, and the day it lands it
+#: would silently consume the morning budget if *any* raise counted as one. So a
+#: record consumes the day if and only if it carries a ``local_day``, and the
+#: interrupt will write a raise without one.
+#:
+#: It is the **stored** day rather than one recomputed later, which is the other
+#: half of the rule. A main who moves west between two mornings would otherwise
+#: have yesterday's raise recomputed under today's zone and land on today —
+#: reproduced as two messages five hours apart.
 ORIGIN_KIND: Final[str] = "origin_kind"
 ORIGIN_ID: Final[str] = "origin_id"
+LOCAL_DAY: Final[str] = "local_day"
+
+#: Whether a message actually reached the main for that day. Beside
+#: ``LOCAL_DAY`` rather than folded into it, because the day is spent by two
+#: different events and a metrics path has to tell them apart: an ordinary
+#: morning (``True``), and the one case where Half consumes a day deliberately
+#: without speaking — a day marker it could not read, repaired by writing a
+#: readable one, so that an unreadable marker costs one morning instead of
+#: every morning after it (``False``).
+SENT: Final[str] = "sent"
+
+#: The civil-date shape a day marker takes: ``2026-09-01``, as the main would
+#: read it off a wall clock in the zone they told Half.
+_CIVIL_DAY: Final[re.Pattern[str]] = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 #: Everything a touch record may carry, beside the reserved four. An
 #: **allowlist**, for the reason ``TENSION_FIELDS`` is one: every denylist this
 #: codebase has shipped was walked around, and a touch is the record that sits
-#: closest to the thing it must never contain. It says *what Half raised and
-#: when*; a ``claim``, a ``state`` or a ``last_movement`` riding in beside it
-#: would be, respectively, belief content made permanent (AD-22), a wanting
-#: demoted by Half's own attention, and Half's contact recorded as the main's
-#: progress — the exact conflation story 8 split this op out to prevent.
+#: closest to the thing it must never contain. It says *what Half raised, when,
+#: and whether that spent the day*; a ``claim``, a ``state`` or a
+#: ``last_movement`` riding in beside it would be, respectively, belief content
+#: made permanent (AD-22), a wanting demoted by Half's own attention, and Half's
+#: contact recorded as the main's progress — the exact conflation story 8 split
+#: this op out to prevent.
+#:
+#: ``tombstone`` is deliberately **absent**, unlike ``TENSION_FIELDS``. Review
+#: found that listing it let a caller write ``tombstone=True`` on a live touch
+#: through ``Store.record``: durable, skipped by the fold, and therefore
+#: invisible to both the daily rule and the bound. ``BeliefLog.expunge_bodies``
+#: does not need the allowance — it builds its stub and appends the line itself,
+#: without passing through this gate at all.
 TOUCH_FIELDS: Final[frozenset[str]] = frozenset(
-    {
-        LOOP, ORIGIN_KIND, ORIGIN_ID,
-        # Written by ``BeliefLog.expunge_bodies``, never by a caller.
-        "tombstone",
-    }
+    {LOOP, ORIGIN_KIND, ORIGIN_ID, LOCAL_DAY, SENT}
 )
+
+
+def is_civil_day(value: object) -> bool:
+    """Whether ``value`` is a day marker this build can read. Never raises.
+
+    Shape **and** calendar: ``2026-02-31`` matches the pattern and is not a
+    day, and a marker nothing can read is the failure the day rule fell into
+    once already.
+    """
+    return (
+        isinstance(value, str)
+        and _CIVIL_DAY.fullmatch(value) is not None
+        and moment(value) is not None
+    )
+
 
 #: The one record kind the scheduler may see, and the only fields of it that
 #: leave the store. Narrowed by field for the reason ``HANDOFF_VISIBLE`` is: a
@@ -461,6 +509,8 @@ _TYPED_FIELDS: Final[dict[str, type | tuple[type, ...]]] = {
     # read back, permanently.
     ORIGIN_KIND: str,
     ORIGIN_ID: str,
+    LOCAL_DAY: str,
+    SENT: bool,
     # The tension ledger (CAP-7). ``between`` names the two entries that
     # disagree, validated at the append for the reason every field above is:
     # the log is append-only, so a ``between`` stored as a bare string is a
@@ -652,49 +702,101 @@ def validate_touch_fields(fields: Mapping[str, Any]) -> None:
     schedule record and a tension — and here the strictness protects the two
     rules that exist to keep Half quiet.
 
-    * ``loop`` — **required**, and required for two reasons at once. The fold
-      raises ``CorruptLogError`` on a touch that names none, exactly as it does
-      for a transition; and a raise that names no loop bounds no loop, so the
-      per-loop bound would go on answering *may raise* for ever. Refused before
-      it is durable.
-    * ``origin_kind`` — one of the closed set, and **required**. This is
-      *"nothing is surfaced that cannot say where it came from"* written as a
-      check rather than as a paragraph: a touch that cites nothing is a message
-      the log cannot trace to the pass that produced it, and the log is
-      append-only, so it is untraceable for ever.
-    * ``origin_id`` — required and non-empty, for the same reason. A kind
-      without an id names a category, not a thing in a pass.
-    * **nothing outside ``TOUCH_FIELDS``.** The allowlist is the point. A
-      ``claim`` arriving beside the loop is belief content written into a
-      content-free record (AD-22); a ``state`` or a ``last_movement`` is Half's
-      own attention recorded as the main's progress, which is the conflation
-      story 8 refused and this op exists to keep refusing. The natural way that
-      arrives is not malice — it is one helpful line recording *"and the loop
-      is stalled"* beside the raise.
+    A touch does one of two jobs, or both, and it must do at least one:
 
-    There is no branch here that supplies a missing origin, none that picks a
-    loop, and none that defaults a kind.
+    * it **raises a loop** — ``loop`` names the wanting, and the per-loop
+      nagging bound measures the next raise against this one;
+    * it **spends the day** — ``local_day`` is the main's own civil date, and
+      the one-a-day rule reads it.
+
+    A record carrying neither says nothing and is refused: the fold raises
+    ``CorruptLogError`` on one, and folding it to nothing is the silent
+    omission AD-29 exists to prevent.
+
+    The rest:
+
+    * ``local_day`` — the **stored** day, in shape *and* calendar. A marker
+      nothing can read is a main silenced on every morning after it, which is
+      the failure review reproduced; ``2026-02-31`` matches the shape and is
+      not a day, so ``is_civil_day`` checks both. Refused before it is durable.
+    * ``sent`` — a bool, and **required with** ``local_day``. A day spent
+      without a message is a real and deliberate outcome (see ``SENT``), and a
+      marker that cannot say which it was is a metrics path with nothing to
+      count.
+    * ``sent`` without ``local_day`` is refused: it would claim a message was
+      sent on no particular day.
+    * ``origin_kind``/``origin_id`` — required of any touch that **surfaced
+      something**: one that raised a loop, or one that sent a message. This is
+      *"nothing is surfaced that cannot say where it came from"* written as a
+      check rather than as a paragraph. A day marker that raised nothing and
+      sent nothing cites nothing, because there is nothing to cite.
+    * **nothing outside ``TOUCH_FIELDS``.** The allowlist is the point — see
+      that constant, including why ``tombstone`` is not in it.
+
+    There is no branch here that supplies a missing origin, picks a loop,
+    defaults a kind, or invents a day.
 
     The read direction is deliberately looser — see ``half.store.fold``, which
-    is fatal on a missing loop and tolerant of everything else — so a log
-    written by a later build, through the Ask-First path that adds an origin
-    kind, costs one loop its bound rather than taking a main's whole store
-    down.
+    is fatal only on a record that names neither job — so a log written by a
+    later build, through the Ask-First path that adds an origin kind, costs one
+    loop its bound rather than taking a main's whole store down.
     """
-    loop = fields.get(LOOP)
-    if not isinstance(loop, str) or not loop.strip():
+    stray = sorted(fields.keys() - TOUCH_FIELDS)
+    if stray:
         raise TouchError(
-            f"a {Op.TOUCH.value} record must name the loop it raised in "
-            f"{LOOP!r}; the fold cannot fold one that does not, and a raise "
-            f"that names no loop bounds no loop — the record would be durable"
+            f"a {Op.TOUCH.value} record may not carry {stray}: a touch is the "
+            f"loop Half raised, the day it spent, and what it cited. A claim "
+            f"written here is content no correction can take back, and a state "
+            f"or a movement date written here is Half's own attention recorded "
+            f"as the main's progress"
         )
+    loop = fields.get(LOOP)
+    raises = loop is not None
+    if raises and (not isinstance(loop, str) or not loop.strip()):
+        raise TouchError(
+            f"a {Op.TOUCH.value} record that names a loop must name it as a "
+            f"non-empty slug in {LOOP!r}; a raise that names no loop bounds no "
+            f"loop, and the record would be durable"
+        )
+    day = fields.get(LOCAL_DAY)
+    marks = day is not None
+    if not raises and not marks:
+        raise TouchError(
+            f"a {Op.TOUCH.value} record must either name the loop it raised in "
+            f"{LOOP!r} or the day it spent in {LOCAL_DAY!r}; one that does "
+            f"neither records nothing, and the fold cannot fold it"
+        )
+    if marks and not is_civil_day(day):
+        raise TouchError(
+            f"field {LOCAL_DAY!r} must be the main's own civil day this build "
+            f"can read (YYYY-MM-DD), got {day!r}; a day marker nothing can read "
+            f"is a main silenced on every morning after it, and the record "
+            f"would be durable"
+        )
+    sent = fields.get(SENT)
+    if sent is not None and not marks:
+        raise TouchError(
+            f"field {SENT!r} says whether a message reached the main for a "
+            f"particular day; it may not be carried without {LOCAL_DAY!r}"
+        )
+    if marks and not isinstance(sent, bool):
+        raise TouchError(
+            f"a {Op.TOUCH.value} record marking a day must say in {SENT!r} "
+            f"whether a message reached the main, got {type(sent).__name__}; a "
+            f"day spent without one is a real outcome and has to be countable"
+        )
+    if not (raises or sent):
+        # A day marker that raised nothing and sent nothing — the repair path.
+        # It cites nothing because it surfaced nothing.
+        return
     kind = fields.get(ORIGIN_KIND)
     if kind not in TOUCH_ORIGINS:
         raise TouchError(
             f"field {ORIGIN_KIND!r} must be one of "
-            f"{', '.join(sorted(TOUCH_ORIGINS))} on a {Op.TOUCH.value} record, "
-            f"got {kind!r}; nothing is surfaced that cannot say where it came "
-            f"from, and the log is append-only"
+            f"{', '.join(sorted(TOUCH_ORIGINS))} on a {Op.TOUCH.value} record "
+            f"that raised a loop or sent a message, got {kind!r}; nothing is "
+            f"surfaced that cannot say where it came from, and the log is "
+            f"append-only"
         )
     origin = fields.get(ORIGIN_ID)
     if not isinstance(origin, str) or not origin.strip():
@@ -702,15 +804,6 @@ def validate_touch_fields(fields: Mapping[str, Any]) -> None:
             f"field {ORIGIN_ID!r} must name the thing in the preceding pass "
             f"this raise came from; a kind with no id names a category rather "
             f"than a thing, got {type(origin).__name__}"
-        )
-    stray = sorted(fields.keys() - TOUCH_FIELDS)
-    if stray:
-        raise TouchError(
-            f"a {Op.TOUCH.value} record may not carry {stray}: a touch is the "
-            f"loop Half raised and what it cited. A claim written here is "
-            f"content no correction can take back, and a state or a movement "
-            f"date written here is Half's own attention recorded as the main's "
-            f"progress"
         )
 
 

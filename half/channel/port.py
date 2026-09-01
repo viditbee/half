@@ -74,6 +74,16 @@ class Channel(Protocol):
 
         Raises ``ForbiddenRecipient`` for any other address (AD-25) and
         ``NotReachable`` when ``capability_query`` would refuse.
+
+        **The result says how much was carried, and a caller may rely on it.**
+        ``SendResult.parts`` is the number of physical messages the platform
+        accepted; **zero means nothing was delivered**, which an adapter may
+        answer instead of raising — ``TelegramChannel.send`` does exactly that
+        for a body the platform would reject. A caller that discards the result
+        therefore records a non-delivery as a message sent, which is how the
+        morning surface came to spend a main's one unprompted message on
+        nothing (story 10, review). This sentence is the contract that
+        ``half.surface.morning._delivered`` reads.
         """
         ...
 
