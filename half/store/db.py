@@ -35,12 +35,20 @@ CEILING_KEY: Final[str] = "ceiling"
 CRISIS_KEY: Final[str] = "crisis"
 AFTERCARE_KEY: Final[str] = "aftercare"
 SCHEDULE_KEY: Final[str] = "schedule"
+LAST_TOUCH_KEY: Final[str] = "last_touch"
 
 #: Shape of the derived view. Bumped whenever a column or an FTS table changes.
 #: SQLite here is derived and disposable (AD-3), so a mismatch is resolved by
 #: discarding it and replaying the log — never by an in-place migration, which
 #: would be a second way for derived state to exist that the log does not
 #: describe.
+#:
+#: v10 added the ``touches`` table and the ``last_touch`` row (story 10). A
+#: view built by v9 has nowhere to put either, so a stale one surviving the
+#: upgrade would report every loop as never raised and every day as one on
+#: which Half had said nothing — the nagging bound and the one-a-day rule both
+#: answering *yes* for the whole population, produced by the derived store
+#: rather than by the log. Discard and replay (AD-3).
 #:
 #: v9 changed the fold's **tension** semantics (story 9c), and the bump is not
 #: optional even though no table changed. Two things moved at once: a tension
@@ -65,13 +73,13 @@ SCHEDULE_KEY: Final[str] = "schedule"
 #: loop in the shared ``expunged`` set, where the new transition guard does not
 #: look — so a stale view surviving the upgrade would have a main's ranking
 #: function disagree with their own log about which wantings are still open.
-DERIVED_VERSION: Final[int] = 9
+DERIVED_VERSION: Final[int] = 10
 
 #: Every object this module owns, in an order safe to drop: the FTS table
 #: references ``beliefs`` as its external content.
 _TABLES: Final[tuple[str, ...]] = (
     "belief_fts", "beliefs", "tensions", "loops", "expunged", "expunged_loops",
-    "governance",
+    "governance", "touches",
 )
 
 #: There is deliberately no ``license`` column. One existed, materialized from
@@ -112,6 +120,14 @@ CREATE TABLE IF NOT EXISTS expunged_loops (id TEXT PRIMARY KEY) STRICT;
 -- like every other table here — the authority is the ``ceiling``, ``crisis``
 -- and ``aftercare`` ops in the log.
 CREATE TABLE IF NOT EXISTS governance (key TEXT PRIMARY KEY, value TEXT) STRICT;
+
+-- What Half raised and when, one row per loop (CAP-8). Keyed by the loop's own
+-- slug rather than by the append's id, because the question is always "when did
+-- Half last raise this wanting?". Kept apart from ``loops`` for the reason
+-- ``expunged_loops`` is kept apart from ``expunged``: a raise written into the
+-- loop row would be Half's own attention indistinguishable from the main's
+-- progress, and every ranking function above reads that row.
+CREATE TABLE IF NOT EXISTS touches (id TEXT PRIMARY KEY, data TEXT NOT NULL) STRICT;
 
 -- Indexes the *terms* columns rather than the raw text, because a script
 -- written without word spaces arrives as one unicode61 token and is then
@@ -207,7 +223,7 @@ def rebuild(
         # and consults nothing.
         conn.execute("INSERT INTO belief_fts(belief_fts) VALUES('delete-all')")
         for table in ("beliefs", "tensions", "loops", "expunged",
-                      "expunged_loops", "governance"):
+                      "expunged_loops", "governance", "touches"):
             conn.execute(f"DELETE FROM {table}")
 
         for ident, data in state.beliefs.items():
@@ -243,11 +259,17 @@ def rebuild(
         if state.schedule is not None:
             conn.execute("INSERT INTO governance (key, value) VALUES (?,?)",
                          (SCHEDULE_KEY, _dump(state.schedule)))
+        if state.last_touch is not None:
+            conn.execute("INSERT INTO governance (key, value) VALUES (?,?)",
+                         (LAST_TOUCH_KEY, _dump(state.last_touch)))
         for ident, data in state.tensions.items():
             conn.execute("INSERT INTO tensions (id, data) VALUES (?,?)",
                          (ident, _dump(data)))
         for ident, data in state.loops.items():
             conn.execute("INSERT INTO loops (id, data) VALUES (?,?)",
+                         (ident, _dump(data)))
+        for ident, data in state.touches.items():
+            conn.execute("INSERT INTO touches (id, data) VALUES (?,?)",
                          (ident, _dump(data)))
         for ident in sorted(state.expunged):
             conn.execute("INSERT INTO expunged (id) VALUES (?)", (ident,))
@@ -274,6 +296,8 @@ def read_state(conn: sqlite3.Connection) -> State:
         state.tensions[row["id"]] = json.loads(row["data"])
     for row in conn.execute("SELECT id, data FROM loops ORDER BY id"):
         state.loops[row["id"]] = json.loads(row["data"])
+    for row in conn.execute("SELECT id, data FROM touches ORDER BY id"):
+        state.touches[row["id"]] = json.loads(row["data"])
     for row in conn.execute("SELECT id FROM expunged ORDER BY id"):
         state.expunged.add(row["id"])
     for row in conn.execute("SELECT id FROM expunged_loops ORDER BY id"):
@@ -290,6 +314,9 @@ def read_state(conn: sqlite3.Connection) -> State:
     row = conn.execute("SELECT value FROM governance WHERE key = ?",
                        (SCHEDULE_KEY,)).fetchone()
     state.schedule = json.loads(row["value"]) if row is not None else None
+    row = conn.execute("SELECT value FROM governance WHERE key = ?",
+                       (LAST_TOUCH_KEY,)).fetchone()
+    state.last_touch = json.loads(row["value"]) if row is not None else None
     return state
 
 

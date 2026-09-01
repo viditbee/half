@@ -37,6 +37,7 @@ from half.model.budget import Budget
 from half.model.port import Classifier
 from half.model.tier import Tiers
 from half.schedule.tick import Scheduler
+from half.surface.morning import MorningPass, MorningSurface
 from half.secrets import FileSecretStore
 from half.store.sources import LocalSourceStore
 from half.store.store import Store
@@ -99,14 +100,23 @@ def build(config: Config, token: str) -> Wiring:
     # bounded concurrency, holding a file lock so a second worker cannot drain
     # the same queue.
     #
-    # **What it runs is the consolidation pass** (CAP-7, story 9c), not
-    # ``Nothing``. Story 9a shipped the thing that runs a pass before any pass
-    # existed, which was correct then and is the placeholder now: a tick that
-    # drains a queue and calls a no-op is a scheduler nobody has proved runs
-    # work. ``TensionPass`` re-evaluates each main's tensions against the
-    # instant the tick read and appends the transitions that follow — no model
-    # call, no network, and nothing sent to anybody, because deciding whether
-    # any of it is worth saying is story 10's.
+    # **What it runs is the consolidation pass and then the morning surface**
+    # (CAP-7, CAP-8). Story 9a shipped the thing that runs a pass before any
+    # pass existed and story 9c hung the pass on it; this is the first wiring in
+    # which Half can speak first. ``TensionPass`` re-evaluates each main's
+    # tensions against the instant the tick read and appends the transitions
+    # that follow; ``MorningSurface`` then chooses at most one of them, proves
+    # it may be said, and sends it — or, on most mornings, sends nothing, which
+    # is the ordinary outcome and not a degraded one (AD-27).
+    #
+    # No model call anywhere on this path. Composing the sentence is a later
+    # story; what runs here decides *what* to say and whether it may be said.
+    #
+    # Wired **by value**: the surface is handed this wiring's own registry and
+    # this wiring's own channel, so that "the morning surface reaches the
+    # shipped product" is something a test can assert by identity rather than
+    # by finding a keyword's name in the source — which is how story 6d's
+    # identical claim passed with the value set to ``None``.
     #
     # The lock lives in ``config.root``, beside the mains rather than inside any
     # one of them: what it excludes is a second drain of this queue, not a
@@ -116,7 +126,10 @@ def build(config: Config, token: str) -> Wiring:
         registry=registry,
         mains=tuple(config.mains.values()),
         root=config.root,
-        work=TensionPass(ledger=registry),
+        work=MorningPass(
+            consolidate=TensionPass(ledger=registry),
+            surface=MorningSurface(ledger=registry, channel=channel),
+        ),
     )
 
     return Wiring(channel=channel, registry=registry, secrets=secrets,

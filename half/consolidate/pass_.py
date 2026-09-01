@@ -45,9 +45,20 @@ exactly the case ``plan`` reports rather than guessing at, and one of them must
 not cost a main the other nine. A tension that cannot be evaluated **keeps the
 state it has**, is counted, and never blocks the rest.
 
-**Nothing here contacts anybody.** The pass produces log records and a count.
-Deciding whether any of it is worth saying is story 10's, and *sending nothing*
-is a first-class outcome (AD-27) rather than this module's failure mode.
+**Nothing here contacts anybody, and that is still true.** The pass produces
+log records, a count, and — since story 10 — the *candidates* a morning surface
+may choose from. It does not choose one, does not decide whether any of it is
+worth saying, and does not send anything: that is ``half.surface.morning``'s,
+and *sending nothing* is a first-class outcome (AD-27) rather than this
+module's failure mode.
+
+**A candidate is produced only for a tension that actually moved.** *"Every
+surface traces to the preceding pass"* (CAP-8) is a property of this line and
+not of a docstring: a tension the pass re-evaluated and left where it was did
+not come *from* this pass, and one whose transition could not be appended is
+not in the log, so neither is a candidate. On an ordinary night nothing moves,
+so the pass produces none — which is what makes silence the ordinary outcome
+rather than a mode something has to select.
 
 **Nothing here ranks the two sides of a tension.** No result carries a winner,
 no append names the entry that moved, and the counts below are counts.
@@ -63,6 +74,9 @@ from typing import Any, Protocol
 
 from half.errors import HalfError
 from half.schedule.clock import Now
+from half.store.ops import TOUCH_TENSION
+from half.surface.choose import Candidate
+from half.surface.touch import Origin
 from half.tensions import ledger as tension_ledger
 from half.tensions.states import STATE
 
@@ -125,6 +139,24 @@ class PassResult:
     #: nine tensions — and the next pass will compute the same answer again,
     #: since nothing was recorded.
     unrecorded: tuple[str, ...] = ()
+    #: What this pass produced that a morning surface may choose from (CAP-8).
+    #:
+    #: **Only what moved, and only what was recorded.** A tension that computed
+    #: to the state it already held did not come from this pass, and one whose
+    #: transition could not be written is not in the log — so neither is
+    #: traceable to it, and *"nothing is surfaced that cannot say where it came
+    #: from"* would be false the moment either were included.
+    #:
+    #: Empty on an ordinary night, which is the ordinary night. Nothing here
+    #: reaches for something to say when a pass found nothing (AD-27).
+    #:
+    #: Carries ids only, never content (AD-22): the origin names the tension
+    #: and the entries name the two beliefs it links. Which *loop* they sit on
+    #: is deliberately not answered here — the pass reads a projection of the
+    #: log narrowed to id, stamp and support (``records.HISTORY_VISIBLE``), so
+    #: it cannot see a belief's loop and must not be widened until it can.
+    #: ``half.surface.choose`` attaches it from the fold.
+    candidates: tuple[Candidate, ...] = ()
 
     @property
     def seen(self) -> int:
@@ -177,12 +209,7 @@ class TensionPass:
         them, and the next pass computes the same answer again from the same
         log, because nothing was recorded.
         """
-        result = await self.evaluate(main_id, now)
-        if result.unrecorded:
-            raise TensionPassIncomplete(
-                f"{len(result.unrecorded)} transition(s) for main={main_id} "
-                f"could not be recorded"
-            )
+        completed(await self.evaluate(main_id, now), main_id=main_id)
 
     async def evaluate(self, main_id: str, now: Now) -> PassResult:
         """One main's pass, with what it found.
@@ -201,7 +228,7 @@ class TensionPass:
         a coroutine that is not yielding.
         """
         table, history = await self.ledger.tension_view(main_id)
-        found, premise = await asyncio.to_thread(
+        found, premise, pairs = await asyncio.to_thread(
             _decide, table=table, history=history, at=now.stamp
         )
 
@@ -218,6 +245,7 @@ class TensionPass:
 
         moved: dict[str, str] = {}
         unrecorded: list[str] = []
+        candidates: list[Candidate] = []
         for tension_id, fields in found.transitions.items():
             try:
                 await self.ledger.note_transition(
@@ -241,12 +269,26 @@ class TensionPass:
                 )
                 continue
             moved[tension_id] = str(fields.get(STATE))
+            # A candidate is minted **after** the append landed, inside the
+            # loop, so the two cannot disagree: a transition that raised on the
+            # line above is in ``unrecorded`` and reaches no candidate list.
+            # *"Every surface traces to the preceding pass"* means the pass as
+            # the log will show it, not as it was planned.
+            side = pairs.get(tension_id, ())
+            if side:
+                candidates.append(
+                    Candidate(
+                        origin=Origin(kind=TOUCH_TENSION, id=tension_id),
+                        entries=side,
+                    )
+                )
 
         return PassResult(
             moved=moved,
             unchanged=found.unchanged,
             incomputable=dict(found.incomputable),
             unrecorded=tuple(unrecorded),
+            candidates=tuple(candidates),
         )
 
 
@@ -261,19 +303,47 @@ class TensionPassIncomplete(HalfError):
     """
 
 
+def completed(result: PassResult, *, main_id: str) -> PassResult:
+    """``result``, or ``TensionPassIncomplete`` if the log is missing writes.
+
+    One spelling of *"a night on which every write failed is not a quiet
+    night"*, so that the scheduler's ordinary entry point and the morning
+    surface — which needs the same result *before* the raise, because a night
+    with one failed transition still has things worth saying — cannot come to
+    disagree about when a pass counts as having run.
+    """
+    if result.unrecorded:
+        raise TensionPassIncomplete(
+            f"{len(result.unrecorded)} transition(s) for main={main_id} "
+            f"could not be recorded"
+        )
+    return result
+
+
 def _decide(
     *,
     table: Mapping[str, Mapping[str, Any]],
     history: Sequence[Mapping[str, Any]],
     at: str,
-) -> tuple[tension_ledger.Plan, dict[str, str | None]]:
+) -> tuple[
+    tension_ledger.Plan, dict[str, str | None], dict[str, tuple[str, ...]]
+]:
     """The whole deciding half: pure, total, and run off the event loop.
 
-    Returns the plan and the state each tension was in when it was planned, so
-    the append can refuse a premise that moved underneath it. Both come out of
-    one ``read`` of one table, which is what makes the premise the plan's own
+    Returns the plan, the state each tension was in when it was planned — so
+    the append can refuse a premise that moved underneath it — and the pair
+    each one links, which is what a candidate's ``entries`` are. All three come
+    out of one ``read`` of one table, which is what makes them the plan's own
     rather than a second look at a log that may have moved again.
+
+    The pair travels from here rather than being re-read after the append, for
+    the same reason the premise does: a correction landing between the two
+    reads would hand the surface a pair the plan never saw.
     """
     tensions = tension_ledger.read(table)
     found = tension_ledger.plan(tensions, history=history, now=at)
-    return found, {ident: item.state for ident, item in tensions.items()}
+    return (
+        found,
+        {ident: item.state for ident, item in tensions.items()},
+        {ident: item.between for ident, item in tensions.items()},
+    )

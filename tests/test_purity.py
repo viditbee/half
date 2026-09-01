@@ -66,6 +66,20 @@ PURE_MODULES = (
     "half/tensions/states.py",
     "half/tensions/widening.py",
     "half/tensions/ledger.py",
+    # The morning surface's two pure halves (CAP-8, story 10). The nagging
+    # bound is *"never faster than the loop's own timescale"* measured between
+    # an injected ``now`` and a stamp out of the log; a clock in either of
+    # these would make the bound a number two builds reading one log disagree
+    # about, and the failure is one-directional — a clock that read slightly
+    # ahead would let every loop be raised again immediately.
+    #
+    # ``half/surface/morning.py`` is deliberately **not** here: it is the half
+    # that reads a store, sends on a channel and takes an injected ``Now`` from
+    # the scheduler, which is what ``half/store/store.py`` is excluded for. That
+    # it reads no clock of its own is covered by the whole-tree scan in
+    # ``tests/test_schedule.py``, which is strictly stronger.
+    "half/surface/touch.py",
+    "half/surface/choose.py",
 )
 
 #: **``half/schedule/due.py`` is deliberately not in that list**, and the reason

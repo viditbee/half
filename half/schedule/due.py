@@ -57,8 +57,8 @@ from half.store.records import NEXT_PASS_AT, TOLD_ZONE, ZONE
 #: ``half.store.records`` itself.)
 __all__ = [
     "Due", "FALLBACK_ZONE", "JITTER_SECONDS", "NEXT_PASS_AT", "PRE_DAWN_HOUR",
-    "TOLD_ZONE", "WINDOW_HOURS", "ZONE", "in_window", "jitter", "next_pass_at",
-    "resolve", "scheduled", "told", "zone_of",
+    "TOLD_ZONE", "WINDOW_HOURS", "ZONE", "in_window", "jitter", "local_day",
+    "next_pass_at", "resolve", "scheduled", "told", "zone_of",
 ]
 
 #: Local pre-dawn. The pass runs while the main sleeps, so the window sits
@@ -171,6 +171,30 @@ def in_window(at: float, zone: str) -> bool:
     """
     hour = _dt.datetime.fromtimestamp(at, _tzinfo(zone)).hour
     return PRE_DAWN_HOUR <= hour < PRE_DAWN_HOUR + WINDOW_HOURS
+
+
+def local_day(at: float, zone: object) -> str:
+    """The civil date ``at`` falls on, as the main would read it in ``zone``.
+
+    *"At most one unprompted message a day"* is a promise about the main's own
+    day, and a day is where the person is (CAP-8, AD-9). Twenty-four hours is
+    not the same thing and gets both edges wrong in the direction that matters:
+    a message at 23:50 and another at 00:10 are two messages on two days ten
+    minutes apart, and one at 00:10 and one at 23:50 are two messages on **one**
+    day, which the rule forbids. Only a civil date in the main's own zone
+    answers either.
+
+    Told, never inferred, and it lands on the same recorded fallback every other
+    zone question in this module does: ``resolve`` is the one door, so a main
+    who has told Half nothing gets ``FALLBACK_ZONE`` here exactly as they get it
+    for their due time, and the two can never disagree about what day it is.
+
+    Never raises, and reads no clock: ``at`` is an injected epoch — the tick's
+    single read, handed down — and the conversion is arithmetic over given
+    values, like ``in_window``'s.
+    """
+    key, _ = resolve(zone)
+    return _dt.datetime.fromtimestamp(at, _tzinfo(key)).date().isoformat()
 
 
 def _edge(tz: _dt.tzinfo, day: _dt.date, hour: int) -> int:

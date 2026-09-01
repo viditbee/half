@@ -26,7 +26,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from half.errors import StoreError, TensionError
+from half.errors import StoreError, TensionError, TouchError
 from half.governance.aftercare import FLOOR_DAYS, answered, at_least, entered_at
 from half.governance.ladder import (
     TOP,
@@ -48,8 +48,10 @@ from half.store.ops import (
     CRISIS_REVERSED,
     Op,
 )
+from half.store.fold import State
 from half.store.records import (
     NEXT_PASS_AT,
+    TOUCH_FIELDS,
     handoff_projection,
     handoff_record,
     history_projection,
@@ -717,6 +719,74 @@ class ActorRegistry:
                     f"compute the answer again"
                 )
             actor.store.record(Op.TENSION, tension_id, t, **dict(fields))
+
+    # -- the morning surface's doors (CAP-8, story 10) ------------------------
+    #
+    # Two more, and they follow ``tension_view`` / ``note_transition`` exactly:
+    # one read under the mutex and one write that goes through it. The surface
+    # runs outside any turn, under the scheduler, so it needs the shape the
+    # crisis gate, the scheduler and the pass all needed — and it must not get
+    # a second, private route to a main's log, because the single writer is
+    # what lets the store skip a journal (AD-1).
+
+    async def surface_view(self, main_id: str) -> tuple[State, Ceiling]:
+        """This main's folded state and their ceiling, read **together**.
+
+        One read under one mutex, which is a correctness rule rather than a
+        convenience — the same rule ``tension_view`` exists for. The surface
+        asks four questions of one main: what they believe, what wantings they
+        have, when Half last raised each of those, and what their cap is. A cap
+        read a moment after the beliefs is a cap that a crisis landing in the
+        gap has already moved, and the surface would then resolve a rung under
+        the cap that was there a moment ago — which is the one window AD-28
+        exists to close.
+
+        **Not narrowed, and deliberately so.** ``belief_history`` narrows hard
+        because the pass has business with no claim text; the surface's whole
+        job is to decide what may be *said* about a claim, so narrowing the
+        claim away would leave it with nothing to decide. What narrows here is
+        the ladder and the context builder, one layer up, which is where AD-18
+        puts it.
+
+        Held only for the read. The touch is appended afterwards, outside this,
+        because a surface that held the mutex from its read to its write would
+        block the main's own turn for the length of the whole morning.
+        """
+        async with self.acquire(main_id) as actor:
+            return actor.store.state(), actor.ceiling
+
+    async def note_touch(
+        self, main_id: str, *, t: str, fields: Mapping[str, Any]
+    ) -> None:
+        """Record that Half raised a loop, under the mutex (AD-1, AD-3, CAP-8).
+
+        **Takes the fields, never the parts.** ``half.surface.touch.fields``
+        composes them and refuses an origin outside the closed set, so the
+        registry does not know what a traceable surface is and must not start
+        deciding.
+
+        Appended under an id built from the **stamp**, never from the loop's
+        slug. ``BeliefLog.expunge_bodies`` keeps a tombstoned record's id, and a
+        slug is a phrase the main chose about their own life — so a slug in the
+        id would survive the erasure that exists to remove it, which is the
+        mistake the loop transitions' own ids (``l_1``) avoid.
+
+        **A touch carries the loop it raised and what it cited, and nothing
+        else.** Refused here as well as at the append gate, one layer earlier,
+        where the caller can still be told which field it was — the shape
+        ``note_transition`` uses, for the reason it uses it: a ``claim`` or a
+        ``last_movement`` riding in beside the loop is, respectively, belief
+        content made permanent (AD-22) and Half's own attention recorded as the
+        main's progress.
+        """
+        stray = sorted(set(fields) - TOUCH_FIELDS)
+        if stray:
+            raise TouchError(
+                f"a touch carries the loop Half raised and what it cited; "
+                f"refusing {stray}"
+            )
+        async with self.acquire(main_id) as actor:
+            actor.store.record(Op.TOUCH, f"tc_{t}", t, **dict(fields))
 
     async def suspend_for_crisis(
         self, main_id: str, *, t: str, tier: str, score: int, fresh: bool = True

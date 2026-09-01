@@ -6,7 +6,8 @@ from half.crisis import safetyplan
 from half.governance import ladder
 from half.governance.ladder import License
 from half.loops import ledger
-from half.store.ops import Op
+from half.store.ops import TOUCH_TENSION, Op
+from half.surface import touch as touch_module
 from half.store.store import Store
 
 
@@ -160,6 +161,18 @@ def tier_change_log(tmp_path):
                                  timescale="months",
                                  last_movement="2026-01-04",
                                  loops=s.state().loops))
+        # A raise on a loop the main afterwards erases (story 10). It must come
+        # back from a rebuild carrying neither the slug nor the raise: a touch
+        # is tombstoned by the same ``loop``-field match that tombstones a
+        # transition, because a loop slug is a phrase about a person's life and
+        # surviving an erasure is not an erasure. Its *record id* is built from
+        # the stamp and never from the slug, for the same reason — a tombstone
+        # keeps its id.
+        s.record(Op.TOUCH, "tc_2026-08-14T12:00Z", "2026-08-14T12:00Z",
+                 **touch_module.fields(
+                     "sell-the-flat",
+                     origin=touch_module.Origin(kind=TOUCH_TENSION, id="x_2"),
+                 ))
         # Erased through the **public** path, which is what a main's erasure
         # actually goes through: it removes the loop and tombstones the
         # transition bodies, where a bare op leaves the slug in the log.
@@ -197,6 +210,24 @@ def tier_change_log(tmp_path):
         s.record(Op.CEILING, "c_tiered_2", "2026-08-07T09:00Z",
                  rung="ask", because="aftercare: the floor is past, one step")
         s.record(Op.AFTERCARE, "ac_tiered_2", "2026-08-21T18:30Z", state="declined")
+        # What Half raised, and when (story 10, CAP-8). Here for the reason
+        # every record above is: the replay test is what proves the new op
+        # folds, round-trips through SQLite and reproduces byte-identically.
+        # A raise that did not survive a rebuild is a loop whose nagging bound
+        # answers *may raise* again the moment a derived view is discarded —
+        # so a years-long loop would be raised on the morning after every
+        # rebuild, which is the one failure the bound exists to make
+        # impossible. And ``last_touch`` is what *"at most one a day"* is
+        # computed from: losing it in a rebuild buys a second unprompted
+        # message on a day one was already sent.
+        #
+        # The second shape — a raise on a loop the main afterwards erased — is
+        # seeded above, beside that erasure.
+        s.record(Op.TOUCH, "tc_2026-08-16T03:10Z", "2026-08-16T03:10Z",
+                 **touch_module.fields(
+                     "swim-weekly",
+                     origin=touch_module.Origin(kind=TOUCH_TENSION, id="x_1"),
+                 ))
         s.record(Op.ASSERT, "p_tiered", "2026-08-21T18:31Z",
                  **safetyplan.held_fields([
                      "When I start pacing at two in the morning, that is the sign.",

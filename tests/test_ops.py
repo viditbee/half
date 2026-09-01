@@ -72,6 +72,13 @@ def test_op_vocabulary_is_closed():
         # the whole population at once — the herd AD-9 exists to prevent,
         # produced by a rollback.
         "schedule",
+        # `touch` joined in story 10, with the schema version bumped again. It
+        # is the only record of *what Half raised and when* — a different fact
+        # from a loop having moved — and a build that could not see one would
+        # fold every main to never-raised: the per-loop nagging bound would
+        # answer *may raise* on every pass for ever, and the one-a-day rule
+        # would read every day as one on which nothing had been said.
+        "touch",
     }
 
 
@@ -263,6 +270,15 @@ def test_state_carries_only_durable_objects(store):
     later transition on it was silently dropped.
 
     ``schedule`` joins them in story 9a and belongs to the same category as the
+    ``touches`` and ``last_touch`` join them in story 10, and they are the same
+    category one more time: not how the main is right now but *what Half
+    raised, and when*. A raise held in memory is a raise forgotten at the next
+    eviction, and the rule it feeds — never faster than the loop's own
+    timescale — would then have to survive a year in RAM for a years-loop. They
+    are content-free (AD-22): a loop slug, and the kind and id of what was
+    cited.
+
+    ``schedule`` and the
     ceiling: it is not *how the main is right now* but when they are next due —
     a fact that has to survive a restart, because one held in memory means
     every boot either reschedules the whole population together or re-runs a
@@ -272,7 +288,7 @@ def test_state_carries_only_durable_objects(store):
     names = {f.name for f in dataclasses.fields(store.state())}
     assert names == {"beliefs", "tensions", "loops", "expunged",
                      "expunged_loops", "ceiling", "crisis", "aftercare",
-                     "schedule"}
+                     "schedule", "touches", "last_touch"}
 
 
 # ── findings from review: gaps the original suite could not observe ─────────

@@ -724,18 +724,27 @@ def test_the_scheduler_holds_the_pass_this_wiring_built(tmp_path):
     So: not ``Nothing``; a ``TensionPass``; and holding *this* wiring's
     registry by identity — an ``isinstance`` check alone would pass for one
     wired to somebody else's registry, or constructed and thrown away.
+
+    Story 10 wraps it: the scheduler's work is a ``MorningPass`` whose
+    consolidation half is the pass this case has always asserted. Reached
+    through the field rather than compared as a whole, so this case keeps
+    asserting the same sentence it always did and story 10's own wiring case
+    asserts the wrapper.
     """
     from half.__main__ import build
     from half.config import MAINS_ENV, ROOT_ENV, load
+    from half.surface.morning import MorningPass
 
     config = load({ROOT_ENV: str(tmp_path), MAINS_ENV: "123:vidit"})
     wiring = build(config, token="123:fake")
     try:
         work = wiring.scheduler.work
         assert not isinstance(work, Nothing)
-        assert isinstance(work, TensionPass)
-        assert work.ledger is wiring.registry
-        assert work == TensionPass(ledger=wiring.registry)
+        assert isinstance(work, MorningPass)
+        consolidate = work.consolidate
+        assert isinstance(consolidate, TensionPass)
+        assert consolidate.ledger is wiring.registry
+        assert consolidate == TensionPass(ledger=wiring.registry)
     finally:
         wiring.registry.close()
 

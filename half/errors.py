@@ -167,6 +167,21 @@ class TensionError(HalfError, ValueError):
     """
 
 
+class TouchError(HalfError, ValueError):
+    """A touch record that could not say what Half raised, or what it cited.
+
+    Raised before the record is durable, on the same terms as ``LoopError``,
+    ``ScheduleError`` and ``TensionError``: the log is append-only, so a touch
+    naming no loop is a raise that bounds nothing — the per-loop nagging bound
+    reads it as *this loop has never been raised* for ever — and a touch citing
+    an origin outside the closed set is a surface that cannot say where it came
+    from, which CAP-8 forbids outright.
+
+    A ``ValueError`` as well, for the reason the three above are: a caller that
+    already handles bad input keeps working, and the conventions' *no public
+    store operation raises a non-``HalfError``* still holds.
+    """
+
 class RetrievalError(HalfError):
     """A fault in the retrieval layer (CAP-9)."""
 

@@ -41,7 +41,17 @@ from typing import Final
 #: no-op — it is the scheduler deciding, on every tick after a rollback, that
 #: nobody has ever been scheduled, and rewriting a fresh due time for the whole
 #: population at once. The refusal to fold is the correct outcome.
-SCHEMA_VERSION: Final[int] = 5
+#: v6 added ``touch`` (story 10), and the bump is not optional for the reason
+#: the last four were not — with a twist that is this op's own. The record is
+#: the only place the log says **what Half raised and when**, which is a
+#: different fact from a loop having *moved* (story 8 refused to conflate
+#: them). A build that could not see one would fold every main to *never
+#: raised*: the per-loop nagging bound would compute *may raise* for every loop
+#: on every pass, and the one-a-day rule would read every day as a day nothing
+#: was said. A schema rollback would therefore not lose a nicety — it would
+#: turn the two rules that exist to keep Half quiet into rules that always say
+#: yes. Refusing to fold is the correct outcome.
+SCHEMA_VERSION: Final[int] = 6
 
 
 class Op(StrEnum):
@@ -118,6 +128,30 @@ class Op(StrEnum):
     #: **Content-free** (AD-22). The record carries an instant, a zone key and
     #: a flag — never what the pass found, never whether anything was sent.
     SCHEDULE = "schedule"
+    #: What Half raised, and when (CAP-8, CAP-10, story 10).
+    #:
+    #: **Not movement.** Story 8 recorded when a loop last *moved* and
+    #: deliberately refused to record when Half last *raised* it, because
+    #: conflating the two makes Half's own attention look like the main's
+    #: progress: a loop nudged every morning would read as a loop advancing
+    #: every morning. This is the second fact, in its own op, and neither
+    #: record can be written by the other's path.
+    #:
+    #: Durable for the reason the ceiling and the due time are, and the failure
+    #: it prevents is the one the main actually feels. A raise held in memory
+    #: is a raise forgotten at the next eviction — so the per-loop nagging
+    #: bound would compute *may raise* on every pass, and a farmland loop would
+    #: be raised every morning for ever. The one-a-day rule fails the same way
+    #: from the other side: a restart would read the day as one on which
+    #: nothing had been said yet.
+    #:
+    #: **Content-free** (AD-22). The record carries the loop it touched and the
+    #: kind and id of the thing in the preceding pass it came from — never a
+    #: claim, never a message, never a word of what was said. And it carries no
+    #: ``last_movement`` and no ``state``: writing either here would be Half's
+    #: own contact recorded as the main's progress, which is the whole
+    #: distinction the op exists to keep.
+    TOUCH = "touch"
 
 
 #: The two states a ``crisis`` record may carry. Named here, beside the op, so
@@ -145,6 +179,25 @@ AFTERCARE_AGREED: Final[str] = "agreed"
 AFTERCARE_STOPPED: Final[str] = "stopped"
 AFTERCARE_STATES: Final[frozenset[str]] = frozenset(
     {AFTERCARE_ASKED, AFTERCARE_DECLINED, AFTERCARE_AGREED, AFTERCARE_STOPPED}
+)
+
+
+#: The three kinds of thing a ``touch`` may cite, named here beside the op for
+#: the reason the crisis and aftercare states are: the append gate validates
+#: them, ``half.surface`` writes them, and two spellings of the same word is a
+#: surface whose origin nothing downstream can read.
+#:
+#: **The set is closed, and that is the traceability rule** (CAP-8): a surface
+#: cites a tension, a loop transition or an ingested item from the preceding
+#: pass, and one that cites anything else — or nothing — is not surfaced. A
+#: fourth kind is a deliberate versioned change with a reviewer on it, because
+#: *"nothing is surfaced that cannot say where it came from"* is exactly the
+#: rule a helpful-looking ``origin_kind="inferred"`` walks around.
+TOUCH_TENSION: Final[str] = "tension"
+TOUCH_LOOP_TRANSITION: Final[str] = "loop_transition"
+TOUCH_INGESTED: Final[str] = "ingested"
+TOUCH_ORIGINS: Final[frozenset[str]] = frozenset(
+    {TOUCH_TENSION, TOUCH_LOOP_TRANSITION, TOUCH_INGESTED}
 )
 
 

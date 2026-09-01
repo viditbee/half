@@ -93,6 +93,17 @@ _TRANSITION_FIELDS: Final[tuple[str, ...]] = (STATE, TIMESCALE, LAST_MOVEMENT)
 #: entry that no longer exists.
 _RESOLVED: Final[str] = TensionState.RESOLVED.value
 
+#: Ops whose record id is the **append's**, not the id of the thing the record
+#: is about. A tombstone on one of these must not enter ``State.expunged``:
+#: that set is the belief namespace, so putting an append id in it suppresses
+#: whatever belief happens to share the identifier, for ever.
+#:
+#: Named rather than spelled as a comparison against one op, because that is
+#: what it was — ``record.op is not Op.LOOP_TRANSITION`` — and story 10 added
+#: the second member. The next op keyed on its own append is caught by this
+#: same rule rather than by somebody remembering the branch.
+_APPEND_KEYED: Final[frozenset[Op]] = frozenset({Op.LOOP_TRANSITION, Op.TOUCH})
+
 
 @dataclass(slots=True)
 class State:
@@ -139,6 +150,53 @@ class State:
     #: ended, which ``half.crisis.aftercare`` decides by comparing the two
     #: stamps rather than by the fold throwing anything away.
     aftercare: dict[str, Any] | None = None
+    #: What Half has raised, and when — the last ``touch`` per loop (CAP-8,
+    #: CAP-10, story 10). Keyed by the **loop's** slug rather than by the
+    #: record's id, because the question every reader asks is *"when did Half
+    #: last raise this wanting?"* and the last raise is the only one that
+    #: answers it.
+    #:
+    #: **A separate table from ``loops``, and that is the whole point.** Story
+    #: 8 recorded when a loop last *moved* and refused to record when Half last
+    #: *raised* it, because a nudge written into the loop entry is Half's own
+    #: attention wearing the main's progress: a farmland loop raised every
+    #: morning would read, to every ranking function above this, as a farmland
+    #: loop advancing every morning. The bound needs this one; the ranking
+    #: needs the other; neither may be computed from the other.
+    #:
+    #: Here rather than in memory because a raise forgotten at the next
+    #: eviction is a raise that never happened — and the rule it feeds says
+    #: *never faster than the loop's own timescale*, which for a years-loop
+    #: means the memory would have to survive a year.
+    touches: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: The last touch of **any** loop, in log order, or ``None`` if Half has
+    #: never raised anything. What *"at most one unprompted message a day"* is
+    #: computed from (CAP-8).
+    #:
+    #: **The log's own order, not the largest stamp.** Within a shard that is
+    #: append order, so a raise stamped earlier but appended later is the last
+    #: one — which is what a max-by-``t`` would get wrong, letting a clock that
+    #: stepped backwards buy a second message on a day one was already sent.
+    #: (Across a month boundary the order is the shard order, which is
+    #: ``t``-ordered, because ``BeliefLog`` shards by month. That is the fold
+    #: reading the log rather than a second opinion about it, and every stamp
+    #: this op carries is the tick's own instant.)
+    #:
+    #: A field of its own rather than a max over ``touches``, because the two
+    #: are different questions — *"when did Half last raise this loop"* and
+    #: *"has Half spoken today at all"* — and only the second one has to be
+    #: answered without comparing stamps.
+    #:
+    #: **An erasure takes this with it**, and that is a decision rather than an
+    #: oversight: a main who erases the only loop Half has raised loses the
+    #: record of that morning, because the record is a fact about a loop that
+    #: no longer exists and a loop slug is a phrase about a person's life. The
+    #: cost is bounded to a single, deliberate action inside one day — the
+    #: scheduler gives each main one due time per day (AD-9), so a second
+    #: surface would need a second trigger between the erasure and midnight —
+    #: and the alternative is a slug surviving the erasure that exists to
+    #: remove it.
+    last_touch: dict[str, Any] | None = None
     #: The last ``schedule`` record, or ``None`` if this main has never been
     #: scheduled (AD-9, story 9a). Raw fields, for the reason ``crisis`` and
     #: ``aftercare`` hold raw fields: *whether* a main is due is the
@@ -169,6 +227,8 @@ class State:
                 "crisis": self.crisis,
                 "aftercare": self.aftercare,
                 "schedule": self.schedule,
+                "touches": self.touches,
+                "last_touch": self.last_touch,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -195,12 +255,20 @@ def fold(records: Iterable[Record]) -> State:
     for record in records:
         if record.data.get("tombstone") is True:
             gone.add(record.id)
-            if record.op is not Op.LOOP_TRANSITION:
-                # A transition's id is the *append's*, not the loop's, so
-                # remembering it here says nothing about any object and
-                # pollutes the belief namespace with it — which then suppresses
-                # a later belief that happens to share the id. The loop's own
-                # erasure is recorded in ``expunged_loops`` by the expunge op.
+            if record.op not in _APPEND_KEYED:
+                # A transition's id — and a touch's — is the *append's*, not
+                # the loop's, so remembering it here says nothing about any
+                # object and pollutes the belief namespace with it, which then
+                # suppresses a later belief that happens to share the id. The
+                # loop's own erasure is recorded in ``expunged_loops`` by the
+                # expunge op.
+                #
+                # A touch is tombstoned by exactly the same route a transition
+                # is: ``BeliefLog.expunge_bodies`` matches on the ``loop``
+                # field, so erasing a loop erases every raise Half made on it
+                # along with every movement — which it must, because a loop
+                # slug is a phrase about a person's life and surviving an
+                # erasure is not an erasure.
                 state.expunged.add(record.id)
             state.beliefs.pop(record.id, None)
             state.tensions.pop(record.id, None)
@@ -371,6 +439,43 @@ def fold(records: Iterable[Record]) -> State:
                 for key in _TRANSITION_FIELDS:
                     if key in record.data:
                         entry[key] = record.data[key]
+
+            case Op.TOUCH:
+                # Fatal on a missing loop, for the reason a transition is: a
+                # touch the fold cannot attribute to a loop is a raise that
+                # bounds nothing, and folding it to nothing is the silent
+                # omission AD-29 exists to prevent — the loop would answer
+                # *never raised* on every pass for ever, which is the nagging
+                # the bound exists to make impossible.
+                #
+                # Tolerant of everything else, deliberately. ``origin_kind``
+                # and ``origin_id`` are refused before the record is durable
+                # (``records.validate_touch_fields``), which is where a closed
+                # vocabulary belongs; refusing an unknown one *here* as well
+                # would mean a log written by a later build took a main's whole
+                # store down over a word, where carrying it through costs that
+                # one raise its provenance. The surface refuses to cite an
+                # origin it cannot read, which is silence — a first-class
+                # outcome (AD-27) — rather than a bricked store.
+                loop_id = record.data.get(LOOP)
+                if not isinstance(loop_id, str) or not loop_id:
+                    raise CorruptLogError(
+                        f"{record.op} record {record.id!r} has no {LOOP!r}",
+                        path="<fold>", line=0,
+                    )
+                # ``expunged_loops``, never ``expunged`` — the same split the
+                # transition case makes, for the same reason. A raise on a loop
+                # the main erased is erased with it: the tombstone pass has
+                # already removed the ones written before the erasure, and this
+                # is what stops one written after it coming back.
+                if loop_id in state.expunged_loops:
+                    continue
+                touch = copy.deepcopy(dict(record.data))
+                state.touches[loop_id] = touch
+                # The same object in both places, deliberately: they are one
+                # record read two ways, and a copy in each would be two facts
+                # that could drift.
+                state.last_touch = touch
 
             case Op.CEILING:
                 rung = record.data.get("rung")

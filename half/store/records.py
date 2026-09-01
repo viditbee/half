@@ -24,6 +24,7 @@ from half.errors import (
     SchemaVersionError,
     ScheduleError,
     TensionError,
+    TouchError,
     UnknownOpError,
 )
 from half.loops.ledger import LOOP
@@ -35,7 +36,7 @@ from half.loops.timescale import (
     is_timescale,
     moment,
 )
-from half.store.ops import SCHEMA_VERSION, Op, parse_op
+from half.store.ops import SCHEMA_VERSION, TOUCH_ORIGINS, Op, parse_op
 from half.tensions.states import TENSION_STATES
 from half.tensions.states import is_state as is_tension_state
 from half.tensions.states import TensionState
@@ -212,6 +213,35 @@ PLAN: Final[str] = "plan"
 ZONE: Final[str] = "zone"
 NEXT_PASS_AT: Final[str] = "next_pass_at"
 TOLD_ZONE: Final[str] = "told_zone"
+
+#: What a ``touch`` record cites: the kind of thing in the preceding pass it
+#: came from, and that thing's id (CAP-8, story 10).
+#:
+#: Named here for the reason ``ZONE`` and ``NEXT_PASS_AT`` are: the layer that
+#: owns record shapes owns the spelling, and ``half.surface`` — which sits
+#: above the ladder, the context builder and the channel — imports them rather
+#: than declaring a second copy. ``LOOP`` runs the other way because the
+#: open-loop package sits *below* this module, and a touch names its loop in
+#: exactly that field, so that ``BeliefLog.expunge_bodies`` tombstones a touch
+#: on an erased loop by the same match that tombstones its transitions.
+ORIGIN_KIND: Final[str] = "origin_kind"
+ORIGIN_ID: Final[str] = "origin_id"
+
+#: Everything a touch record may carry, beside the reserved four. An
+#: **allowlist**, for the reason ``TENSION_FIELDS`` is one: every denylist this
+#: codebase has shipped was walked around, and a touch is the record that sits
+#: closest to the thing it must never contain. It says *what Half raised and
+#: when*; a ``claim``, a ``state`` or a ``last_movement`` riding in beside it
+#: would be, respectively, belief content made permanent (AD-22), a wanting
+#: demoted by Half's own attention, and Half's contact recorded as the main's
+#: progress — the exact conflation story 8 split this op out to prevent.
+TOUCH_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        LOOP, ORIGIN_KIND, ORIGIN_ID,
+        # Written by ``BeliefLog.expunge_bodies``, never by a caller.
+        "tombstone",
+    }
+)
 
 #: The one record kind the scheduler may see, and the only fields of it that
 #: leave the store. Narrowed by field for the reason ``HANDOFF_VISIBLE`` is: a
@@ -423,6 +453,14 @@ _TYPED_FIELDS: Final[dict[str, type | tuple[type, ...]]] = {
     ZONE: str,
     NEXT_PASS_AT: str,
     TOLD_ZONE: bool,
+    # The morning surface's touch record (CAP-8). ``origin_kind`` and
+    # ``origin_id`` are what a surface cites; validated at the append for the
+    # reason every field above is, and here the reason is the story's own
+    # Always: *nothing is surfaced that cannot say where it came from*. An
+    # origin stored as a number is a raise whose provenance no build can ever
+    # read back, permanently.
+    ORIGIN_KIND: str,
+    ORIGIN_ID: str,
     # The tension ledger (CAP-7). ``between`` names the two entries that
     # disagree, validated at the append for the reason every field above is:
     # the log is append-only, so a ``between`` stored as a bare string is a
@@ -607,6 +645,75 @@ def validate_schedule_fields(fields: Mapping[str, Any]) -> None:
         )
 
 
+def validate_touch_fields(fields: Mapping[str, Any]) -> None:
+    """Reject a touch the surface could never read back (CAP-8, story 10).
+
+    **Write strict, read tolerant**, on the same terms as a loop transition, a
+    schedule record and a tension — and here the strictness protects the two
+    rules that exist to keep Half quiet.
+
+    * ``loop`` — **required**, and required for two reasons at once. The fold
+      raises ``CorruptLogError`` on a touch that names none, exactly as it does
+      for a transition; and a raise that names no loop bounds no loop, so the
+      per-loop bound would go on answering *may raise* for ever. Refused before
+      it is durable.
+    * ``origin_kind`` — one of the closed set, and **required**. This is
+      *"nothing is surfaced that cannot say where it came from"* written as a
+      check rather than as a paragraph: a touch that cites nothing is a message
+      the log cannot trace to the pass that produced it, and the log is
+      append-only, so it is untraceable for ever.
+    * ``origin_id`` — required and non-empty, for the same reason. A kind
+      without an id names a category, not a thing in a pass.
+    * **nothing outside ``TOUCH_FIELDS``.** The allowlist is the point. A
+      ``claim`` arriving beside the loop is belief content written into a
+      content-free record (AD-22); a ``state`` or a ``last_movement`` is Half's
+      own attention recorded as the main's progress, which is the conflation
+      story 8 refused and this op exists to keep refusing. The natural way that
+      arrives is not malice — it is one helpful line recording *"and the loop
+      is stalled"* beside the raise.
+
+    There is no branch here that supplies a missing origin, none that picks a
+    loop, and none that defaults a kind.
+
+    The read direction is deliberately looser — see ``half.store.fold``, which
+    is fatal on a missing loop and tolerant of everything else — so a log
+    written by a later build, through the Ask-First path that adds an origin
+    kind, costs one loop its bound rather than taking a main's whole store
+    down.
+    """
+    loop = fields.get(LOOP)
+    if not isinstance(loop, str) or not loop.strip():
+        raise TouchError(
+            f"a {Op.TOUCH.value} record must name the loop it raised in "
+            f"{LOOP!r}; the fold cannot fold one that does not, and a raise "
+            f"that names no loop bounds no loop — the record would be durable"
+        )
+    kind = fields.get(ORIGIN_KIND)
+    if kind not in TOUCH_ORIGINS:
+        raise TouchError(
+            f"field {ORIGIN_KIND!r} must be one of "
+            f"{', '.join(sorted(TOUCH_ORIGINS))} on a {Op.TOUCH.value} record, "
+            f"got {kind!r}; nothing is surfaced that cannot say where it came "
+            f"from, and the log is append-only"
+        )
+    origin = fields.get(ORIGIN_ID)
+    if not isinstance(origin, str) or not origin.strip():
+        raise TouchError(
+            f"field {ORIGIN_ID!r} must name the thing in the preceding pass "
+            f"this raise came from; a kind with no id names a category rather "
+            f"than a thing, got {type(origin).__name__}"
+        )
+    stray = sorted(fields.keys() - TOUCH_FIELDS)
+    if stray:
+        raise TouchError(
+            f"a {Op.TOUCH.value} record may not carry {stray}: a touch is the "
+            f"loop Half raised and what it cited. A claim written here is "
+            f"content no correction can take back, and a state or a movement "
+            f"date written here is Half's own attention recorded as the main's "
+            f"progress"
+        )
+
+
 def _type_names(expected: type | tuple[type, ...]) -> str:
     if isinstance(expected, tuple):
         return " or ".join(t.__name__ for t in expected)
@@ -712,6 +819,11 @@ def validate_fields(fields: dict[str, Any], *, op: Op | None = None) -> None:
         # write path in ``except TensionError`` catches every refusal this gate
         # makes — including "that is not a list".
         validate_tension_fields(fields)
+    if op is Op.TOUCH:
+        # First, for the reason the three gates above are first: a touch that
+        # cites nothing must refuse as a ``TouchError`` rather than as the
+        # generic type check's bare ``ValueError``.
+        validate_touch_fields(fields)
     for name, expected in _TYPED_FIELDS.items():
         if name not in fields or fields[name] is None:
             continue
