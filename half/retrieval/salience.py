@@ -32,6 +32,8 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, Final
 
+from half.loops.states import LoopState
+
 #: Salience never reaches zero. A belief nothing has corroborated in a decade,
 #: on no loop, with one support, must still be retrievable.
 FLOOR: Final[float] = 0.2
@@ -53,11 +55,18 @@ WEIGHTS: Final[Mapping[str, float]] = {
 #: What a loop's state says about the beliefs sitting on it. A loop is never
 #: refuted, only transitioned (AD-26), so every state has a weight and none is
 #: zero — an achieved loop's beliefs are still part of the person.
+#:
+#: **Keyed on the vocabulary, not on four strings typed here.** These names used
+#: to be spelled out in this module, which made them a second copy of a closed
+#: set that lives in ``half.loops.states``; a rename there would have left every
+#: loop scoring as unknown with the whole suite green. ``tests/test_loops.py``
+#: asserts the two agree exactly, so a fifth state added through the Ask-First
+#: path fails here until somebody decides what a belief on it is worth.
 LOOP_STATES: Final[Mapping[str, float]] = {
-    "advancing": 1.0,
-    "stalled": 0.6,
-    "abandoned-but-unadmitted": 0.5,
-    "achieved": 0.2,
+    LoopState.ADVANCING: 1.0,
+    LoopState.STALLED: 0.6,
+    LoopState.ABANDONED_BUT_UNADMITTED: 0.5,
+    LoopState.ACHIEVED: 0.2,
 }
 
 #: A belief on a loop whose state this build does not recognise. Above

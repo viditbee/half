@@ -89,6 +89,23 @@ class LadderError(HalfError):
     """
 
 
+class LoopError(HalfError):
+    """An open-loop change the ledger refuses (CAP-6).
+
+    Raised only by the *writing* half of ``half.loops.ledger`` — opening a loop
+    with a state outside the vocabulary, moving one to a date that is not a
+    date, or recording `abandoned-but-unadmitted` without both a candidate and
+    the main's answer. The *reading* half never raises: reading a loop happens
+    on the turn's ranking path, and an exception there would cost the main their
+    reply over a tie-break, so an unreadable field degrades instead.
+
+    A refusal is loud on purpose. The log is append-only, so every path this
+    rejects is one that would have put a permanent value into the ledger that
+    ranks everything Half does — and the caller has to notice that now, not
+    discover it in the loop set later.
+    """
+
+
 class RetrievalError(HalfError):
     """A fault in the retrieval layer (CAP-9)."""
 

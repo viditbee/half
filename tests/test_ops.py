@@ -14,6 +14,7 @@ from half.errors import (
     StoreError,
     UnknownOpError,
 )
+from half.loops import ledger
 from half.store.export import SECRET_PATTERNS, export, scan_for_secrets
 from half.store.fold import fold
 from half.store.ops import OP_NAMES, SCHEMA_VERSION, Op
@@ -400,10 +401,19 @@ def test_a_correction_without_a_target_raises_rather_than_no_opping(store, op):
 
 
 def test_expunge_removes_a_loop_from_the_derived_view(store):
+    """An expunge that names the loop *as a loop* still erases it.
+
+    Story 8 narrowed this: ``target`` alone reaches beliefs and tensions, and it
+    takes the second explicit ``loop`` field to reach a wanting, so a belief's
+    removal can never take a loop with it (CAP-6, the refutation firewall). The
+    main's own erasure is unaffected, which is what this asserts; that the
+    narrow form no longer reaches a loop is asserted in ``test_loops.py``.
+    """
     store.record(Op.LOOP_TRANSITION, "l_1", "2026-08-01T00:00Z",
                  loop="buy-farmland", state="stalled")
     assert "buy-farmland" in store.state().loops
-    store.record(Op.EXPUNGE, "x_1", "2026-08-02T00:00Z", target="buy-farmland")
+    store.record(Op.EXPUNGE, "x_1", "2026-08-02T00:00Z",
+                 **ledger.expunged("buy-farmland"))
     assert "buy-farmland" not in store.state().loops
 
 

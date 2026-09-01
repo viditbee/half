@@ -5,6 +5,7 @@ import pytest
 from half.crisis import safetyplan
 from half.governance import ladder
 from half.governance.ladder import License
+from half.loops import ledger
 from half.store.ops import Op
 from half.store.store import Store
 
@@ -92,6 +93,36 @@ def tier_change_log(tmp_path):
         s.record(Op.LOOP_TRANSITION, "l_1", "2026-08-03T02:41Z",
                  loop="buy-farmland", state="stalled", timescale="years",
                  last_movement="2026-03-12")
+        # Opens, moves and closes (story 8, CAP-6). Here for the reason the
+        # crisis and aftercare records are: the replay test is what proves a
+        # loop's state, its own timescale and its last movement fold,
+        # round-trip through SQLite and reproduce byte-identically. A loop that
+        # came back from a rebuild with a different state is a silently
+        # different ranking function for everything Half does — and one that
+        # came back with a *borrowed* timescale would be nagged on somebody
+        # else's schedule.
+        #
+        # Four shapes, deliberately: a loop opened and then moved twice, a loop
+        # that reached `achieved` and is kept rather than deleted, a loop with
+        # no timescale at all (which must survive the rebuild still having
+        # none), and a loop the main expunged.
+        s.record(Op.LOOP_TRANSITION, "l_2", "2026-08-03T02:42Z",
+                 **ledger.opened("swim-weekly", state="advancing",
+                                 timescale="weeks",
+                                 last_movement="2026-07-28T06:00Z"))
+        s.record(Op.LOOP_TRANSITION, "l_3", "2026-08-10T02:42Z",
+                 **ledger.move("swim-weekly", at="2026-08-09T06:30Z"))
+        s.record(Op.LOOP_TRANSITION, "l_4", "2026-08-12T02:42Z",
+                 **ledger.move("swim-weekly", at="2026-08-11T06:30Z",
+                               state="achieved"))
+        s.record(Op.LOOP_TRANSITION, "l_5", "2026-08-13T02:42Z",
+                 **ledger.opened("learn-tabla", state="advancing"))
+        s.record(Op.LOOP_TRANSITION, "l_6", "2026-08-14T02:42Z",
+                 **ledger.opened("sell-the-flat", state="stalled",
+                                 timescale="months",
+                                 last_movement="2026-01-04"))
+        s.record(Op.EXPUNGE, "x_loop", "2026-08-15T02:42Z",
+                 **ledger.expunged("sell-the-flat"))
         # A crisis entry and an operator reversal (CAP-12). Here rather than in
         # a fixture of their own because the replay test is what proves the new
         # op folds, round-trips through SQLite and reproduces byte-identically

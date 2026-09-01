@@ -283,6 +283,68 @@ jobs:
           fi
           uv run --locked --extra dev pytest -q -m cap12_aftercare_property
 
+      - name: 'CAP-6: the open-loop ledger — the vocabulary, the timescale, the silence'
+        # The ledger is the ranking function for everything Half does, and
+        # every one of its rules is the kind that decays quietly: nothing
+        # breaks the day a state is spelled two ways, a timescale acquires a
+        # default, or silence starts being stored instead of computed. The
+        # suite stays green and the ranking is silently different. So this
+        # names it.
+        #
+        # Marker-selected rather than file-selected, for the reason the AD-18,
+        # AD-28 and CAP-12 steps are: it must not go green because another step
+        # happened to run one of the same files.
+        #
+        # The count is asserted because `pytest -m cap6` against a renamed
+        # marker deselects everything and exits 0, which looks identical to a
+        # passing run. --strict-markers (pyproject) catches a misspelling; this
+        # floor catches a rename, and catches someone quietly unmarking the
+        # cases the gate exists for.
+        #
+        # **The floor is not the size of what it protects.** 92 selected, 80
+        # required — twelve cases of headroom, so a redundant parametrize entry
+        # can be pruned and the gate cannot be gutted. And the eleven firewall
+        # cases carry their own marker and their own gate below, so deleting
+        # them fails twice: that gate collects nothing, and a floor set here
+        # could never have caught it on its own.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap6 -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-6 cases collected: $collected"
+          if [ "$collected" -lt 80 ]; then
+            echo "::error::the CAP-6 gate collected $collected cases; it has stopped asserting"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap6
+
+      - name: 'CAP-6: the refutation firewall — a wanting is never demoted'
+        # A second gate over the subset that matters most, for the reason the
+        # CAP-12 durability and handoff gates exist: a floor on the superset
+        # cannot stop this half being hollowed out. Every case below could be
+        # deleted with the step above still green and still above its floor —
+        # and the half that would go with them is the half where Half starts
+        # treating *"the main has done nothing about the farmland for a year"*
+        # as evidence that they never wanted it.
+        #
+        # These are the cases for a retracted, revised and expunged support; a
+        # correction that names the loop's own identifier; a tombstone that
+        # shares it; a year of no evidence leaving the wanting standing; and
+        # the two AST assertions that the correction branches of the fold
+        # cannot name the loop table at all. That last pair is why the marker
+        # exists: they are what make the rule structural rather than agreed,
+        # and a behavioural floor would never have missed them.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap6_firewall -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-6 firewall cases collected: $collected"
+          if [ "$collected" -lt 9 ]; then
+            echo "::error::the firewall gate collected $collected cases; a loop may now be refutable"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap6_firewall
+
       - name: 'AD-5 and AD-30: retrieval degrades, and never writes'
         # The reranker fallback, the salience-is-derived assertions, the
         # no-clock scan, and the AD-3 discard-and-replay of an older derived

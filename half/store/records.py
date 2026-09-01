@@ -18,6 +18,8 @@ from collections.abc import Mapping
 from typing import Any, Final
 
 from half.errors import CorruptLogError, SchemaVersionError, UnknownOpError
+from half.loops.states import LOOP_STATES, is_state
+from half.loops.timescale import TIMESCALES, is_timescale
 from half.store.ops import SCHEMA_VERSION, Op, parse_op
 from half.text import terms
 
@@ -152,6 +154,15 @@ REGION: Final[str] = "region"
 #: The two record kinds the handoff may see. Anything else in a main's log is
 #: invisible to it.
 HANDOFF_FIELDS: Final[tuple[str, ...]] = (CONTACT, REGION)
+
+#: The open-loop fields, named here for the reason ``QUARANTINED`` is: the
+#: append gate, the fold and the ledger all need the spelling, and only one
+#: layer may own it. ``half.loops.ledger`` spells them once too and the two
+#: agree by test — a second spelling of ``last_movement`` is a loop that is
+#: permanently, invisibly, not silent-detectable.
+LOOP: Final[str] = "loop"
+TIMESCALE: Final[str] = "timescale"
+LAST_MOVEMENT: Final[str] = "last_movement"
 
 #: The safety plan a main made **with a professional** and gave Half to hold
 #: (CAP-12, story 6c). A list of lines, in the order they were written, kept
@@ -307,6 +318,15 @@ _TYPED_FIELDS: Final[dict[str, type | tuple[type, ...]]] = {
     # as a list with a number in it — is a document Half can never render and
     # can never remove either.
     PLAN: (list, tuple),
+    # The open-loop ledger (CAP-6). ``loop`` is the slug a belief sits on and
+    # the loop a transition names; ``timescale`` is that loop's own period and
+    # ``last_movement`` the date it last moved. All three are validated at the
+    # append for the reason every field above is: the log is append-only, so a
+    # ``timescale`` stored as a number is a loop whose silence can never be
+    # computed and whose record can never be taken back.
+    LOOP: str,
+    TIMESCALE: str,
+    LAST_MOVEMENT: str,
 }
 
 
@@ -316,8 +336,54 @@ def _type_names(expected: type | tuple[type, ...]) -> str:
     return expected.__name__
 
 
-def validate_fields(fields: dict[str, Any]) -> None:
-    """Reject a record the derived view could not materialize."""
+def validate_loop_fields(fields: Mapping[str, Any]) -> None:
+    """Reject a loop transition the ledger could never read back (CAP-6).
+
+    **Write strict, read tolerant**, and the asymmetry is the whole design. The
+    log is append-only and the open-loop ledger is the ranking function for
+    everything Half does: a state outside the closed vocabulary, once durable,
+    is a wanting that every future fold carries and no build can weigh, and a
+    timescale outside its vocabulary is a loop whose silence — and therefore
+    whose nagging bound — can never be computed. So both are refused **before
+    the record is durable**, with a hard error and never a default. There is no
+    branch here that picks a state for the main, and none that lends a period
+    from a loop this one is nothing like.
+
+    The other direction is deliberately not enforced anywhere: a log written by
+    a *later* build, through the Ask-First path that adds a state, still folds
+    and still ranks — degrading to ``salience.UNKNOWN_LOOP_STATE`` — because a
+    build that refused to read it would take a main's whole retrieval down over
+    a tie-break.
+
+    Neither field is *required*. A loop may be opened with no timescale, which
+    ``timescale.silence`` reports honestly as not detectable, and a transition
+    may record movement without changing state.
+    """
+    state = fields.get("state")
+    if state is not None and not is_state(state):
+        raise ValueError(
+            f"field 'state' must be one of {', '.join(sorted(LOOP_STATES))} on a "
+            f"{Op.LOOP_TRANSITION.value} record, got {state!r}"
+        )
+    scale = fields.get(TIMESCALE)
+    if scale is not None and not is_timescale(scale):
+        raise ValueError(
+            f"field {TIMESCALE!r} must be one of {', '.join(sorted(TIMESCALES))}, "
+            f"got {scale!r}"
+        )
+
+
+def validate_fields(fields: dict[str, Any], *, op: Op | None = None) -> None:
+    """Reject a record the derived view could not materialize.
+
+    ``op`` narrows the check to what that op's fields mean. It is optional
+    because most fields mean the same thing under every op — a ``support`` set
+    is a list of source ids wherever it appears — but ``state`` does not: it
+    names a tension's state, a crisis record's, an aftercare answer's *and* a
+    loop's, and those are four closed vocabularies, not one. Validating
+    ``state`` op-blind would have to accept the union, which accepts
+    ``state="widening"`` on a loop.
+    """
     for name, expected in _TYPED_FIELDS.items():
         if name not in fields or fields[name] is None:
             continue
@@ -346,6 +412,8 @@ def validate_fields(fields: dict[str, Any]) -> None:
         # produced whole or not at all, and a line this build cannot show is a
         # section missing from a document a clinician wrote.
         raise ValueError(f"field {PLAN!r} must hold the plan's own lines as strings")
+    if op is Op.LOOP_TRANSITION:
+        validate_loop_fields(fields)
     for value in fields.values():
         _reject_untokenizable(value)
 
@@ -383,7 +451,7 @@ def make(op: Op, ident: str, t: str, **fields: Any) -> Record:
         raise ValueError("id must be a non-empty string")
     if not _ISO_PREFIX.match(t):
         raise ValueError(f"t must be an ISO-8601 timestamp, got {t!r}")
-    validate_fields(fields)
+    validate_fields(fields, op=op)
     data: dict[str, Any] = {"t": t, "op": op.value, "id": ident, "v": SCHEMA_VERSION}
     data.update(fields)
     return Record(op=op, id=ident, t=t, data=data)

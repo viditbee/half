@@ -87,8 +87,17 @@ class Store:
         Validated first. The log is append-only, so a record the derived view
         cannot materialize would otherwise be durable, and every later rebuild
         would raise forever with no path back.
+
+        The op travels with the fields because some of them mean different
+        things under different ops: ``state`` names one of four closed
+        vocabularies depending on whether the record is a tension, a crisis
+        entry, an aftercare answer or a loop transition, and a check that did
+        not know which would have to accept the union of all four (CAP-6).
         """
-        validate_fields({k: v for k, v in record.data.items() if k not in RESERVED})
+        validate_fields(
+            {k: v for k, v in record.data.items() if k not in RESERVED},
+            op=record.op,
+        )
         self.log.append(record)
         self.rebuild()
 

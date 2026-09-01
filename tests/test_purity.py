@@ -44,6 +44,19 @@ PURE_MODULES = (
     # arithmetic out by hand was that it could not reach a clock — so the scan
     # that says so has to include it.
     "half/governance/aftercare.py",
+    # The civil-date arithmetic itself, since story 8 gave it a second caller.
+    # It is the module every floor and every timescale in the product measures
+    # with; a clock reaching *this* one would make two subsystems impure at
+    # once and neither of their own scans would see it.
+    "half/civil.py",
+    # The open-loop ledger (CAP-6). Silence is computed from ``last_movement``,
+    # the loop's timescale and an **injected** ``now``, so that the same log and
+    # the same stamp give the same answer for ever. A clock in any of these
+    # three would make the ranking function for everything Half does
+    # irreproducible, and the fold that carries loops non-deterministic.
+    "half/loops/states.py",
+    "half/loops/timescale.py",
+    "half/loops/ledger.py",
 )
 
 ROOT = Path(__file__).resolve().parents[1]

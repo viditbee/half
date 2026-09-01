@@ -7,6 +7,16 @@ changed model tier would replay to different state.
 
 ``tests/test_purity.py`` enforces the rule statically, because "just re-derive
 it" is the natural way to write a fold and a behavioural test would not catch it.
+
+**The refutation firewall (CAP-6).** Loops are unreachable from the correction
+path. ``retract``, ``revise`` and the tombstone branch cannot name
+``state.loops`` at all, and ``expunge`` reaches it only through a second,
+explicit ``loop`` field — so a belief's removal can never take a wanting with
+it, and violating that takes a deliberate new op rather than a plausible-looking
+line. A wanting is not a fact; evidence of non-action changes a loop's *state*
+and never its truth, and there is no state in the vocabulary that means false.
+``tests/test_loops.py`` asserts the structure as well as the behaviour, because
+this is exactly the rule everybody agrees with and then breaks by accident.
 """
 
 from __future__ import annotations
@@ -81,7 +91,14 @@ def fold(records: Iterable[Record]) -> State:
             state.expunged.add(record.id)
             state.beliefs.pop(record.id, None)
             state.tensions.pop(record.id, None)
-            state.loops.pop(record.id, None)
+            # **The refutation firewall, part one (CAP-6).** No loop is removed
+            # here. A tombstone erases one *record's body*, and it is keyed on
+            # the record's own id — which for a loop transition is the append's
+            # id (``l_1``), never the loop's slug. So this line could only ever
+            # fire on a collision, and when it fired it would delete a wanting
+            # because a belief happened to share its identifier. A loop leaves
+            # the fold through an expunge that names it as a loop, below, and
+            # through nothing else.
             continue
 
         match record.op:
@@ -104,6 +121,18 @@ def fold(records: Iterable[Record]) -> State:
                 # means "you changed" (no apology), REVISE means "Half was
                 # wrong" (apology, and show what was removed). The distinction
                 # is preserved in the log for whoever composes that message.
+                #
+                # **The refutation firewall, part two (CAP-6).** These two lines
+                # are the whole correction path, and neither of them can reach
+                # ``state.loops`` — there is no name for it in this branch. A
+                # wanting is not a fact and nothing may refute one: a retracted,
+                # revised or expunged *belief* leaves its loop standing, even
+                # when it was the loop's only support. That has to be
+                # structural rather than agreed, because the natural
+                # implementation of "no evidence supports this any more" is to
+                # lower something, and the only honest thing to lower is a
+                # belief. ``tests/test_loops.py`` asserts by AST that these
+                # cases never mention the loop table.
                 target = _require_target(record)
                 state.beliefs.pop(target, None)
 
@@ -112,13 +141,35 @@ def fold(records: Iterable[Record]) -> State:
                 state.expunged.add(target)
                 state.beliefs.pop(target, None)
                 state.tensions.pop(target, None)
-                state.loops.pop(target, None)
+                # **The firewall's one door (CAP-6).** A loop is removed only by
+                # an expunge that names it *as a loop* — ``target`` alone
+                # reaches beliefs and tensions, and it takes this second,
+                # explicit field to reach a wanting. So an expunge aimed at a
+                # belief cannot take a loop with it whatever its identifier
+                # happens to be, while the main's own *"erase this loop"*
+                # still works and is still recorded (``ledger.expunged``).
+                loop_target = record.data.get("loop")
+                if isinstance(loop_target, str) and loop_target:
+                    state.expunged.add(loop_target)
+                    state.loops.pop(loop_target, None)
 
             case Op.TENSION:
                 if record.id not in state.expunged:
                     state.tensions[record.id] = copy.deepcopy(dict(record.data))
 
             case Op.LOOP_TRANSITION:
+                # The only op that opens or moves a loop, and the only place in
+                # this module that writes to ``state.loops`` other than the
+                # loop-named expunge above. That is the firewall stated as a
+                # property of the code rather than of anyone's intentions.
+                #
+                # **Read tolerant, write strict.** Nothing here checks the state
+                # against the vocabulary. ``records.validate_loop_fields``
+                # refuses an unknown one before the record is durable, which is
+                # where the check belongs; refusing it *here* as well would mean
+                # a log written by a later build — through the Ask-First path
+                # that adds a state — took a main's whole fold down rather than
+                # costing one loop its ranking weight (AD-24).
                 loop_id = record.data.get("loop")
                 if not isinstance(loop_id, str) or not loop_id:
                     raise CorruptLogError(
