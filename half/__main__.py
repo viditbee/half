@@ -24,6 +24,7 @@ from half.channel.telegram import TelegramChannel
 from half.channel.telegram_transport import PTBTransport
 from half.config import TELEGRAM_TOKEN_ENV, Config, load
 from half.errors import HalfError
+from half.schedule.tick import Scheduler
 from half.secrets import FileSecretStore
 from half.store.sources import LocalSourceStore
 from half.store.store import Store
@@ -39,6 +40,11 @@ class Wiring:
     registry: ActorRegistry
     secrets: FileSecretStore
     sources: dict[str, LocalSourceStore]
+    #: The due-time queue (AD-9). Constructed here rather than inside ``serve``
+    #: so that "the tick runs in the shipped composition" is something a test
+    #: can assert without starting a process — the failure this story exists to
+    #: end is a surface reachable only from tests.
+    scheduler: Scheduler
 
 
 def build(config: Config, token: str) -> Wiring:
@@ -71,14 +77,50 @@ def build(config: Config, token: str) -> Wiring:
         with Store(config.root / main_id) as store:
             channel.reach.rebuild_from(main_id, store.log)
 
-    return Wiring(channel=channel, registry=registry, secrets=secrets, sources=sources)
+    # The due-time queue (AD-9). Every main carries their own ``next_pass_at``
+    # at their local pre-dawn with jitter; the tick drains what is due under
+    # bounded concurrency, holding a file lock so a second worker cannot drain
+    # the same queue. The pass body is a later story, so what it runs today is
+    # ``Nothing`` — which is a first-class outcome, not a placeholder (AD-27).
+    #
+    # The lock lives in ``config.root``, beside the mains rather than inside any
+    # one of them: what it excludes is a second drain of this queue, not a
+    # second write to one main — that is still the actor's mutex, and the tick
+    # goes through it like everything else.
+    scheduler = Scheduler(
+        registry=registry,
+        mains=tuple(config.mains.values()),
+        root=config.root,
+    )
+
+    return Wiring(channel=channel, registry=registry, secrets=secrets,
+                  sources=sources, scheduler=scheduler)
 
 
 async def serve(config: Config, token: str) -> None:
+    """Run the inbound loop and the due-time queue together, until cancelled.
+
+    A ``TaskGroup`` rather than a bare ``gather``: if either half dies the
+    other is cancelled and the process exits, instead of a Half that answers
+    messages but has silently stopped being scheduled — or the reverse, which
+    is worse, because a scheduler running against a dead inbound path is a Half
+    nobody can reach and that still thinks about them.
+    """
     wiring = build(config, token)
     logger.info("serving %d main(s) from %s", len(config.mains), config.root)
     try:
-        await Runtime(channel=wiring.channel, registry=wiring.registry).run()
+        async with asyncio.TaskGroup() as group:
+            ticker = group.create_task(wiring.scheduler.run_forever())
+            try:
+                await Runtime(
+                    channel=wiring.channel, registry=wiring.registry
+                ).run()
+            finally:
+                # The inbound loop is the process's life; the ticker is not
+                # allowed to outlive it. Without this, a receive loop that
+                # ended would leave a Half nobody can reach still thinking
+                # about people on a schedule.
+                ticker.cancel()
     finally:
         wiring.registry.close()
 

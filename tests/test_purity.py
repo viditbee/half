@@ -59,6 +59,17 @@ PURE_MODULES = (
     "half/loops/ledger.py",
 )
 
+#: **``half/schedule/due.py`` is deliberately not in that list**, and the reason
+#: is worth stating so nobody adds it and then deletes the check that actually
+#: covers it. It imports ``datetime`` and ``zoneinfo`` because turning an epoch
+#: and an IANA key into a local civil time is arithmetic over given values — the
+#: import scan above is an import scan, so it cannot tell that from a clock
+#: read. What it must not do is *ask what time it is*, and that is asserted at
+#: call level in ``tests/test_schedule.py``, over the whole ``half/`` tree
+#: rather than one module: exactly one file may call anything ambient, and it is
+#: ``half/schedule/clock.py``. That gate is strictly stronger here than adding a
+#: name to ``PURE_MODULES`` would be, and it carries its own CI floor.
+
 ROOT = Path(__file__).resolve().parents[1]
 
 

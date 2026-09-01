@@ -65,6 +65,13 @@ def test_op_vocabulary_is_closed():
         # the mirror, and a build that could not see one would read a main who
         # declined as a main who was never asked.
         "aftercare",
+        # `schedule` joined in story 9a, with the schema version bumped again.
+        # It carries when this main is next due, which is also the record of
+        # whether the pass that just ran has already run: a build that could
+        # not see one would fold every main to never-scheduled and reschedule
+        # the whole population at once — the herd AD-9 exists to prevent,
+        # produced by a rollback.
+        "schedule",
     }
 
 
@@ -253,11 +260,19 @@ def test_state_carries_only_durable_objects(store):
     than tidiness: belief ids and loop slugs share one id space, and one shared
     set meant erasing a belief froze a loop that happened to share its name —
     the loop stayed in the fold, which every firewall test asserted, while every
-    later transition on it was silently dropped."""
+    later transition on it was silently dropped.
+
+    ``schedule`` joins them in story 9a and belongs to the same category as the
+    ceiling: it is not *how the main is right now* but when they are next due —
+    a fact that has to survive a restart, because one held in memory means
+    every boot either reschedules the whole population together or re-runs a
+    pass that already ran. It is content-free (AD-22): an instant, a zone key,
+    and whether that zone was told or defaulted to."""
     store.record(Op.ASSERT, "b_1", "2026-08-01T00:00Z", claim="durable")
     names = {f.name for f in dataclasses.fields(store.state())}
     assert names == {"beliefs", "tensions", "loops", "expunged",
-                     "expunged_loops", "ceiling", "crisis", "aftercare"}
+                     "expunged_loops", "ceiling", "crisis", "aftercare",
+                     "schedule"}
 
 
 # ── findings from review: gaps the original suite could not observe ─────────

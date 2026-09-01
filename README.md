@@ -24,9 +24,10 @@ declined as somebody who was never asked.
 
 ## Status
 
-Stories 1–5a and 6a–6c of 12: the store, the Telegram channel, mail ingestion,
-retrieval, the two-channel context, the license ladder, and the whole of the
-crisis mode — the switch and the moment, the warm handoff, and coming back.
+Stories 1–5a, 6a–6c, 8 and 9a of 12: the store, the Telegram channel, mail
+ingestion, retrieval, the two-channel context, the license ladder, the whole of
+the crisis mode — the switch and the moment, the warm handoff, and coming back —
+the open-loop ledger, and the due-time scheduler that will run the nightly pass.
 Half can hold a conversation, remember it, derive claims from your mail without
 keeping the mail, rank what it knows against what you just said, decide which
 of it may be *said* as opposed to merely acted on, step out of all of it when
@@ -58,7 +59,9 @@ ceiling, and nothing outside it writes one.
 
 It still cannot decide what is *worth* saying: the responder is a deterministic
 stub because no model is called anywhere yet. The trust balance and the unsaid
-and unasked queues are story 5b.
+and unasked queues are story 5b, and the nightly pass the scheduler runs is
+story 9b — today that pass does nothing, which is a first-class outcome rather
+than a placeholder.
 
 **Not ready for real use.** The crisis subsystem has not been reviewed by a
 qualified clinician, and that review is a launch gate rather than a follow-up.
@@ -174,10 +177,11 @@ expires after a week rather than staying open for a later *yes* to land in.
 stays where it is; Half asks again a fortnight later. Say *"no, and please stop
 asking"* and it stops for good — the cap still holds, the asking ends.
 
-Aftercare is worked out on **your** next message. There is no scheduler here
-and none was built: the restore is a question about somebody who is already in
-the conversation. Caring Contacts — brief periodic messages with no demand
-attached — are the opposite kind of thing and wait for the scheduler in story 9.
+Aftercare is worked out on **your** next message, and nothing under
+`half/crisis/` may read a clock at all — a rule the build fails on. The restore
+is a question about somebody who is already in the conversation. Caring
+Contacts — brief periodic messages with no demand attached — are the opposite
+kind of thing and are not built.
 
 **A second crisis restarts the clock**, from the later disclosure and never the
 first. And once the mirror is back, aftercare is over: it does not go on owning
@@ -219,6 +223,72 @@ plan out of its own memory and hand it to the blessed writer.
 
 The warm handoff — a prefilled draft to a person you choose — is story 6b.
 
+## The scheduler
+
+Half runs one thing on a schedule, and it is not a cron. Each person carries
+their own `next_pass_at`, at **their** local pre-dawn — 03:00 plus up to two
+hours of jitter derived from their own id, so a thousand people in one timezone
+do not share an instant, and a restart does not move anybody's time. A tick
+every minute drains whatever is due, holding a file lock so a second worker
+cannot drain the same queue, under an explicit concurrency bound and a per-person
+timeout, with each person's work isolated from every other's.
+
+**A window that was missed sends nothing.** No catch-up, no backlog, no storm
+after an outage. A process that was down for a week comes back, finds everybody
+overdue, computes every next due time forward and runs nothing at all — because
+for a product whose output is unprompted messages to a person, catching up means
+a queue of yesterday's thoughts arriving at once. That holds on *every* path
+that can run work, not only the one a test happens to call.
+
+**A pass whose "already ran" marker cannot be written does not run.** The
+durable advance comes first, and if it fails the work is skipped rather than
+attempted — otherwise one failed write turns one night's window into a pass on
+every tick for the whole grace hour, which is the storm this exists to prevent
+arriving through the error path.
+
+**The window is the promise, and it is checked against the whole timezone
+database.** A local hour that a daylight-saving change deletes must not push
+anybody outside it: EET moves 03:00 to 04:00 on the last Sunday in March, so
+local 03:00 does not exist that day, and a scheduler that resolved 03:00 and
+then *added* jitter puts eighteen zones at 05:57 local — in the hour people wake
+up. So the jitter is placed inside the window the zone actually has, the answer
+is checked against the promise before it is returned, and the suite sweeps every
+zone the build holds across a year of consecutive due times.
+
+**A main in crisis mode is not passed over.** The mode suspends Half's ordinary
+behaviour, and a nightly pass is ordinary behaviour: their due time advances and
+their pass does not run.
+
+**Where you sleep is told, never inferred.** Not your IP, not a phone prefix,
+not a locale, and not the server's own timezone. Tell Half nothing and you get a
+defined fallback that is *recorded as a fallback*, so a defaulted due time can
+never be mistaken for a chosen one. The rule is asserted structurally as well as
+behaviourally: nothing under `half/schedule/` may import `locale` or `socket`,
+call a bare `astimezone()`, or read `tzname`, and the due time is identical
+whatever `TZ` the process was started with.
+
+**Exactly one module in the whole tree reads a clock** — `half/schedule/clock.py`
+— and everything else takes an injected `now`. That is what keeps the fold pure,
+the crisis floor auditable and every test deterministic, and it is a scan over
+the package rather than a convention: add `datetime.now()` anywhere else and the
+build fails by name. The scan resolves indirection rather than matching
+spellings — an alias bound to the function, a `default_factory`, a `getattr`, a
+rebound module and a bare `from` import all fail it — and it does *not* fire on
+a field named `now` holding an instant somebody was given, which is the whole
+pattern.
+
+**A timestamp that cannot be trusted is clamped, never raised and never
+replaced.** NaN, infinity, a negative epoch, a string: each is clamped into the
+range `half/civil.py` will actually read back, so a hostile platform date cannot
+end the receive loop for every person and cannot become a stored stamp that
+every later comparison silently declines to act on.
+
+Two operational facts that are not enforceable from inside the code: **do not
+put this behind a proxy that scales to zero on inbound idleness** — a pass is by
+definition work nobody asked for, so the proxy sees an idle service and suspends
+it mid-drain — and **size a worker by `ceil(mains / bound) x timeout` against the
+grace window**, which at the shipped numbers is 96 people per worker.
+
 ## Running it
 
 ```bash
@@ -255,6 +325,7 @@ The suite is hermetic — it makes no network calls and needs no bot token.
 | `half/context/` | The license split: content, directives, question candidates |
 | `half/governance/` | The license ladder: rung rules, quarantine, the ceiling, and the aftercare schedule both the actor and crisis enforce |
 | `half/loops/` | The open-loop ledger: the closed state vocabulary, each loop's own timescale, computed silence, and the abandonment candidate |
+| `half/schedule/` | The due-time queue: the one clock reader, local pre-dawn with jitter from a told zone, and the file-locked drain |
 | `half/text.py` | One script-neutral tokenizer, shared by index and matcher |
 | `half/civil.py` | Clockless civil-date arithmetic, shared by the crisis floor and the loop timescales |
 | `half/channel/` | The `Channel` port, reachability, the Telegram adapter |
@@ -276,6 +347,33 @@ is the crisis gate.
 
 `test_dependencies.py` enforces that the runtime imports only the standard
 library and pinned dependencies.
+
+`test_schedule.py` is the AD-9 gate, and it never waits for real time: every
+instant is chosen by the test and handed to a frozen clock, which is the design
+under test rather than a convenience. It runs a due time past its grace window
+and asserts nothing was sent; it drains forty people nine days overdue and
+asserts the same; it holds a real `flock` from a child process, kills the child,
+and asserts the next tick drains with no cleanup and no timeout; it hangs one
+person's pass and asserts everybody else's completed; it sweeps every zone in
+the timezone database across a year of consecutive due times, checking both that
+each lands inside the promised window and that no local day was skipped to keep
+it there.
+
+**The recurring loop is run rather than read**, which is the correction review
+round 1 forced. `run_forever` used to be exercised by nothing, so three
+mutations passed the whole suite — ticking once at boot, dying on the first
+transient error, and a startup `_catch_up()` draining every missed person, which
+is catch-up arriving through the one door the guard was not watching. `serve`
+used to be pinned by a source-string grep, which `ticker.cancel()` on the
+following line satisfies; it now runs against a fake inbound loop and asserts a
+pass actually fired.
+
+Its structural half — one clock reader in any spelling, no zone inferred from
+any signal, a due time the host's own `TZ` cannot move, and an untrusted stamp
+clamped into the range the store reads back — carries its own marker and its own
+floor, because a floor set on the whole would let every one of those cases be
+deleted. Twenty-three mutations have been run against these gates and each fails
+by name.
 
 `test_aftercare.py` and `test_safetyplan.py` are the coming-back gate: the
 thirty-day floor at every path that can raise a cap, the stepwise restore, the

@@ -377,6 +377,120 @@ jobs:
           fi
           uv run --locked --extra dev pytest -q -m cap6_structure
 
+      - name: 'AD-9: a due-time queue, never a cron'
+        # Nothing else in the product runs on a schedule, so every rule here is
+        # one that decays in silence: nothing breaks the day the grace window
+        # widens into a catch-up, the concurrency bound stops being applied, the
+        # file lock is dropped because "one worker anyway", or jitter becomes a
+        # `random` draw that loses the spread on every restart. The suite stays
+        # green and a thousand mains quietly share an instant — or wake up to a
+        # week of yesterday's thoughts at once.
+        #
+        # Marker-selected rather than file-selected, for the reason the AD-18,
+        # AD-28, CAP-12 and CAP-6 steps are: it must not go green because
+        # another step happened to run one of the same files.
+        #
+        # **The floor carries margin that is not the cases it protects**, the
+        # rule review round 1 had to establish for the third story running. 109
+        # selected, 95 required — and the twenty-nine guarantee cases are
+        # marked separately and gated below, so deleting them lands on 80 and
+        # fails *twice*: their own gate collects nothing, and this one drops
+        # beneath its floor. The one-clock cases are inside this count too, for
+        # the same reason.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m ad9 -q --collect-only \
+            | grep -c '::' || true)
+          echo "AD-9 cases collected: $collected"
+          if [ "$collected" -lt 95 ]; then
+            echo "::error::the AD-9 gate collected $collected cases; it has stopped asserting"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m ad9
+
+      - name: 'AD-9: the promises inside the queue'
+        # A second gate over the subset that carries the story, for the reason
+        # the CAP-12 durability and CAP-6 firewall gates exist. These are the
+        # cases a mutation has actually been run against, each failing by name:
+        #
+        #   catch-up on a missed window, through `tick` *and* through
+        #   `run_forever` (a startup `_catch_up()` was green across 2002 tests);
+        #   `while True` replaced by one iteration; the loop's `except` replaced
+        #   by `raise`; `ScheduleError` swallowed; an unbounded semaphore; the
+        #   shipped bound, timeout and grace at absurd values; `flock` removed;
+        #   `_is_contention` returning True; `note_pass` bypassing the per-main
+        #   mutex; `_advance` swallowing a failed write and running the pass
+        #   anyway; jitter added to a resolved 03:00 rather than placed inside
+        #   the real window (eighteen zones at 05:57 local on the EET spring
+        #   transition); `DERIVED_VERSION` reverted; the fold's fatal branch
+        #   deleted; and `ticker.cancel()` inserted after `create_task` in
+        #   `serve`.
+        #
+        # 29 selected, 25 required.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m ad9_guarantee -q --collect-only \
+            | grep -c '::' || true)
+          echo "AD-9 guarantee cases collected: $collected"
+          if [ "$collected" -lt 25 ]; then
+            echo "::error::the AD-9 guarantee gate collected $collected cases; the promises are unguarded"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m ad9_guarantee
+
+      - name: 'AD-30: one clock reader, and a zone that is told'
+        # The structural half of story 9a: the scans, and the non-vacuity cases
+        # that feed each scan every shape it must see. A behavioural test cannot
+        # cover any of it — a scheduler reading the host zone agrees with every
+        # other case in the suite on a machine set to UTC, and a second clock
+        # reader breaks nothing until two subsystems disagree about what "today"
+        # is, a year later.
+        #
+        # 40 selected, 30 required, with the eighteen guarantee cases gated
+        # separately below: deleting them lands on 22 and fails both steps.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m one_clock -q --collect-only \
+            | grep -c '::' || true)
+          echo "one-clock-reader cases collected: $collected"
+          if [ "$collected" -lt 30 ]; then
+            echo "::error::the one-clock gate collected $collected cases; a second clock reader is now unguarded"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m one_clock
+
+      - name: 'AD-30: the sentences the one-clock rule exists to make true'
+        # The guarantee subset, because review round 1 found the first version
+        # of the one-clock floor sized so that deleting exactly the three
+        # guarantee cases landed on it and passed — leaving eight non-vacuity
+        # cases exercising a helper nothing called on the package. Third story
+        # running for that shape of bug, so the split is now the default.
+        #
+        # These are: exactly one module in the tree reads a clock, in any
+        # spelling — an alias bound to the function, a `default_factory`, a
+        # `getattr`, a rebound module, a `from` import (each of which walked
+        # past the first scan); no module anywhere can infer where the main
+        # sleeps from a prefix, an IP or a locale (a rule whose matrix row said
+        # *asserted structurally* while nothing asserted it); nothing reads the
+        # host's own zone through a bare `astimezone()` or a naive
+        # `fromtimestamp`; the due time is identical whatever `TZ` the process
+        # was started with, checked in subprocesses; an untrusted stamp — NaN,
+        # infinity, negative, absurd, or not a number at all — is clamped into
+        # the range `half.civil` will read back, and never escapes as an
+        # exception; and everything the tick calls takes an injected `now`.
+        #
+        # 18 selected, 16 required.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m one_clock_guarantee -q --collect-only \
+            | grep -c '::' || true)
+          echo "one-clock guarantee cases collected: $collected"
+          if [ "$collected" -lt 16 ]; then
+            echo "::error::the one-clock guarantee gate collected $collected cases; the rule is a spelling again"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m one_clock_guarantee
+
       - name: 'AD-5 and AD-30: retrieval degrades, and never writes'
         # The reranker fallback, the salience-is-derived assertions, the
         # no-clock scan, and the AD-3 discard-and-replay of an older derived

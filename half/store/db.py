@@ -34,6 +34,7 @@ PrefixFn = Callable[[Mapping[str, Any]], str]
 CEILING_KEY: Final[str] = "ceiling"
 CRISIS_KEY: Final[str] = "crisis"
 AFTERCARE_KEY: Final[str] = "aftercare"
+SCHEDULE_KEY: Final[str] = "schedule"
 
 #: Shape of the derived view. Bumped whenever a column or an FTS table changes.
 #: SQLite here is derived and disposable (AD-3), so a mismatch is resolved by
@@ -41,13 +42,19 @@ AFTERCARE_KEY: Final[str] = "aftercare"
 #: would be a second way for derived state to exist that the log does not
 #: describe.
 #:
+#: v8 added the ``schedule`` row (story 9a). A view built by v7 has no place to
+#: put a due time, so a stale one surviving the upgrade would report every main
+#: as never scheduled — and the scheduler would reschedule the whole population
+#: at once, which is the herd AD-9 exists to prevent, produced by the derived
+#: store rather than by the log.
+#:
 #: v7 added ``expunged_loops`` (story 8), and the bump is not optional for a
 #: reason a new *table* makes obvious but which would hold even without one:
 #: the fold's loop semantics changed. A view built by v6 recorded an expunged
 #: loop in the shared ``expunged`` set, where the new transition guard does not
 #: look — so a stale view surviving the upgrade would have a main's ranking
 #: function disagree with their own log about which wantings are still open.
-DERIVED_VERSION: Final[int] = 7
+DERIVED_VERSION: Final[int] = 8
 
 #: Every object this module owns, in an order safe to drop: the FTS table
 #: references ``beliefs`` as its external content.
@@ -222,6 +229,9 @@ def rebuild(
         if state.aftercare is not None:
             conn.execute("INSERT INTO governance (key, value) VALUES (?,?)",
                          (AFTERCARE_KEY, _dump(state.aftercare)))
+        if state.schedule is not None:
+            conn.execute("INSERT INTO governance (key, value) VALUES (?,?)",
+                         (SCHEDULE_KEY, _dump(state.schedule)))
         for ident, data in state.tensions.items():
             conn.execute("INSERT INTO tensions (id, data) VALUES (?,?)",
                          (ident, _dump(data)))
@@ -266,6 +276,9 @@ def read_state(conn: sqlite3.Connection) -> State:
     row = conn.execute("SELECT value FROM governance WHERE key = ?",
                        (AFTERCARE_KEY,)).fetchone()
     state.aftercare = json.loads(row["value"]) if row is not None else None
+    row = conn.execute("SELECT value FROM governance WHERE key = ?",
+                       (SCHEDULE_KEY,)).fetchone()
+    state.schedule = json.loads(row["value"]) if row is not None else None
     return state
 
 

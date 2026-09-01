@@ -33,7 +33,15 @@ from typing import Final
 #: never asked. Silence is not consent, and a schema rollback that turned a
 #: recorded decline into an unasked question would be the one restore CAP-12
 #: forbids arriving by accident.
-SCHEMA_VERSION: Final[int] = 4
+#: v5 added ``schedule`` (story 9a), and the bump is not optional for the
+#: reason the last three were not — with one twist that makes it sharper. The
+#: record carries ``next_pass_at``: when this main is next due, and therefore
+#: *whether the pass that just ran has already run*. A build that could not see
+#: one would fold every main to never-scheduled. That is not a silent
+#: no-op — it is the scheduler deciding, on every tick after a rollback, that
+#: nobody has ever been scheduled, and rewriting a fresh due time for the whole
+#: population at once. The refusal to fold is the correct outcome.
+SCHEMA_VERSION: Final[int] = 5
 
 
 class Op(StrEnum):
@@ -91,6 +99,25 @@ class Op(StrEnum):
     #: **Content-free** (AD-22). The record carries a state and a time — never
     #: the message, never the answer's wording, and nothing about recovery.
     AFTERCARE = "aftercare"
+    #: When this main is next due for a pass (AD-9, story 9a).
+    #:
+    #: In the log for the reason the ceiling and the mode are, and the failure
+    #: it prevents is the loud one. A due time held in memory is lost on every
+    #: restart, so every restart would either schedule the whole population
+    #: afresh — a herd, which is exactly what a due-time queue exists to
+    #: prevent — or re-run a pass that already ran. This record is what makes
+    #: *"a restart does not lose when a main is next due, and does not re-run a
+    #: pass that already ran"* a property of the store rather than of the
+    #: process's uptime.
+    #:
+    #: It is also the only record that says a due time was **defaulted**. A
+    #: main who has told Half no timezone is scheduled in a defined fallback,
+    #: and ``told_zone`` false is what makes that visible rather than a guess
+    #: indistinguishable from an answer.
+    #:
+    #: **Content-free** (AD-22). The record carries an instant, a zone key and
+    #: a flag — never what the pass found, never whether anything was sent.
+    SCHEDULE = "schedule"
 
 
 #: The two states a ``crisis`` record may carry. Named here, beside the op, so

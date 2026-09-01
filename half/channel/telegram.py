@@ -12,13 +12,20 @@ leaking into callers.
 **Transport is injected.** ``Transport`` is the whole surface this adapter
 needs from the network, so the suite runs offline and hermetically while the
 production implementation is a thin `python-telegram-bot` wrapper.
+
+**So is the clock.** This adapter is the boundary where wall-clock time enters
+the inbound path — a platform timestamp has to be normalised and a latch has to
+be asked *now* — but the read itself belongs to ``half.schedule.clock``, which
+is the one module in the tree that calls a clock at all (AD-30). Story 9a made
+that a property the suite asserts rather than a sentence in a docstring, so the
+three reads that used to live here take their instant from the injected
+``Clock`` instead. Nothing about the behaviour changed; where the time comes
+from did.
 """
 
 from __future__ import annotations
 
-import datetime as _dt
 import re
-import time
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Protocol
 from urllib.parse import quote
@@ -26,6 +33,7 @@ from urllib.parse import quote
 from half.channel.port import Inbound, Reachability, SendResult
 from half.channel.window import LatchRule, ReachabilityTracker
 from half.errors import ForbiddenRecipient, NotReachable, SendFailed
+from half.schedule.clock import Clock, SystemClock, clamp, stamp
 
 #: A Telegram username: letters, digits and underscores. Deliberately narrower
 #: than the platform's own rule, because this decides where a deep link points
@@ -63,6 +71,9 @@ class TelegramChannel:
     reach: ReachabilityTracker = field(
         default_factory=lambda: ReachabilityTracker(rule=LatchRule())
     )
+    #: Where "now" comes from. Injected so this adapter is not a second clock
+    #: reader, and so a test can drive a window without waiting for one.
+    clock: Clock = field(default_factory=SystemClock)
 
     # -- port: receive -------------------------------------------------------
 
@@ -78,14 +89,14 @@ class TelegramChannel:
             main_id = self.mains.get(address)
             if main_id is None:
                 continue
-            epoch = _epoch(update.get("date"))
+            epoch = _epoch(update.get("date"), arrived=self.clock.read().epoch)
             self.reach.note_inbound(main_id, epoch=epoch)
             yield Inbound(
                 main_id=main_id,
                 address=address,
                 text=str(update.get("text", "")),
                 external_id=str(update.get("message_id", "")),
-                t=_iso(epoch),
+                t=stamp(epoch),
             )
 
     # -- port: send ----------------------------------------------------------
@@ -162,7 +173,7 @@ class TelegramChannel:
         once the main has written once it is open permanently. Callers get the
         answer and never the rule.
         """
-        return self.reach.reachability(main_id, now=time.time())
+        return self.reach.reachability(main_id, now=self.clock.read().epoch)
 
     # -- internals -----------------------------------------------------------
 
@@ -246,30 +257,35 @@ def _is_retryable(exc: Exception) -> bool:
     return False
 
 
-def _epoch(raw: object) -> float:
+def _epoch(raw: object, *, arrived: float) -> float:
     """A usable timestamp from whatever the platform sent.
 
-    A malformed date must not kill the receive loop for every main.
+    A malformed date must not kill the receive loop for every main, so anything
+    unreadable falls back to ``arrived`` — the instant the caller read, handed
+    in rather than fetched, because this module is not the one that reads a
+    clock.
+
+    **A non-finite number is malformed, not absurd**, and the distinction is the
+    regression review round 1 found: an absurd-but-real date (``1e30``) is kept
+    as it is and clamped visibly at render, while ``NaN`` and ``±inf`` are not
+    dates at all — one of them used to reach ``fromtimestamp`` and raise
+    ``ValueError`` out of the receive loop for every main. They take the
+    fallback, along with ``"nan"`` and ``"inf"``, which ``float()`` accepts.
+
+    The value is clamped here as well as at render, so the *reachability latch*
+    and the stored stamp are computed from the same number. They were not: a
+    ``1e30`` date opened a window until the heat death of the universe while the
+    stamp beside it read 2199.
     """
     if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-        return float(raw)
-    if isinstance(raw, str):
+        candidate = float(raw)
+    elif isinstance(raw, str):
         try:
-            return float(raw)
+            candidate = float(raw)
         except ValueError:
-            pass
-    return time.time()
-
-
-def _iso(epoch: float) -> str:
-    """Epoch seconds to a UTC ISO-8601 stamp.
-
-    The adapter is the boundary where wall-clock time enters. Nothing
-    downstream reads a clock, which is what keeps the fold pure (AD-30).
-    """
-    try:
-        stamp = _dt.datetime.fromtimestamp(epoch, _dt.UTC)
-    except (OverflowError, OSError, ValueError):
-        # A hostile or absurd timestamp must not abort inbound processing.
-        stamp = _dt.datetime.now(_dt.UTC)
-    return stamp.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            return arrived
+    else:
+        return arrived
+    if candidate != candidate or candidate in (float("inf"), float("-inf")):
+        return arrived
+    return clamp(candidate)

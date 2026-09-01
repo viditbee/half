@@ -117,6 +117,23 @@ class LoopError(HalfError, ValueError):
     """
 
 
+class ScheduleError(HalfError, ValueError):
+    """A scheduling value the append gate refuses (AD-9, story 9a).
+
+    Raised by ``records.validate_schedule_fields`` for a ``next_pass_at`` this
+    build cannot read back, and by ``half.schedule.tick`` when a tick cannot be
+    file-locked at all. The log is append-only, so a due time nothing can parse
+    is a main who is either never due again or due on every tick for ever, with
+    the offending line unremovable.
+
+    **Also a ``ValueError``**, and for the reason ``LoopError`` is both: the
+    conventions say no public store operation raises a non-``HalfError``, while
+    ``validate_fields`` has raised bare ``ValueError`` for every malformed field
+    since story 1. Inheriting from both is how one refusal answers to both names
+    rather than one of them silently winning.
+    """
+
+
 class RetrievalError(HalfError):
     """A fault in the retrieval layer (CAP-9)."""
 

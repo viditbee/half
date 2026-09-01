@@ -17,10 +17,12 @@ from dataclasses import dataclass, field
 from collections.abc import Mapping
 from typing import Any, Final
 
+from half.civil import instant
 from half.errors import (
     CorruptLogError,
     LoopError,
     SchemaVersionError,
+    ScheduleError,
     UnknownOpError,
 )
 from half.loops.ledger import LOOP
@@ -188,6 +190,53 @@ HANDOFF_FIELDS: Final[tuple[str, ...]] = (CONTACT, REGION)
 #: module composes, completes or reformats the value it carries.
 PLAN: Final[str] = "plan"
 
+#: The IANA zone the main **told** Half they sleep in (AD-9, story 9a), and the
+#: two fields of the ``schedule`` record that carry the answer forward.
+#:
+#: Named here for the reason ``CONTACT`` and ``REGION`` are: the layer that
+#: owns record shapes owns the spelling, and ``half.schedule`` — which sits
+#: above the store, above the ladder and above the actor — imports them rather
+#: than declaring a second copy. ``LOOP`` runs the other way because the
+#: open-loop package sits *below* this module; this one cannot, because
+#: ``half.schedule.due`` reads the ladder and the ladder reads this file.
+#:
+#: ``ZONE`` is a belief field — where the main is, is an answer they gave, and
+#: it takes the same admission path as any other claim about them.
+#: ``NEXT_PASS_AT`` and ``TOLD_ZONE`` are scheduler state and appear only on a
+#: ``schedule`` record.
+ZONE: Final[str] = "zone"
+NEXT_PASS_AT: Final[str] = "next_pass_at"
+TOLD_ZONE: Final[str] = "told_zone"
+
+#: The one record kind the scheduler may see, and the only fields of it that
+#: leave the store. Narrowed by field for the reason ``HANDOFF_VISIBLE`` is: a
+#: belief carrying both a zone and a claim about the main is the most ordinary
+#: shape there is once *"I'm in Delhi"* has been said in a sentence, and the
+#: scheduler has no business holding the claim. What it gets is a zone key and
+#: the ladder's own evidence for whether the main actually told Half.
+ZONE_VISIBLE: Final[tuple[str, ...]] = (
+    "id", ZONE, "license", "support", "known_to_main", QUARANTINED,
+)
+
+
+def zone_record(record: Mapping[str, Any] | Any) -> bool:
+    """Whether ``record`` names a timezone the main told Half.
+
+    Beside ``handoff_record`` and ``plan_record``, narrowing the same way and
+    for a related reason: the scheduler runs outside any turn and outside the
+    crisis gate, so what it can reach has to be decided here rather than by
+    whichever module happens to ask.
+    """
+    if not isinstance(record, Mapping):
+        return False
+    value = record.get(ZONE)
+    return isinstance(value, str) and bool(value.strip())
+
+
+def zone_projection(record: Mapping[str, Any]) -> dict[str, Any]:
+    """``record`` reduced to what the scheduler may see."""
+    return {name: record[name] for name in ZONE_VISIBLE if name in record}
+
 
 def handoff_record(record: Mapping[str, Any] | Any) -> bool:
     """Whether ``record`` is phone-book material.
@@ -340,7 +389,60 @@ _TYPED_FIELDS: Final[dict[str, type | tuple[type, ...]]] = {
     LOOP: str,
     TIMESCALE: str,
     LAST_MOVEMENT: str,
+    # The due-time queue (AD-9). ``zone`` is the IANA key the main told Half;
+    # ``next_pass_at`` is when they are next due and ``told_zone`` whether the
+    # zone it was computed in was an answer or the recorded fallback. Validated
+    # at the append for the reason every field above is: the log is append-only,
+    # and a ``told_zone`` stored as the string "false" is a fallback that reads
+    # as an answer for ever.
+    ZONE: str,
+    NEXT_PASS_AT: str,
+    TOLD_ZONE: bool,
 }
+
+
+def validate_schedule_fields(fields: Mapping[str, Any]) -> None:
+    """Reject a ``schedule`` record the scheduler could never read back (AD-9).
+
+    **Write strict, read tolerant**, on the same terms as a loop transition and
+    for a sharper version of the same reason.
+
+    * ``next_pass_at`` — **required**, and a stamp ``half.civil`` can actually
+      read. A due time nothing can parse folds to a main who has never been
+      scheduled, which is not a silent no-op: it makes the next tick schedule
+      them afresh, every tick, for ever. Refused before it is durable.
+    * ``zone`` — required, because a due time that cannot say what zone it was
+      computed in cannot be checked against the main's own answer, and the one
+      thing this record exists to make visible is which of the two it was.
+
+    ``told_zone`` is left to the generic type check above: it is a bool or it
+    is refused there, and its absence means the same thing false does.
+
+    The read direction is deliberately looser — see ``half.store.fold`` — so a
+    due time this build cannot interpret costs one main one pass rather than
+    taking their whole store down.
+    """
+    at = fields.get(NEXT_PASS_AT)
+    if not isinstance(at, str) or instant(at) is None:
+        raise ScheduleError(
+            f"a {Op.SCHEDULE.value} record must carry {NEXT_PASS_AT!r} as a UTC "
+            f"stamp this build can read (YYYY-MM-DDThh:mm[:ss]Z), got "
+            f"{at!r}; a due time nothing can parse is a main who is never due "
+            f"again, or due on every tick for ever, and the record would be "
+            f"durable"
+        )
+    zone = fields.get(ZONE)
+    if not isinstance(zone, str) or not zone.strip():
+        # The value is deliberately **not** quoted back (AD-22). A zone is
+        # where the main lives, and an exception message reaches a log line
+        # through every handler that formats one. The type is enough to fix
+        # the caller.
+        raise ScheduleError(
+            f"a {Op.SCHEDULE.value} record must name the zone it was computed "
+            f"in as {ZONE!r} — a non-empty string, got "
+            f"{type(zone).__name__}; without it a recorded fallback is "
+            f"indistinguishable from an answer"
+        )
 
 
 def _type_names(expected: type | tuple[type, ...]) -> str:
@@ -436,6 +538,11 @@ def validate_fields(fields: dict[str, Any], *, op: Op | None = None) -> None:
         # catch every refusal this gate makes — including "that is not a
         # string".
         validate_loop_fields(fields)
+    if op is Op.SCHEDULE:
+        # First, for the reason the loop gate is first: a malformed due time
+        # must refuse as a ``ScheduleError`` rather than as the generic type
+        # check's bare ``ValueError``.
+        validate_schedule_fields(fields)
     for name, expected in _TYPED_FIELDS.items():
         if name not in fields or fields[name] is None:
             continue

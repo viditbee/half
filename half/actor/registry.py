@@ -49,10 +49,13 @@ from half.store.ops import (
     Op,
 )
 from half.store.records import (
+    NEXT_PASS_AT,
     handoff_projection,
     handoff_record,
     plan_projection,
     plan_record,
+    zone_projection,
+    zone_record,
 )
 from half.store.store import Store
 
@@ -492,6 +495,71 @@ class ActorRegistry:
         self._evict_if_needed()
         record = actor.store.state().aftercare
         return dict(record) if record is not None else None
+
+    # -- the due-time queue (AD-9, story 9a) ----------------------------------
+    #
+    # Three doors, and they follow ``handoff_records`` / ``note_aftercare``
+    # exactly: two reads that hydrate without blocking and without writing, and
+    # one write that goes through the mutex. The scheduler runs outside any
+    # turn, so it needs the same shape the crisis gate needed — and it must not
+    # get a second, private route to a main's log, because the single writer is
+    # what lets the store skip a journal (AD-1).
+
+    def schedule_record(self, main_id: str) -> dict[str, Any] | None:
+        """When this main is next due, as the log last recorded it, or ``None``.
+
+        ``None`` means never scheduled, and the scheduler treats it as *record a
+        due time and run nothing* — never as *run now*. That is the whole of
+        "a missed window sends nothing" at the boundary where a main first
+        appears: a new main, a restored backup and a log this build cannot read
+        all land on the same silent branch.
+        """
+        actor = self._reached(main_id)
+        self._evict_if_needed()
+        record = actor.store.state().schedule
+        return dict(record) if record is not None else None
+
+    def zone_records(self, main_id: str) -> tuple[dict[str, Any], ...]:
+        """The records naming a timezone this main told Half (AD-9).
+
+        Narrowed by field rather than by record, for the reason
+        ``handoff_records`` is: *"I'm in Delhi now"* is an ordinary sentence,
+        so a belief carrying a zone commonly carries a claim about the main as
+        well, and the scheduler has no business holding the claim. What comes
+        back is a zone key plus the ladder's own evidence for whether it was an
+        answer — which is what ``half.schedule.due.zone_of`` then asks.
+
+        Ordered by id so the same store produces the same zone twice.
+        """
+        actor = self._reached(main_id)
+        self._evict_if_needed()
+        beliefs = actor.store.state().beliefs
+        return tuple(
+            zone_projection(record)
+            for _, record in sorted(beliefs.items())
+            if zone_record(record)
+        )
+
+    async def note_pass(
+        self, main_id: str, *, t: str, fields: Mapping[str, Any]
+    ) -> None:
+        """Record when this main is next due, under the mutex (AD-1).
+
+        **Takes the fields, never the parts.** ``half.schedule.due.scheduled``
+        composes them from a ``Due``, so the zone and the told flag cannot
+        drift apart from the instant they describe — the registry does not know
+        what pre-dawn is and must not start deciding.
+
+        The append is what makes a due time survive a restart, and what makes a
+        completed pass not run twice. It goes through ``acquire`` rather than
+        writing directly, so a tick and a turn cannot both be writing this
+        main's log: the file lock keeps a second *worker* out, and this keeps
+        the tick and the inbound path apart inside one.
+        """
+        async with self.acquire(main_id) as actor:
+            actor.store.record(
+                Op.SCHEDULE, f"sc_{fields[NEXT_PASS_AT]}", t, **dict(fields)
+            )
 
     async def suspend_for_crisis(
         self, main_id: str, *, t: str, tier: str, score: int, fresh: bool = True

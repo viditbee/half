@@ -1320,8 +1320,17 @@ def test_only_the_context_builder_decides_a_rung():
     #: No rung is decided there: a held document is not a claim Half is
     #: asserting, and the writer gate below still forbids it spelling a license
     #: field into a record.
+    #: ``half/schedule/due.py`` reads ``own_rung`` and nothing else in that set,
+    #: on exactly the terms ``contacts.py`` does — and it is the same question
+    #: about the same kind of record. A main's timezone is *told, never
+    #: inferred* (AD-9, the rule story 6b set for region), so the scheduler may
+    #: compute a due time only from a zone the main confirmed; asking the
+    #: ladder's own predicate is what stops a second reader of *has the main
+    #: confirmed this?* arriving with its own idea of what counts. No rung is
+    #: decided there: a due time is not something Half says, and the writer gate
+    #: below still forbids that module spelling a license field into a record.
     allowed = {"half/context/build.py", "half/crisis/contacts.py",
-               "half/crisis/safetyplan.py"}
+               "half/crisis/safetyplan.py", "half/schedule/due.py"}
     offenders: list[str] = []
     for module, path in source_modules():
         relative = str(path.relative_to(ROOT))

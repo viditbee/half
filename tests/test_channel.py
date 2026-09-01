@@ -54,8 +54,27 @@ def test_an_unknown_sender_is_dropped_and_never_recorded():
 
 
 def test_inbound_normalizes_the_timestamp_to_utc_iso():
-    ch = channel([msg(date=0)])
-    assert asyncio.run(_collect(ch))[0].t == "1970-01-01T00:00:00Z"
+    ch = channel([msg(date=1_788_264_000)])
+    assert asyncio.run(_collect(ch))[0].t == "2026-09-01T12:00:00Z"
+
+
+def test_an_inbound_date_is_clamped_into_the_range_the_store_can_read():
+    """Story 9a moved the epoch-to-stamp conversion into the one clock module,
+    and moved the clamp with it — into **the range the store validates**, not
+    the range ``datetime`` can render.
+
+    ``half.civil.instant`` refuses anything outside 2000–2200, and it is what
+    every floor, timescale and due-time comparison in the product is measured
+    with. So a 1970 stamp is not a harmless oddity: it renders, it stores, and
+    then every consumer silently declines to act on it. An epoch-zero date is
+    not a real Telegram message anyway; being visibly clamped beats being
+    invisibly unreadable.
+    """
+    from half.civil import instant
+
+    for date in (0, -1, 10 ** 30):
+        stamp = asyncio.run(_collect(channel([msg(date=date)])))[0].t
+        assert instant(stamp) is not None, f"{date} produced an unreadable {stamp}"
 
 
 # -- reachability ------------------------------------------------------------

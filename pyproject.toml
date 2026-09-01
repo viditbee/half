@@ -48,4 +48,8 @@ markers = [
     "cap12_handoff: the warm handoff — the confirmed list, the versioned directory, the draft",
     "cap12_aftercare: coming back — the thirty-day floor, the steps, the main's answer, the held plan",
     "cap12_aftercare_property: the single-case structural rules aftercare and the safety plan rest on",
+    "ad9: the due-time queue — per-main due times, jitter, the file lock, bounded isolated work, and a missed window that sends nothing",
+    "ad9_guarantee: the promises inside the queue — no catch-up on any path, the lock, the bound, isolation, the durable write that stops a pass, and the window across every zone",
+    "one_clock: exactly one module reads a clock, everything below it takes an injected now, and no signal is consulted to guess a zone",
+    "one_clock_guarantee: the three sentences that half exists to make true — one reader, no zone inference, and a due time the host's own timezone cannot move",
 ]

@@ -32,6 +32,7 @@ from half.store.ops import AFTERCARE_STATES, CRISIS_STATES, Op
 from half.store.records import (
     LAST_MOVEMENT,
     LOOP,
+    NEXT_PASS_AT,
     STATE,
     TIMESCALE,
     Record,
@@ -91,6 +92,21 @@ class State:
     #: ended, which ``half.crisis.aftercare`` decides by comparing the two
     #: stamps rather than by the fold throwing anything away.
     aftercare: dict[str, Any] | None = None
+    #: The last ``schedule`` record, or ``None`` if this main has never been
+    #: scheduled (AD-9, story 9a). Raw fields, for the reason ``crisis`` and
+    #: ``aftercare`` hold raw fields: *whether* a main is due is the
+    #: scheduler's question, computed from an injected instant, and the fold
+    #: answers no scheduling ones — it reads no clock and cannot.
+    #:
+    #: The last record is enough because each supersedes the one before: a
+    #: schedule record says when this main is next due, and the next one says
+    #: it again, later.
+    #:
+    #: Here rather than in memory because a due time that ends at the next
+    #: restart is not a schedule. The population would be rescheduled together
+    #: on every boot — a herd, which is the one thing AD-9 exists to prevent —
+    #: or a pass that already ran would run again.
+    schedule: dict[str, Any] | None = None
 
     def canonical_json(self) -> str:
         """Deterministic serialization — the unit of the byte-identical
@@ -105,6 +121,7 @@ class State:
                 "ceiling": self.ceiling,
                 "crisis": self.crisis,
                 "aftercare": self.aftercare,
+                "schedule": self.schedule,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -271,6 +288,32 @@ def fold(records: Iterable[Record]) -> State:
                         path="<fold>", line=0,
                     )
                 state.aftercare = copy.deepcopy(dict(record.data))
+
+            case Op.SCHEDULE:
+                # Fatal on *shape*, tolerant of *value*, and the split is
+                # deliberate. A schedule record with no ``next_pass_at`` at all
+                # is a record this build cannot recognise, and folding it to
+                # nothing is the silent omission AD-29 exists to prevent — the
+                # main would read as never scheduled and be rescheduled on
+                # every tick for ever.
+                #
+                # A ``next_pass_at`` that is a string this build cannot *parse*
+                # is a different failure and gets the opposite answer, because
+                # the two costs are not symmetric: refusing to fold takes a
+                # main's entire store down — every belief, every loop, their
+                # whole reply path — over a due time, while carrying the value
+                # through costs them one pass. ``half.civil.instant`` returns
+                # ``None`` for it, ``half.schedule.tick`` treats that as
+                # never-scheduled, and the main is scheduled forward and sent
+                # nothing. Sending nothing is a first-class outcome (AD-27);
+                # bricking a store is not.
+                at = record.data.get(NEXT_PASS_AT)
+                if not isinstance(at, str) or not at:
+                    raise CorruptLogError(
+                        f"{record.op} record {record.id!r} has no {NEXT_PASS_AT!r}",
+                        path="<fold>", line=0,
+                    )
+                state.schedule = copy.deepcopy(dict(record.data))
 
             case _:  # pragma: no cover - guarded by the closed vocabulary
                 # A new Op added to the enum must not fold to nothing. Silently
