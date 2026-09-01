@@ -28,7 +28,8 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from types import MappingProxyType
 
-from half.errors import UnknownTier
+from half.config import parse_pairs
+from half.errors import BudgetError, StoreError, UnknownTier
 
 #: Millionths of a US dollar in one dollar. Prices are integers throughout, so
 #: that a budget comparison is exact and two builds that add the same calls in
@@ -39,6 +40,14 @@ MICRO_USD = 1_000_000
 #: a five-minute write costs a quarter more than it; an hour's write costs
 #: double. Held as basis points rather than floats for the reason above.
 BASIS = 10_000
+
+
+#: The effort levels the current models accept. A value outside this set is a
+#: 400 rather than a rounded-down setting, so a tier table naming one is
+#: refused where it is written rather than on the first call.
+EFFORTS: Mapping[str, None] | tuple[str, ...] = (
+    "low", "medium", "high", "xhigh", "max",
+)
 
 
 class Tier(StrEnum):
@@ -107,12 +116,45 @@ class ModelSpec:
     generate_effort: str = "high"
 
     def __post_init__(self) -> None:
-        if not self.model.strip():
+        """Validated because a deployment supplies these.
+
+        ``Tiers`` takes a caller's own table so a self-hoster can point a tier
+        at whatever they are paying for, which means every number here is
+        untrusted input. Review round 1 found none of it checked: a negative
+        price produces a negative estimate, and a negative estimate is admitted
+        by *every* budget — a ceiling that cannot bind, from a typo.
+        """
+        if not isinstance(self.model, str) or not self.model.strip():
             raise UnknownTier("a tier must resolve to a model identifier")
+        prices = {
+            "input_micro_usd_per_mtok": self.input_micro_usd_per_mtok,
+            "output_micro_usd_per_mtok": self.output_micro_usd_per_mtok,
+        }
+        for name, value in prices.items():
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise BudgetError(
+                    f"{self.model}: {name}={value!r}. A price is a whole number "
+                    f"of millionths of a dollar and is never negative — a "
+                    f"negative one makes an estimate negative, and a negative "
+                    f"estimate is admitted by every budget there is"
+                )
+        counts = {
+            "default_max_tokens": self.default_max_tokens,
+            "max_output_tokens": self.max_output_tokens,
+            "cache_min_tokens": self.cache_min_tokens,
+        }
+        for name, value in counts.items():
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise BudgetError(f"{self.model}: {name}={value!r} is not a count")
         if self.default_max_tokens > self.max_output_tokens:
             raise UnknownTier(
                 f"{self.model}: a default of {self.default_max_tokens} output "
                 f"tokens is past the model's own {self.max_output_tokens}"
+            )
+        if self.effort and self.generate_effort not in EFFORTS:
+            raise UnknownTier(
+                f"{self.model}: {self.generate_effort!r} is not an effort level "
+                f"({', '.join(EFFORTS)})"
             )
 
     def input_micro_usd(self, tokens: int) -> int:
@@ -232,7 +274,10 @@ class Tiers:
         nightly pass silently never ran.
         """
         if isinstance(assignments, str):
-            assignments = _split(assignments)
+            try:
+                assignments = parse_pairs(assignments, what="tier assignments")
+            except (ValueError, StoreError) as exc:
+                raise UnknownTier(str(exc)) from None
         parsed: dict[str, Tier] = {}
         for main_id, name in assignments.items():
             try:
@@ -269,23 +314,3 @@ class Tiers:
         """The same table with one main assigned. Frozen, so it returns a new
         one rather than mutating a table other callers are holding."""
         return replace(self, mains={**self.mains, main_id: tier})
-
-
-def _split(raw: str) -> dict[str, str]:
-    """``"vidit:cheap,asha:frontier"`` to a mapping.
-
-    The same shape and the same refusals as ``half.config.load`` uses for
-    mains: a malformed entry and a repeated main are both errors, because the
-    quiet alternative is a main silently assigned to whichever half of the
-    string was parsed last.
-    """
-    out: dict[str, str] = {}
-    for entry in filter(None, (e.strip() for e in raw.split(","))):
-        main_id, _, name = entry.partition(":")
-        main_id, name = main_id.strip(), name.strip()
-        if not main_id or not name:
-            raise UnknownTier(f"malformed tier assignment: {entry!r}")
-        if main_id in out:
-            raise UnknownTier(f"duplicate main in tier assignments: {main_id!r}")
-        out[main_id] = name
-    return out

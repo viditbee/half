@@ -24,6 +24,10 @@ imposed with a schema-constrained reply where the tier supports one, and by
 refusing anything that is not a label where it does not. A reply that is prose
 becomes ``malformed``; it never becomes a decision.
 
+**The transport lives in ``anthropic_transport.py``**, not at the bottom of this
+file. That is what lets the offline gate assert that *every* module in this
+package is free of the SDK rather than all but the one that matters.
+
 **The request shapes here are current, and several of the obvious ones are 400s
 now.** A fixed thinking budget is rejected on the frontier model, an effort
 setting is an error on the cheap one, and an assistant prefill is refused on
@@ -39,8 +43,24 @@ import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any
 
-from half.errors import BudgetError, ModelRefused, ModelUnavailable
-from half.model.budget import Budget, Estimate, Spend, charged, estimate
+from half.errors import (
+    BreakpointError,
+    BudgetError,
+    ModelBatchNotFound,
+    ModelNotAuthorised,
+    ModelRefused,
+    ModelUnavailable,
+    TransportFault,
+)
+from half.model.budget import (
+    Budget,
+    Estimate,
+    Reservation,
+    Spend,
+    charged,
+    estimate,
+    tokens_in,
+)
 from half.model.port import (
     BatchItem,
     CacheTTL,
@@ -69,6 +89,30 @@ from half.model.tier import (
     Tiers,
 )
 
+#: Stop reasons on which a reply is *finished* and its content may be read.
+#: A whitelist rather than a blacklist, which is review round 1's correction:
+#: ``pause_turn``, ``tool_use``, a null, a non-string and any reason added after
+#: this build all used to fall through and be treated as a complete answer —
+#: so a paused turn was delivered to a main as though it were the whole of what
+#: Half had to say.
+COMPLETE_STOPS: frozenset[str] = frozenset({"end_turn", "stop_sequence"})
+
+#: Batch states the provider reports. ``canceling`` still ends, so it is not
+#: ready rather than never ready; anything outside this set is a state this
+#: build cannot reason about and is reported as such rather than polled for
+#: ever.
+BATCH_ENDED = "ended"
+BATCH_PENDING: frozenset[str] = frozenset({"in_progress", "canceling"})
+
+#: How a transport fault becomes one of the four. One table, so the mapping
+#: cannot differ between the message path and the batch path.
+_FAULTS: Mapping[type, tuple[Kind, Reason]] = {
+    ModelUnavailable: (Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED),
+    ModelRefused: (Kind.REFUSED, Reason.PROVIDER_REFUSED),
+    ModelNotAuthorised: (Kind.REFUSED, Reason.NOT_AUTHORISED),
+    ModelBatchNotFound: (Kind.REFUSED, Reason.NO_SUCH_BATCH),
+}
+
 #: Structured, and content-free. Every value this module logs is a closed enum
 #: or a count — no prompt, no completion, no label, no main's words (AD-22).
 logger = logging.getLogger(__name__)
@@ -87,8 +131,12 @@ CLASSIFY_EFFORT = "low"
 #: The single field a schema-constrained classification answers in.
 LABEL_FIELD = "label"
 
-#: Batch states the provider reports. Only one of them is finished.
-BATCH_ENDED = "ended"
+#: The provider's own ceilings on one batch. Modelled here so a nightly pass
+#: is refused where it is built rather than after it has been assembled and
+#: sent — the same rule ``_output_ceiling`` follows, applied to the operation
+#: the nightly pass actually uses.
+MAX_BATCH_ITEMS = 100_000
+MAX_BATCH_BYTES = 256 * 1024 * 1024
 
 #: How the provider reports each item's fate inside a collected batch, and
 #: which of the four failures each one is. A cancellation is a *refusal* and
@@ -105,7 +153,7 @@ _ITEM_FAILURES: Mapping[str, Failure] = {
 # ── rendering: where the breakpoint goes, and what the model is told ──────────
 
 
-def render_prompt(prompt: Prompt) -> dict[str, Any]:
+def render_prompt(prompt: Prompt, spec: ModelSpec) -> dict[str, Any]:
     """The ``system`` and ``messages`` halves of a request.
 
     **The marker lands on exactly the block the caller ended the prefix on.**
@@ -113,12 +161,32 @@ def render_prompt(prompt: Prompt) -> dict[str, Any]:
     earlier and the stable content after it is re-read at full price every
     call; one block later and every request writes a distinct entry that
     nothing ever reads. The port does not adjust it, does not clamp it, and
-    refuses a breakpoint it cannot place (``Prompt`` does that at
-    construction).
+    refuses a breakpoint it cannot place.
 
-    A caller that stated none gets no ``cache_control`` at all — not a guess at
-    where the stable part probably ends.
+    **A prefix under this model's own minimum is refused**, which is review
+    round 1's correction and follows directly from *never hidden*. Under the
+    minimum the provider caches nothing: no error, no marker honoured, no
+    cache-creation tokens, just a cost. Emitting the marker anyway would be a
+    hidden breakpoint wearing the clothes of an honoured one, and the caller
+    would never learn. The minimum is per tier and **not monotonic across
+    generations** — 512 on the frontier model against 4096 on the cheap one —
+    so this is exactly the case a caller cannot be expected to have checked.
+
+    A caller that stated no breakpoint gets no ``cache_control`` at all — not a
+    guess at where the stable part probably ends.
     """
+    if prompt.cache is not None:
+        cached_tokens = sum(tokens_in(block) for block in prompt.cached_blocks)
+        if cached_tokens < spec.cache_min_tokens:
+            raise BreakpointError(
+                f"the stable prefix is about {cached_tokens} tokens and "
+                f"{spec.model} caches nothing under {spec.cache_min_tokens}. "
+                "The provider would accept this request, ignore the marker and "
+                "bill the prefix in full every call, saying nothing — so the "
+                "port refuses instead of placing a breakpoint that does not "
+                "work (AD-19). State no breakpoint, or lengthen the prefix"
+            )
+
     system: list[dict[str, Any]] = []
     for position, text in enumerate(prompt.system, start=1):
         block: dict[str, Any] = {"type": "text", "text": text}
@@ -195,9 +263,9 @@ def _label_schema(labels: Sequence[str]) -> dict[str, Any]:
 
 def render_classify(work: Classify, spec: ModelSpec) -> dict[str, Any]:
     """One classification, as the provider expects it."""
-    payload = render_prompt(work.prompt)
+    payload = render_prompt(work.prompt, spec)
     payload["model"] = spec.model
-    payload["max_tokens"] = min(CLASSIFY_MAX_TOKENS, spec.max_output_tokens)
+    payload["max_tokens"] = classify_ceiling(spec)
     payload.update(_thinking_and_effort(spec, effort=CLASSIFY_EFFORT))
     if spec.structured_output:
         output_config = payload.setdefault("output_config", {})
@@ -207,11 +275,15 @@ def render_classify(work: Classify, spec: ModelSpec) -> dict[str, Any]:
 
 def render_generate(work: Generate, spec: ModelSpec) -> dict[str, Any]:
     """One generation, as the provider expects it."""
-    payload = render_prompt(work.prompt)
+    payload = render_prompt(work.prompt, spec)
     payload["model"] = spec.model
     payload["max_tokens"] = _output_ceiling(work, spec)
     payload.update(_thinking_and_effort(spec, effort=spec.generate_effort))
     return payload
+
+
+def classify_ceiling(spec: ModelSpec) -> int:
+    return min(CLASSIFY_MAX_TOKENS, spec.max_output_tokens)
 
 
 def _output_ceiling(work: Generate, spec: ModelSpec) -> int:
@@ -264,6 +336,12 @@ def _stop_failure(reply: Mapping[str, Any]) -> Failure | None:
         # answer: half a sentence delivered to a main is worse than a failure
         # the caller gets to decide the meaning of.
         return Failure(Kind.MALFORMED, Reason.TRUNCATED)
+    if stop not in COMPLETE_STOPS:
+        # Anything else — a paused turn, a tool call, a null, a reason this
+        # build has never heard of — is a reply that has not finished. Treating
+        # an unrecognised stop as an ending is how a partial answer reaches a
+        # main looking like the whole of it.
+        return Failure(Kind.MALFORMED, Reason.INCOMPLETE)
     return None
 
 
@@ -325,15 +403,21 @@ def read_completion(reply: Mapping[str, Any], usage: Usage) -> Generated:
     return Completion(text=text, usage=usage)
 
 
-def _transport_failure(exc: Exception) -> Failure:
+def _transport_failure(exc: TransportFault) -> Failure:
     """Which of the four a transport fault is.
 
-    Unavailable and refused are kept apart because the callers want opposite
-    things from them, and a port that reported *"it did not work"* would leave
-    every one of them guessing.
+    Read off one table, so the message path and the batch path cannot disagree.
+    A fault class with no row is an unavailability — the retryable answer,
+    which is the safe default for something this build does not recognise.
+
+    Note what is *not* here: ``ModelRequestInvalid``. A request shape the
+    provider will never accept is a build mistake, so it is not caught at all
+    and is raised out of the port, which is what stops it being retried for
+    ever.
     """
-    if isinstance(exc, ModelRefused):
-        return Failure(Kind.REFUSED, Reason.PROVIDER_REFUSED)
+    for fault, (kind, because) in _FAULTS.items():
+        if isinstance(exc, fault):
+            return Failure(kind, because)
     return Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED)
 
 
@@ -346,9 +430,16 @@ class _Priced:
     Not a base class with a ``call()`` on it, deliberately. The point of the
     holders below is that a classify-only caller has no method reaching text,
     and an inherited generic call would put one straight back.
+
+    **Everything here is private, and that is review round 1's correction.**
+    The tier table and the ledger used to be public attributes, so the object
+    the crisis path holds could call ``spend.reset()`` and clear the whole
+    pass's CAP-7 accounting, or read and re-key the tier table. Narrow output
+    is half of a narrow holder; the other half is narrow *authority*, and an
+    attribute is authority.
     """
 
-    __slots__ = ("_transport", "tiers", "spend")
+    __slots__ = ("_transport", "_tiers", "_spend")
 
     def __init__(
         self,
@@ -373,12 +464,17 @@ class _Priced:
                 )
             spend = Spend(budget)
         self._transport = transport
-        self.tiers = tiers
-        self.spend = spend
+        self._tiers = tiers
+        self._spend = spend
 
     def _spec(self, main_id: str) -> ModelSpec:
         """This main's model. Raises ``UnknownTier`` rather than defaulting."""
-        return self.tiers.spec_for(main_id)
+        return self._tiers.spec_for(main_id)
+
+    def _ttl_basis(self, prompt: Prompt) -> int:
+        if prompt.cache is not None and prompt.cache.ttl is CacheTTL.ONE_HOUR:
+            return CACHE_WRITE_BASIS_1H
+        return CACHE_WRITE_BASIS_5M
 
     def _estimate(
         self,
@@ -388,11 +484,6 @@ class _Priced:
         max_output_tokens: int,
         batched: bool = False,
     ) -> Estimate:
-        ttl = (
-            CACHE_WRITE_BASIS_1H
-            if prompt.cache is not None and prompt.cache.ttl is CacheTTL.ONE_HOUR
-            else CACHE_WRITE_BASIS_5M
-        )
         return estimate(
             spec,
             cached_text=prompt.cached_blocks,
@@ -403,42 +494,80 @@ class _Priced:
             uncached_text=prompt.uncached_blocks
             + tuple(turn.text for turn in prompt.turns),
             max_output_tokens=max_output_tokens,
-            ttl_basis=ttl,
+            ttl_basis=self._ttl_basis(prompt),
+            # The caller's own claim about whether this prefix is already warm.
+            # Never inferred: the port has no way to know what another process
+            # wrote five minutes ago, and guessing warm admits calls on the
+            # assumption that somebody else already paid.
+            warm=prompt.cache is not None and prompt.cache.expect_warm,
             batched=batched,
         )
 
     async def _send(
-        self, payload: Mapping[str, Any], spec: ModelSpec
+        self, payload: Mapping[str, Any], spec: ModelSpec, *,
+        reservation: Reservation, ttl_basis: int,
     ) -> tuple[Mapping[str, Any] | None, Usage, Failure | None]:
         """One request. Never retried here.
 
         A retry that turns a refusal into a spend is forbidden outright, so
-        this makes exactly one attempt and reports what happened. Transports
-        may retry a *transient* fault of their own — a refusal is never
-        transient.
+        this makes exactly one attempt and reports what happened.
+
+        The reservation is settled or released on every path out — a leaked
+        reservation would shrink the pass budget for ever, which is the
+        mirror-image of the bug that made it necessary. ``ModelRequestInvalid``
+        is deliberately not caught: it is a build mistake, so the reservation is
+        released and the exception is raised out of the port.
         """
         try:
             reply = await self._transport.message(payload)
-        except (ModelUnavailable, ModelRefused) as exc:
+        except TransportFault as exc:
+            self._spend.release(reservation)
             failure = _transport_failure(exc)
             logger.warning("model call failed: %s/%s", failure.kind, failure.because)
             return None, Usage(), failure
+        except BaseException:
+            self._spend.release(reservation)
+            raise
+
         if not isinstance(reply, Mapping):
+            self._spend.settle(reservation, Usage(micro_usd=reservation.micro_usd))
             return None, Usage(), Failure(Kind.MALFORMED, Reason.UNREADABLE)
-        usage = charged(spec, reply.get("usage") or {})
-        self.spend.charge(usage)
+
+        usage = charged(
+            spec,
+            reply.get("usage") or {},
+            ttl_basis=ttl_basis,
+            floor_micro_usd=reservation.micro_usd,
+        )
+        self._spend.settle(reservation, usage)
         return reply, usage, None
+
+    def _admit(self, priced: Estimate) -> Reservation | Failure:
+        """Reserve, or say which ceiling refused.
+
+        Reserving rather than merely checking is what makes the budget bind
+        when calls overlap — verified at eight, the scheduler's own bound.
+        """
+        outcome = self._spend.admit(priced)
+        if isinstance(outcome, Reason):
+            failure = Failure(Kind.OVER_BUDGET, outcome)
+            # Logged off the constructed failure rather than off the local, so
+            # the two fields are provably the closed enums the AD-22 scan
+            # requires — a bare name it cannot resolve is exactly the shape
+            # that let a completion into a log line before.
+            logger.warning("model call refused: %s/%s", failure.kind, failure.because)
+            return failure
+        return outcome
 
 
 class AnthropicClassifier(_Priced):
     """Classification, and nothing else.
 
-    **There is exactly one public method here, and it returns a ``Decision``.**
-    That is the crisis constraint made structural: a caller handed one of these
-    cannot generate, cannot batch a generation, and cannot reach anything that
-    would — so *"a model never authors a word a main in crisis reads"* is a
-    property of what the caller is holding rather than a rule it has to
-    remember.
+    **There is exactly one public method here, it returns a ``Decision``, and
+    there is no public attribute at all.** That is the crisis constraint made
+    structural in both halves: a caller handed one of these cannot generate,
+    cannot batch a generation, cannot reach anything that would — and cannot
+    move the pass's cost accounting or re-key the tier table either.
     """
 
     __slots__ = ()
@@ -447,17 +576,17 @@ class AnthropicClassifier(_Priced):
         """Decide, or report which of the four failures happened."""
         spec = self._spec(work.prompt.main_id)
         priced = self._estimate(
-            work.prompt,
-            spec,
-            max_output_tokens=min(CLASSIFY_MAX_TOKENS, spec.max_output_tokens),
+            work.prompt, spec, max_output_tokens=classify_ceiling(spec)
         )
-        refusal = self.spend.admit(priced)
-        if refusal is not None:
-            # Refused *before* the send. Nothing is spent, not partially.
-            logger.warning("model call refused: %s/%s", Kind.OVER_BUDGET, refusal)
-            return Failure(Kind.OVER_BUDGET, refusal)
+        admitted = self._admit(priced)
+        if isinstance(admitted, Failure):
+            return admitted  # refused before the send; nothing spent
 
-        reply, usage, failure = await self._send(render_classify(work, spec), spec)
+        payload = render_classify(work, spec)
+        reply, usage, failure = await self._send(
+            payload, spec,
+            reservation=admitted, ttl_basis=self._ttl_basis(work.prompt),
+        )
         if reply is None:
             return failure or Failure(Kind.MALFORMED, Reason.UNREADABLE)
         return read_decision(reply, work.labels, usage)
@@ -472,12 +601,15 @@ class AnthropicGenerator(_Priced):
         spec = self._spec(work.prompt.main_id)
         ceiling = _output_ceiling(work, spec)
         priced = self._estimate(work.prompt, spec, max_output_tokens=ceiling)
-        refusal = self.spend.admit(priced)
-        if refusal is not None:
-            logger.warning("model call refused: %s/%s", Kind.OVER_BUDGET, refusal)
-            return Failure(Kind.OVER_BUDGET, refusal)
+        admitted = self._admit(priced)
+        if isinstance(admitted, Failure):
+            return admitted
 
-        reply, usage, failure = await self._send(render_generate(work, spec), spec)
+        payload = render_generate(work, spec)
+        reply, usage, failure = await self._send(
+            payload, spec,
+            reservation=admitted, ttl_basis=self._ttl_basis(work.prompt),
+        )
         if reply is None:
             return failure or Failure(Kind.MALFORMED, Reason.UNREADABLE)
         return read_completion(reply, usage)
@@ -488,8 +620,8 @@ class AnthropicBatcher(_Priced):
 
     The nightly pass submits in the evening for a morning delivery, so the
     process that submits is routinely not the process that collects. That is
-    why ``Submission`` is a value made of strings and why nothing here holds
-    state between the two calls.
+    why ``Submission`` is a value made of strings, why it carries what it cost,
+    and why nothing here holds state between the two calls.
     """
 
     __slots__ = ()
@@ -498,11 +630,19 @@ class AnthropicBatcher(_Priced):
         """Send a batch, or refuse the whole of it.
 
         **Whole, or not at all.** A batch where the budget stopped halfway is a
-        partial spend with no record of which half went — so the whole
-        submission is priced first and refused as one, before anything is sent.
+        partial spend with no record of which half went — so every item is
+        reserved first, through the same ``Spend.admit`` a single call goes
+        through, and any refusal releases every reservation already taken. Two
+        copies of the ceiling comparison is what this replaces.
         """
         if not items:
             raise ValueError("an empty batch has nothing to submit")
+        if len(items) > MAX_BATCH_ITEMS:
+            raise ValueError(
+                f"{len(items)} items is past the provider's {MAX_BATCH_ITEMS} "
+                "per batch. Refused here rather than at the wire, for the "
+                "reason an over-long output ceiling is"
+            )
         refs = [item.ref for item in items]
         if len(set(refs)) != len(refs):
             raise ValueError(
@@ -512,74 +652,97 @@ class AnthropicBatcher(_Priced):
 
         requests: list[dict[str, Any]] = []
         submitted: list[Submitted] = []
-        total = 0
-        for item in items:
-            prompt = item.work.prompt
-            spec = self._spec(prompt.main_id)
-            classifying = isinstance(item.work, Classify)
-            ceiling = (
-                min(CLASSIFY_MAX_TOKENS, spec.max_output_tokens)
-                if classifying
-                else _output_ceiling(item.work, spec)
-            )
-            priced = self._estimate(
-                prompt, spec, max_output_tokens=ceiling, batched=True
-            )
-            if priced.micro_usd > self.spend.budget.per_call_micro_usd:
-                logger.warning(
-                    "batch refused: %s/%s", Kind.OVER_BUDGET, Reason.PER_CALL_BUDGET
+        reservations: list[Reservation] = []
+        committed = 0
+        try:
+            for item in items:
+                prompt = item.work.prompt
+                spec = self._spec(prompt.main_id)
+                classifying = isinstance(item.work, Classify)
+                ceiling = (
+                    classify_ceiling(spec)
+                    if classifying
+                    else _output_ceiling(item.work, spec)
                 )
-                return Failure(Kind.OVER_BUDGET, Reason.PER_CALL_BUDGET)
-            total += priced.micro_usd
-            requests.append(
-                {
+                priced = self._estimate(
+                    prompt, spec, max_output_tokens=ceiling, batched=True
+                )
+                admitted = self._admit(priced)
+                if isinstance(admitted, Failure):
+                    for taken in reservations:
+                        self._spend.release(taken)
+                    return admitted
+                reservations.append(admitted)
+                committed += priced.micro_usd
+                requests.append({
                     "custom_id": item.ref,
                     "params": (
                         render_classify(item.work, spec)
                         if classifying
                         else render_generate(item.work, spec)
                     ),
-                }
-            )
-            submitted.append(
-                Submitted(
+                })
+                submitted.append(Submitted(
                     ref=item.ref,
-                    tier=self.tiers.of(prompt.main_id).value,
+                    tier=self._tiers.of(prompt.main_id).value,
                     labels=item.work.labels if classifying else (),
+                ))
+
+            if _payload_bytes(requests) > MAX_BATCH_BYTES:
+                raise ValueError(
+                    f"this batch is past the provider's {MAX_BATCH_BYTES}-byte "
+                    "limit. Refused here rather than at the wire, so a whole "
+                    "nightly pass does not fail after it has been built"
                 )
-            )
 
-        if self.spend.spent_micro_usd + total > self.spend.budget.per_pass_micro_usd:
-            logger.warning(
-                "batch refused: %s/%s", Kind.OVER_BUDGET, Reason.PER_PASS_BUDGET
-            )
-            return Failure(Kind.OVER_BUDGET, Reason.PER_PASS_BUDGET)
+            try:
+                created = await self._transport.batch_create(requests)
+            except TransportFault as exc:
+                for taken in reservations:
+                    self._spend.release(taken)
+                failure = _transport_failure(exc)
+                logger.warning(
+                    "batch submit failed: %s/%s", failure.kind, failure.because
+                )
+                return failure
 
-        try:
-            created = await self._transport.batch_create(requests)
-        except (ModelUnavailable, ModelRefused) as exc:
-            failure = _transport_failure(exc)
-            logger.warning("batch submit failed: %s/%s", failure.kind, failure.because)
-            return failure
+            batch_id = created.get("id") if isinstance(created, Mapping) else None
+            if not isinstance(batch_id, str) or not batch_id:
+                for taken in reservations:
+                    self._spend.release(taken)
+                return Failure(Kind.MALFORMED, Reason.UNREADABLE)
+        except BaseException:
+            # A refusal returns above; this is the raise path — a bad output
+            # ceiling, an unknown tier, an over-long payload. Every reservation
+            # already taken is given back, because a leaked reservation shrinks
+            # the pass budget for ever.
+            for reservation in reservations:
+                self._spend.release(reservation)
+            raise
 
-        batch_id = created.get("id") if isinstance(created, Mapping) else None
-        if not isinstance(batch_id, str) or not batch_id:
-            return Failure(Kind.MALFORMED, Reason.UNREADABLE)
-        # Charged **here**, at the estimate, and not at collection. A batch is
+        # Settled **here**, at the estimate, and not at collection. A batch is
         # committed the moment the provider accepts it, and the process that
         # collects it hours later is routinely not this one (AD-9) — a ledger
         # that only learned the cost on collection would let one pass submit
         # unlimited batches and then bill the *next* pass for all of them.
-        self.spend.charge(Usage(micro_usd=total))
+        for reservation in reservations:
+            self._spend.settle(reservation, Usage(micro_usd=reservation.micro_usd))
         logger.info("batch submitted: %d items", len(submitted))
-        return Submission(batch_id=batch_id, items=tuple(submitted))
+        return Submission(
+            batch_id=batch_id,
+            items=tuple(submitted),
+            committed_micro_usd=committed,
+        )
 
     async def collect(self, submission: Submission) -> Collected | Failure:
         """Read a batch back, per item.
 
-        **Not ready is an answer, not an error.** A batch may take a day, so a
-        scheduler asking early is the ordinary case; raising there would make
-        the ordinary case indistinguishable from a fault.
+        **Not ready is an answer, and never-ready is a different answer.** A
+        batch may take a day, so a scheduler asking early is the ordinary case;
+        raising there would make the ordinary case look like a fault. But a
+        batch the provider does not have, or whose state this build cannot
+        read, will never become ready, and reporting *that* as merely-early is
+        a caller polling for ever with no way to stop.
 
         **Per item, never one verdict.** Some succeeded and some expired is the
         normal shape of a large batch, and a caller told only that *the batch*
@@ -587,25 +750,48 @@ class AnthropicBatcher(_Priced):
         """
         try:
             status = await self._transport.batch_status(submission.batch_id)
-        except (ModelUnavailable, ModelRefused) as exc:
+        except TransportFault as exc:
             failure = _transport_failure(exc)
             logger.warning("batch status failed: %s/%s", failure.kind, failure.because)
             return failure
         if not isinstance(status, Mapping):
             return Failure(Kind.MALFORMED, Reason.UNREADABLE)
-        if status.get("processing_status") != BATCH_ENDED:
+
+        state = status.get("processing_status")
+        if state in BATCH_PENDING:
             return Collected(ready=False)
+        if state != BATCH_ENDED:
+            # Missing, or a state added after this build. Not "early".
+            logger.warning("batch state unreadable: %s/%s", Kind.REFUSED,
+                           Reason.NO_SUCH_BATCH)
+            return Failure(Kind.REFUSED, Reason.NO_SUCH_BATCH)
 
         outcomes: dict[str, ItemOutcome] = {}
         try:
             async for entry in self._transport.batch_results(submission.batch_id):
                 read = self._read_item(entry, submission)
-                if read is not None:
-                    outcomes[read[0]] = read[1]
-        except (ModelUnavailable, ModelRefused) as exc:
+                if read is None:
+                    continue
+                ref, outcome = read
+                if ref in outcomes:
+                    # Two rows claiming one reference. Neither can be trusted to
+                    # be the outcome for it, and taking whichever arrived last
+                    # loses one item's true result in silence.
+                    outcomes[ref] = Failure(Kind.MALFORMED, Reason.DUPLICATE_RESULT)
+                    continue
+                outcomes[ref] = outcome
+        except TransportFault as exc:
+            # **What was read is kept.** Discarding it reported partial success
+            # as total failure, which is the all-or-nothing shape this whole
+            # operation exists to avoid; the rows that never arrived show up as
+            # `missing`, which a caller already has to handle.
             failure = _transport_failure(exc)
-            logger.warning("batch results failed: %s/%s", failure.kind, failure.because)
-            return failure
+            logger.warning(
+                "batch results interrupted after %d rows: %s/%s",
+                len(outcomes), failure.kind, failure.because,
+            )
+            if not outcomes:
+                return failure
         logger.info("batch collected: %d of %d", len(outcomes), len(submission.items))
         return Collected(ready=True, outcomes=outcomes)
 
@@ -641,7 +827,7 @@ class AnthropicBatcher(_Priced):
         if not isinstance(message, Mapping):
             return ref, Failure(Kind.MALFORMED, Reason.UNREADABLE)
 
-        spec = self.tiers.models.get(_tier_or_none(item.tier))
+        spec = self._tiers.models.get(_tier_or_none(item.tier))
         # Reported, never charged. The submission already committed the batch
         # to its own pass's ledger; charging again here would bill tonight's
         # budget for last night's work. A tier this build no longer has leaves
@@ -656,6 +842,16 @@ class AnthropicBatcher(_Priced):
         if item.classifying:
             return ref, read_decision(message, item.labels, usage)
         return ref, read_completion(message, usage)
+
+
+def _payload_bytes(requests: Sequence[Mapping[str, Any]]) -> int:
+    """A batch's size on the wire, near enough to bound it.
+
+    ``separators`` fixed so the figure does not move with a formatting default,
+    and the comparison is against the provider's own documented ceiling rather
+    than a number this module invented.
+    """
+    return len(json.dumps(requests, separators=(",", ":")).encode("utf-8"))
 
 
 def _tier_or_none(name: str) -> Tier | None:
@@ -674,6 +870,10 @@ class AnthropicProvider(_Priced):
     ``classifier()`` is how a caller that may only classify gets what it is
     allowed to have. It returns a different object rather than ``self``: a
     provider narrowed by convention is not narrowed.
+
+    Unlike the narrow holders, this one *does* expose the ledger — read-only,
+    and through a snapshot rather than the live object, so a caller can meter
+    and persist a pass without being handed something that can reset it.
     """
 
     __slots__ = ("_classifier", "_generator", "_batcher")
@@ -687,13 +887,13 @@ class AnthropicProvider(_Priced):
         spend: Spend | None = None,
     ) -> None:
         super().__init__(transport, tiers=tiers, budget=budget, spend=spend)
-        shared = {"tiers": tiers, "spend": self.spend}
+        shared = {"tiers": tiers, "spend": self._spend}
         self._classifier = AnthropicClassifier(transport, **shared)
         self._generator = AnthropicGenerator(transport, **shared)
         self._batcher = AnthropicBatcher(transport, **shared)
 
     def classifier(self) -> AnthropicClassifier:
-        """A holder that can decide and cannot write."""
+        """A holder that can decide, cannot write, and cannot spend."""
         return self._classifier
 
     def generator(self) -> AnthropicGenerator:
@@ -701,6 +901,16 @@ class AnthropicProvider(_Priced):
 
     def batcher(self) -> AnthropicBatcher:
         return self._batcher
+
+    def ledger(self):
+        """This pass's spending, as a durable value (CAP-7, AD-9).
+
+        A snapshot rather than the ``Spend`` itself. Persist it beside the
+        submission it paid for, and ``Spend.restored`` picks the pass up where
+        this process left it — a budget that resets on restart while the batch
+        it committed survives is not a ceiling.
+        """
+        return self._spend.snapshot()
 
     async def classify(self, work: Classify) -> Classified:
         return await self._classifier.classify(work)
@@ -713,109 +923,3 @@ class AnthropicProvider(_Priced):
 
     async def collect(self, submission: Submission) -> Collected | Failure:
         return await self._batcher.collect(submission)
-
-
-# ── the thin edge: the only thing here that touches a network ────────────────
-
-
-class SDKTransport:
-    """``Transport`` over the official Anthropic SDK.
-
-    Kept at the bottom of this file and apart from everything above it for the
-    reason ``half/channel/telegram_transport.py`` is a separate module: the
-    logic that matters is exercised offline against a fake, and this is the
-    part with nothing worth testing without a live key.
-
-    **The SDK is imported inside ``__init__``, not at module scope**, so that
-    importing ``half.model.anthropic`` builds no client, reads no key and
-    touches nothing — which is what makes the offline gate assertable over the
-    whole package rather than over the parts that happen to be lazy.
-
-    The key comes from a ``SecretStore`` or from the caller, never from a store
-    tree (AD-11), and it is held only by the SDK client — it appears in no
-    attribute of this object, in no log line and in no error raised from here.
-    """
-
-    def __init__(
-        self, api_key: str, *, base_url: str | None = None, max_retries: int = 2
-    ) -> None:
-        if not api_key:
-            raise ModelRefused(
-                "no model API key; supply one from the SecretStore "
-                "(never from a store tree — AD-11)"
-            )
-        try:
-            from anthropic import AsyncAnthropic
-        except ModuleNotFoundError as exc:  # pragma: no cover - packaging fault
-            raise ModelUnavailable(
-                "the anthropic SDK is not installed; run `uv sync`"
-            ) from exc
-        # ``max_retries`` covers connection faults, 429 and 5xx only — the SDK
-        # does not retry a 4xx, so no retry here can turn a refusal into a
-        # second spend.
-        self._client = AsyncAnthropic(
-            api_key=api_key, base_url=base_url, max_retries=max_retries
-        )
-
-    async def message(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        try:
-            reply = await self._client.messages.create(**dict(payload))
-        except Exception as exc:  # noqa: BLE001 - translated at the boundary
-            raise _translate(exc) from None
-        return reply.to_dict()
-
-    async def batch_create(
-        self, requests: Sequence[Mapping[str, Any]]
-    ) -> Mapping[str, Any]:
-        try:
-            batch = await self._client.messages.batches.create(
-                requests=[dict(r) for r in requests]
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise _translate(exc) from None
-        return batch.to_dict()
-
-    async def batch_status(self, batch_id: str) -> Mapping[str, Any]:
-        try:
-            batch = await self._client.messages.batches.retrieve(batch_id)
-        except Exception as exc:  # noqa: BLE001
-            raise _translate(exc) from None
-        return batch.to_dict()
-
-    async def batch_results(self, batch_id: str) -> AsyncIterator[Mapping[str, Any]]:
-        try:
-            results = await self._client.messages.batches.results(batch_id)
-            async for entry in results:
-                yield entry.to_dict()
-        except Exception as exc:  # noqa: BLE001
-            raise _translate(exc) from None
-
-
-def _translate(exc: Exception) -> Exception:
-    """A provider exception, as one of Half's two.
-
-    The conventions forbid a provider type crossing the port boundary, and the
-    split is the one ``SendFailed`` makes for the channel: a transient fault
-    may be tried again and a refusal may not, so a caller that could not tell
-    them apart would either hammer a provider answering correctly or drop a
-    call that would have worked.
-
-    **No message from the provider is carried across.** A provider's error text
-    can quote the request that caused it, and this port's failures carry closed
-    enums for exactly that reason (AD-22).
-    """
-    import anthropic
-
-    if isinstance(
-        exc,
-        (
-            anthropic.BadRequestError,
-            anthropic.AuthenticationError,
-            anthropic.PermissionDeniedError,
-            anthropic.NotFoundError,
-        ),
-    ):
-        return ModelRefused("the provider refused the request")
-    if isinstance(exc, anthropic.APIStatusError | anthropic.APIError):
-        return ModelUnavailable("the provider could not be reached")
-    return ModelUnavailable("the model transport failed")

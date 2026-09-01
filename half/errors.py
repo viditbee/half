@@ -201,10 +201,15 @@ class ModelError(HalfError):
     toward silence cannot share one default. An exception would make the port
     pick one for all three.
 
-    So a ``ModelError`` is only ever a *caller or operator mistake* — a tier
-    this build cannot name, a breakpoint pointing past the prompt, a budget
-    that admits nothing. Those are faults in the build, not answers from a
-    provider, and a value nobody has to check is exactly how they get shipped.
+    So a ``ModelError`` is a *caller or operator mistake* — a tier this build
+    cannot name, a breakpoint pointing past the prompt, a budget that admits
+    nothing, a request shape the provider will never accept. Those are faults
+    in the build, not answers from a provider, and a value nobody has to check
+    is exactly how they get shipped.
+
+    ``TransportFault`` below is the one branch that is *not* raised out of the
+    port; it is the vocabulary a transport reports faults in, and the port
+    turns each one into a value at its boundary.
     """
 
 
@@ -221,40 +226,95 @@ class UnknownTier(ModelError):
 class BreakpointError(ModelError):
     """A cache breakpoint the port will not place where it was asked (AD-19).
 
-    Never clamped, never moved. The free tier's cost model rests on the stable
-    prefix being cached exactly where the caller ended it, and a port that
-    quietly slid a breakpoint to the nearest legal position would produce a
-    request that works, costs more, and says nothing about it.
+    Never clamped, never moved, and — since review round 1 — never *silently
+    ineffective* either. A prefix under the model's own minimum caches nothing
+    at the provider, with no error and no cache-creation tokens, so placing the
+    marker anyway would be the hidden breakpoint AD-19 forbids wearing the
+    clothes of an honoured one. Refusing says so out loud, and the caller's
+    remedy is to state no breakpoint.
     """
 
 
 class BudgetError(ModelError):
-    """A cost budget that could not admit any call (CAP-7).
+    """A cost budget or a price table that could not admit an honest call
+    (CAP-7).
 
     A misconfiguration, not a refusal: a per-call ceiling above the per-pass
-    one, or a limit of zero, means every call is over budget forever. That is
-    a nightly pass that silently does nothing, which looks exactly like a
-    nightly pass with nothing to say.
+    one, a limit of zero, or a negative price in a deployment's own model table
+    all mean the ceiling is not the one that was meant. A negative price is the
+    worst of the three, because it makes an estimate negative and *every*
+    budget admits it.
     """
 
 
-class ModelUnavailable(ModelError):
-    """The transport could not reach the provider (AD-19).
+class ModelMisconfigured(ModelError):
+    """The port was wired without something it cannot run without (AD-11).
 
-    Raised **by a transport** and caught at the port boundary, where it becomes
-    an ``unavailable`` outcome. It is a ``ModelError`` so that a transport
-    never leaks a provider's own exception type inward, which the conventions
-    forbid; it is never raised out of the port.
+    A missing key is the case this exists for, and it is deliberately **not** a
+    refusal: nothing was asked of a provider and nothing declined. Review round
+    1 found it raised as ``ModelRefused``, which contradicted this module's own
+    contract that a refusal is never raised out of the port — and the test
+    caught the base class, so the wrong subclass passed.
     """
 
 
-class ModelRefused(ModelError):
-    """The provider refused the request (AD-19).
+class ModelRequestInvalid(ModelError):
+    """The provider will never accept this request's shape.
 
-    A transport-raised twin of ``ModelUnavailable``, and distinct from it for
-    the reason ``SendFailed`` carries ``retryable``: the two want opposite
-    handling, and a caller that cannot tell them apart will either hammer a
-    provider that is answering correctly or drop a call that would have
-    succeeded on the next attempt. Caught at the port boundary and turned into
-    a ``refused`` outcome; never raised out of the port.
+    A build mistake wearing an HTTP status. It is separated from
+    ``ModelUnavailable`` because the two want opposite handling and the default
+    was wrong in the expensive direction: a payload key the SDK does not accept
+    used to become a transient outage, so a permanently broken request was
+    retried for ever.
+    """
+
+
+class TransportFault(ModelError):
+    """How a transport reports a fault, and the only vocabulary it may use.
+
+    Every subclass is caught at the port boundary and turned into one of the
+    four outcome values; none is ever raised out of an operation. They exist as
+    exceptions rather than return values because a transport is the one layer
+    that genuinely has nothing to decide.
+
+    The conventions forbid a provider's own exception type crossing the port
+    boundary, so an adapter translates into these and carries no message from
+    the provider across: a provider's error text can quote the request that
+    caused it (AD-22).
+    """
+
+
+class ModelUnavailable(TransportFault):
+    """The provider could not be reached, or failed transiently.
+
+    Connection faults, timeouts, rate limits and server errors. Becomes an
+    ``unavailable`` outcome, which is the one of the four a caller may retry.
+    """
+
+
+class ModelRefused(TransportFault):
+    """The provider declined the request on its own terms.
+
+    Distinct from ``ModelUnavailable`` for the reason ``SendFailed`` carries
+    ``retryable``: the two want opposite handling, and a caller that cannot
+    tell them apart will either hammer a provider that is answering correctly
+    or drop a call that would have succeeded.
+    """
+
+
+class ModelNotAuthorised(TransportFault):
+    """The credentials were rejected.
+
+    Its own class, not a refusal, because the callers diverge on exactly this
+    distinction: the crisis caller fails toward *entering* on a content
+    refusal, and must not on a key that expired at three in the morning. It
+    also bills nothing, which the ``refused`` outcome as a whole cannot promise.
+    """
+
+
+class ModelBatchNotFound(TransportFault):
+    """The provider has no such batch, and will not grow one.
+
+    Becomes a distinct answer rather than another not-ready, so a caller can
+    stop polling. *Not ready* and *never ready* are different sentences.
     """

@@ -338,7 +338,7 @@ raises.
 | `half/text.py` | One script-neutral tokenizer, shared by index and matcher |
 | `half/civil.py` | Clockless civil-date arithmetic, shared by the crisis floor and the loop timescales |
 | `half/channel/` | The `Channel` port, reachability, the Telegram adapter |
-| `half/model/` | The `ModelProvider` port: classification apart from generation, cache breakpoints first-class, tiers as configuration, per-call and per-pass cost ceilings, and one transport-injected implementation |
+| `half/model/` | The `ModelProvider` port: classification apart from generation, cache breakpoints first-class, tiers as configuration, a reserving per-call and per-pass cost ledger, and one implementation whose SDK edge is its own module |
 | `half/actor/` | One actor per main — an inbox and a mutex — and the wiring |
 | `half/crisis/` | Owns the inbound entrypoint: the tier table, the two actions, the templates, the handoff, aftercare and the held safety plan |
 | `half/config.py` | Who counts as a main, from the environment |
@@ -470,6 +470,24 @@ on and one past the prompt is refused rather than clamped. No log call in the
 package can carry content, and nothing reachable from a fold reaches the port —
 transitively, since a fold that imported a helper that imported the port would
 pass a one-hop check while being every bit as impure.
+
+Round one of review put that file under mutation and found the budget did not
+bind. `admit` checked `spent + estimate` and returned, while `spent` only moved
+after the round trip — so eight overlapping calls at the scheduler's own
+`DEFAULT_BOUND` were each measured against the same figure, and forty-eight
+thousand went out against a seven-thousand ceiling with nothing refused.
+Admission now **reserves**, and settlement exchanges the reservation for what
+the call really cost. The estimate was wrong in the same direction and for a
+familiar reason: one characters-per-token constant, tuned on Latin prose,
+priced 300 CJK characters exactly as it priced 300 Latin ones. `half/text.py`
+exists in this tree because that assumption was wrong one layer over, where it
+made non-Latin beliefs unretrievable; here it spent money the budget said was
+not there, for exactly the mains the reach requirement is about. And the AD-22
+scan inspected `args[1:]`, so the format string — the one argument an f-string
+lives in — was invisible: `logger.info(f"got {reply}")` passed all 122 cases of
+the gate that existed to stop it. The scan is now an allowlist over every
+argument, and every log line must resolve to a count or one of two closed
+enums.
 
 `test_context.py` is the AD-18 gate. It scans the rendered context and the
 reply for any *fragment* of a withheld claim — adjacent word pairs,

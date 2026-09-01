@@ -224,24 +224,57 @@ def no_sockets(monkeypatch):
     return blocked
 
 
-def test_every_module_in_the_package_imports_with_no_network(no_sockets, monkeypatch):
+PACKAGE_MODULES = (
+    "half.model",
+    "half.model.port",
+    "half.model.tier",
+    "half.model.budget",
+    "half.model.anthropic",
+    "half.model.anthropic_transport",
+)
+
+
+@pytest.mark.ad19_guarantee
+def test_every_module_in_the_package_imports_with_no_network(tmp_path):
     """Matrix: *offline construction*. Never reaches out.
 
-    Re-imported from source rather than read out of ``sys.modules``, so an
-    import side effect that already ran cannot make this pass.
+    **In a subprocess, not through ``importlib.reload``.** The first version
+    reloaded each module in the pytest process, which rebinds the classes every
+    later test in that process is holding — so an ``isinstance`` in another
+    file could start failing depending on collection order, and hermeticity
+    became an ordering accident. A fresh interpreter imports each module for
+    the first time, which is also the only way to prove there is no import side
+    effect that already ran.
     """
-    import importlib
+    script = (
+        "import importlib, sys\n"
+        f"for name in {PACKAGE_MODULES!r}:\n"
+        "    assert name not in sys.modules, name\n"
+        "    importlib.import_module(name)\n"
+        "assert 'anthropic' not in sys.modules, "
+        "'importing the package pulled in the SDK'\n"
+        "print('imported')\n"
+    )
+    done = _run_python(tmp_path, script)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "imported" in done.stdout
 
-    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"):
-        monkeypatch.delenv(name, raising=False)
-    for module in (
-        "half.model",
-        "half.model.port",
-        "half.model.tier",
-        "half.model.budget",
-        "half.model.anthropic",
+
+def _run_python(tmp_path: Path, script: str) -> subprocess.CompletedProcess:
+    """One fresh interpreter, with the socket guard installed."""
+    (tmp_path / "sitecustomize.py").write_text(GUARD, encoding="utf-8")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(tmp_path)
+    env[GATE_ENV] = "1"
+    for name in (
+        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_PROFILE",
     ):
-        importlib.reload(importlib.import_module(module))
+        env.pop(name, None)
+    return subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=ROOT, env=env, capture_output=True, text=True, timeout=120,
+    )
 
 
 def test_the_provider_constructs_with_no_key_and_reaches_nothing(
@@ -264,7 +297,7 @@ def test_the_sdk_transport_builds_its_client_without_contacting_anything(no_sock
     The key is a shape, built at runtime rather than written down, so that this
     file does not itself trip the AD-11 secret gate.
     """
-    from half.model.anthropic import SDKTransport
+    from half.model.anthropic_transport import SDKTransport
 
     transport = SDKTransport("sk-" + "ant-" + "B" * 40)
     assert transport is not None
@@ -311,6 +344,29 @@ def test_the_offline_gate_names_the_file_it_exempts():
     assert len(ignores) == 1, f"{len(ignores)} things are exempt from the gate"
     named = {n.id for n in ast.walk(ignores[0]) if isinstance(n, ast.Name)}
     assert named == {"relative"}, named
+
+
+@pytest.mark.ad19_guarantee
+def test_the_implementation_module_is_free_of_the_sdk_entirely(tmp_path):
+    """Why the transport is its own module.
+
+    While ``SDKTransport`` lived at the bottom of ``anthropic.py``, the
+    no-SDK-import assertion could cover the port, the tier table and the budget
+    but not the file that matters, so the offline property there rested on a
+    lazy import plus one AST check. Now every module in the package but one is
+    provably SDK-free, in a fresh interpreter rather than by reading source.
+    """
+    script = (
+        "import sys, half.model.anthropic\n"
+        "assert 'anthropic' not in sys.modules\n"
+        "import half.model.anthropic_transport\n"
+        "assert 'anthropic' not in sys.modules, "
+        "'importing the transport module built a client'\n"
+        "print('clean')\n"
+    )
+    done = _run_python(tmp_path, script)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "clean" in done.stdout
 
 
 @pytest.mark.ad19_guarantee

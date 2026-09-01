@@ -39,12 +39,17 @@ fifth operation needs human sign-off, not a commit.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
 from half.errors import BreakpointError
+
+#: Ceiling on a batch item's own reference, from the provider's limit on a
+#: custom id. Refused at construction rather than at the wire, so one long
+#: identifier does not fail a whole nightly batch.
+MAX_REF_CHARS = 64
 
 #: Ceiling on how many blocks a caller may put in front of a breakpoint. The
 #: API allows four ``cache_control`` markers per request and the port places
@@ -121,14 +126,25 @@ class Reason(StrEnum):
     PER_PASS_BUDGET = "per-pass-budget"
     #: A reply with no usable content block.
     NO_CONTENT = "no-content"
+    #: A reply that stopped for a reason this build cannot finish on — a paused
+    #: turn, a tool call, a stop reason added after this build, or none at all.
+    #: Its own reason rather than ``UNREADABLE`` because the reply parsed
+    #: perfectly; what it is not is *finished*.
+    INCOMPLETE = "incomplete"
     #: A reply that ran out of output tokens mid-answer.
     TRUNCATED = "truncated"
     #: A classification whose answer is not one of the labels asked for.
     NOT_A_LABEL = "not-a-label"
     #: A reply this build could not parse at all.
     UNREADABLE = "unreadable"
-    #: A batch the provider does not have, or will not return.
+    #: A batch the provider does not have, or will not return. *Not ready* and
+    #: *never ready* are different sentences, and a caller polling on the first
+    #: needs the second to be able to stop.
     NO_SUCH_BATCH = "no-such-batch"
+    #: Two result rows claimed the same reference. Neither can be trusted to be
+    #: the outcome for it, so the item is reported unusable rather than
+    #: silently taking whichever arrived last.
+    DUPLICATE_RESULT = "duplicate-result"
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +171,13 @@ class Breakpoint:
 
     after_blocks: int
     ttl: CacheTTL = CacheTTL.FIVE_MINUTES
+    #: Whether the caller expects this prefix to already be in the cache.
+    #: Default false, the expensive answer, because a budget that assumes a
+    #: warm cache admits calls on the assumption that something else already
+    #: paid — and on the first call of a pass, nothing has. Only the caller can
+    #: make this claim honestly, which is why it is stated here rather than
+    #: inferred by the port from a prompt it has seen before.
+    expect_warm: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.after_blocks, int) or isinstance(
@@ -205,6 +228,22 @@ class Prompt:
                 f"{len(self.system)} system blocks is past the "
                 f"{MAX_SYSTEM_BLOCKS}-block bound on a prompt"
             )
+        # Everything else in this port refuses at construction; these three
+        # used to be caught at the wire, which is the one place a build mistake
+        # costs a request to discover.
+        if not self.turns:
+            raise BreakpointError(
+                "a prompt with no turns has nothing to answer. The provider "
+                "rejects an empty message list, and finding that out from a "
+                "400 costs a request to learn what construction already knew"
+            )
+        if self.turns[-1].role is Role.ASSISTANT:
+            raise BreakpointError(
+                "a prompt ending in an assistant turn is a prefill, and a "
+                "prefill is refused on every current model. Constrain the "
+                "reply's shape instead — that is what the classification path "
+                "does, and it is the replacement the provider documents"
+            )
         if self.cache is None:
             return
         if self.cache.after_blocks > len(self.system):
@@ -214,6 +253,13 @@ class Prompt:
                 f"{len(self.system)}. The port does not move a breakpoint to "
                 "where it would fit — the free tier's cost model rests on it "
                 "being where the caller put it (AD-19)"
+            )
+        if not self.system[self.cache.after_blocks - 1].strip():
+            raise BreakpointError(
+                f"the breakpoint ends the stable prefix on system block "
+                f"{self.cache.after_blocks}, which is empty. A cache marker on "
+                "an empty text block is rejected by the provider, and an empty "
+                "block is never the end of a stable prefix anybody meant"
             )
 
     @property
@@ -329,12 +375,13 @@ class Failure:
     def spent(self) -> bool:
         """Whether this failure may have cost money.
 
-        An over-budget refusal happens before anything is sent and an
-        unavailable never reached the provider; a refusal and a malformed reply
-        both mean tokens were processed. Callers that meter need to tell those
-        apart, and *"it failed"* does not.
+        **Keyed on the reason, not the kind**, which is review round 1's
+        correction. Reading it off ``Kind.REFUSED`` reported ``True`` for a
+        rejected credential — a request the provider threw away before billing
+        a token — so the one property that exists to let a metering caller tell
+        a spend from a non-spend told it the opposite of the truth.
         """
-        return self.kind in (Kind.REFUSED, Kind.MALFORMED)
+        return self.because in BILLED_REASONS
 
 
 #: What ``classify`` answers with: a decision, or one of the four failures.
@@ -343,6 +390,21 @@ Classified = Decision | Failure
 Generated = Completion | Failure
 #: One item's outcome inside a collected batch.
 ItemOutcome = Decision | Completion | Failure
+
+
+#: Reasons whose call reached a model and was therefore paid for. Everything
+#: outside this set was refused, rejected or never sent. Written as the *billed*
+#: set rather than the unbilled one deliberately: a reason added later defaults
+#: to unspent, which under-reports a caller's meter rather than over-reporting
+#: it, and a meter that is quietly high is the one nobody investigates.
+BILLED_REASONS: frozenset[Reason] = frozenset({
+    Reason.PROVIDER_REFUSED,
+    Reason.TRUNCATED,
+    Reason.NOT_A_LABEL,
+    Reason.NO_CONTENT,
+    Reason.INCOMPLETE,
+    Reason.UNREADABLE,
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -356,6 +418,17 @@ class BatchItem:
 
     ref: str
     work: Classify | Generate
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.ref, str) or not self.ref.strip():
+            raise ValueError("a batch item's reference is non-empty text")
+        if len(self.ref) > MAX_REF_CHARS:
+            raise ValueError(
+                f"a reference of {len(self.ref)} characters is past the "
+                f"provider's {MAX_REF_CHARS}-character limit on a custom id. "
+                "Refused here rather than at the wire, so a whole nightly "
+                "batch does not fail on one long identifier"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -402,13 +475,30 @@ class Submission:
 
     batch_id: str
     items: tuple[Submitted, ...] = ()
+    #: What this batch was admitted on, in millionths of a dollar. It travels
+    #: with the submission because the ledger that paid for it is in another
+    #: process by morning (AD-9): a restart holding only the batch id knows a
+    #: batch is outstanding and not what it cost, which is a fresh full budget
+    #: with committed work unaccounted.
+    committed_micro_usd: int = 0
 
     @property
     def refs(self) -> tuple[str, ...]:
         return tuple(item.ref for item in self.items)
 
     def item(self, ref: str) -> Submitted | None:
-        return next((i for i in self.items if i.ref == ref), None)
+        """One submitted item, by reference.
+
+        Indexed rather than scanned. This is called once per result row, and a
+        linear scan made collection quadratic in exactly the batch size the
+        nightly pass is designed to produce — the one place in this port where
+        the shape of the load is known in advance.
+        """
+        return self._index.get(ref)
+
+    @property
+    def _index(self) -> Mapping[str, Submitted]:
+        return {item.ref: item for item in self.items}
 
     def to_json(self) -> str:
         """A durable string. Sorted keys, so the same submission is the same
@@ -416,6 +506,7 @@ class Submission:
         return json.dumps(
             {
                 "batch_id": self.batch_id,
+                "committed_micro_usd": self.committed_micro_usd,
                 "items": [
                     {
                         "ref": i.ref,
@@ -452,7 +543,16 @@ class Submission:
             ):
                 raise ValueError("a submitted item's labels are text")
             items.append(Submitted(ref=ref, tier=tier, labels=tuple(labels)))
-        return cls(batch_id=batch_id, items=tuple(items))
+        committed = data.get("committed_micro_usd", 0)
+        if isinstance(committed, bool) or not isinstance(committed, int) or (
+            committed < 0
+        ):
+            raise ValueError("a submission's committed cost is a whole number")
+        return cls(
+            batch_id=batch_id,
+            items=tuple(items),
+            committed_micro_usd=committed,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -490,11 +590,18 @@ class Collected:
         """
         return tuple(r for r in submission.refs if r not in self.outcomes)
 
-    def __len__(self) -> int:
-        return len(self.outcomes)
+    @property
+    def count(self) -> int:
+        """How many items came back.
 
-    def __iter__(self) -> Iterator[str]:
-        return iter(self.outcomes)
+        A property rather than ``__len__``, and the difference is a defect
+        review round 1 found: with ``__len__``, a *ready* batch that returned
+        nothing was falsy, so ``if collected:`` read a completed empty batch as
+        not-ready — the exact confusion the not-ready-is-an-answer design
+        exists to prevent. A ``Collected`` is now always truthy; ``ready`` is
+        the question, and it is asked by name.
+        """
+        return len(self.outcomes)
 
 
 @runtime_checkable
