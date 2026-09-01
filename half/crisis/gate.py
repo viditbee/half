@@ -98,6 +98,32 @@ sensationalising the templates module refuses on the same grounds. And not on
 the third-party path, which surfaces a resource the main can share and stops:
 no contact, no draft aimed at anyone, unchanged from 6a.
 
+**A second opinion, on the cheap action only** (story 6d). The tier table is a
+phrase table, and a phrase table fires only on what somebody thought to write
+down: it returns nothing for ``kms``, ``unalive myself``, ``im sucidal`` and for
+every phrasing in a script nobody added a row for. So when the table finds
+nothing, a model is asked — and what it is allowed to do with the answer is to
+make Half *ask*. It cannot enter: entering carries a durable thirty-day cap, and
+the mapping in ``half.crisis.classifier`` has no value that could reach one.
+
+The consultation happens once per turn at most, and only where it could change
+something: not when the table already decided, not when the mode is open, and
+not when a question of Half's is already standing — asking twice in a row is
+nagging in the one register where nagging is unforgivable, and the standing
+question is already the widest thing this gate can do.
+
+The model that ran and is unsure is not the model that did not run. The first
+asks; the second leaves the table's answer exactly as story 6a left it, and is
+counted so an operator can see a classifier failing rather than a product where
+nobody is ever at risk. Neither costs a main their reply: the consult never
+raises, and the gate catches anything it might anyway.
+
+*Where this sits, and AD-23.* The gate is not a webhook handler. It runs on the
+turn the adapter has already acknowledged — long-polling today, and a WhatsApp
+adapter must acknowledge inside five seconds and enqueue before reaching here,
+which is AD-23 and is now load-bearing rather than merely stated: this is the
+first thing on the inbound path that waits on a network.
+
 **Nothing may cost the main their reply.** Every durable step is inside one
 broad ``except``: a corrupt log, a full disk, a refactored signature, anything.
 The suspension is best-effort and the reply is not. An earlier version let a
@@ -123,6 +149,7 @@ from half.channel.port import Inbound
 from half.crisis import handoff
 from half.crisis import respond
 from half.crisis.aftercare import Schedule
+from half.crisis.classifier import SecondOpinion
 from half.crisis.handoff import Desk
 from half.crisis.safetyplan import Holder
 from half.crisis.signals import (
@@ -202,6 +229,7 @@ class CrisisGate:
         desk: Desk | None = None,
         schedule: Schedule | None = None,
         holder: Holder | None = None,
+        second: SecondOpinion | None = None,
     ) -> None:
         self._pipeline = pipeline
         self._store: CrisisStore = store if store is not None else VolatileCrisisStore()
@@ -216,6 +244,12 @@ class CrisisGate:
         # without one behaves exactly as it did before story 6b rather than
         # failing on the path where failing is the catastrophe.
         self._desk: Desk = desk if desk is not None else Desk()
+        # The second opinion (story 6d). Wired the way the desk is: a gate
+        # built without one behaves exactly as it did before this story —
+        # the phrase table decides alone, offline — rather than failing on the
+        # path where failing is the catastrophe. A gate built *with* one holds
+        # an object that cannot produce text and cannot enter the mode.
+        self._second: SecondOpinion | None = second
         # Mains this process suspended, kept beside the durable record rather
         # than instead of it. If the append failed — a full disk, a corrupt log
         # — the main is still in the mode for as long as this worker lives, and
@@ -243,6 +277,11 @@ class CrisisGate:
         ``_renewed``.
         """
         decision = self._decide(inbound)
+        # The second opinion, where the table found nothing (story 6d). It can
+        # turn this turn into a question and can do nothing else — see
+        # ``_second_opinion``, and ``half.crisis.classifier`` for why the
+        # mapping has no value that reaches the mode.
+        decision = await self._second_opinion(inbound, decision)
         # The plan is handled once, before anything else, because whether this
         # turn was about it changes what aftercare may say afterwards. Nothing
         # is read or written unless a phrase matched.
@@ -295,6 +334,69 @@ class CrisisGate:
         return await self._and_aftercare(
             inbound, await self._pipeline(inbound), wanted=wanted
         )
+
+    # -- the second opinion (story 6d) ----------------------------------------
+
+    async def _second_opinion(
+        self, inbound: Inbound, decision: Assessment
+    ) -> Assessment:
+        """``decision``, possibly widened from nothing to a question. Never raises.
+
+        Consulted **only when the table found nothing**, which is what makes
+        *one classification per turn at most* true by construction rather than
+        by counting: every other resolution returns before the call is built.
+        Three of those returns are load-bearing rather than merely economical.
+
+        *The table decided.* A safe word and an explicit disclosure enter
+        offline, with the provider down and the network unplugged — the
+        unconditional escape hatch stays unconditional, and it is unconditional
+        because nothing on its path can fail. An asking turn is already the
+        widest thing this gate does, and a surfacing turn is about somebody
+        else.
+
+        *The mode is open.* ``_decide`` short-circuits to ``HELD`` — which
+        enters — the moment it is, so an action of ``NONE`` **is** the closed
+        mode, read from the same place the reply is. A held main's every turn
+        would otherwise be sent to a provider for an answer that could not
+        change anything.
+
+        *A question of Half's is standing.* 6a's rule, and it outranks the
+        model: more hedging does not ask again, and a model reading risk in a
+        message the main sent *while already being asked about it* would ask
+        again. The main's answer is what moves next, either way.
+
+        A widened turn is an ordinary ``INFERENCE`` — the same tier, the same
+        reviewed question, the same absence of a cap — so nothing downstream
+        can tell a model's suspicion from a phrase table's, and there is no
+        second, weaker asking path for a later story to find.
+        """
+        if self._second is None:
+            return decision
+        if decision.action is not Action.NONE:
+            return decision
+        if inbound.main_id in self._asked:
+            return decision
+        try:
+            verdict = await self._second.consult(
+                inbound.text, main_id=inbound.main_id
+            )
+        except Exception:
+            # ``consult`` answers with a verdict rather than raising, so this
+            # is unreachable through it — and broad for the reason ``_suspend``
+            # is broad: on the one path where going quiet is a documented
+            # catastrophic failure, the set of exceptions worth losing a reply
+            # over is empty. No content, no message text (AD-22).
+            logger.exception(
+                "the second opinion could not be taken for main=%s; the phrase "
+                "table's answer stands", inbound.main_id
+            )
+            return decision
+        if not verdict.asks:
+            # Either the model saw nothing, or it did not run. The difference
+            # is counted inside the classifier and is invisible here on
+            # purpose: both leave story 6a's answer exactly as it was.
+            return decision
+        return Assessment(Tier.INFERENCE, Action.ASK)
 
     # -- aftercare, and the plan (story 6c) -----------------------------------
 

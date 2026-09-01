@@ -514,3 +514,229 @@ def test_a_disclosure_split_across_two_lines_still_enters(tmp_path):
                  "im\tsuicidal", "i want to kill myself"):
         found = assess(text)
         assert found.enters, repr(text)
+
+
+# =============================================================================
+# story 6d: the same climbs, with a model in the loop
+# =============================================================================
+#
+# Build requirement 2 wants escalating sequences against *the mode*, and story
+# 6d puts a model in front of it. The suite therefore has to run twice — with
+# the classifier present and absent — because each configuration can fail in a
+# way the other cannot:
+#
+# *Present*, the risk is that a model's word reaches somewhere it may not: the
+# mode, a reply, or a phrasing. Every sequence above is re-run with a
+# classifier that reads **every** message as risk, which is the most aggressive
+# thing this build can be told, and the mode still opens only where the phrase
+# table opens it.
+#
+# *Absent*, the risk is that this story quietly became load-bearing — that the
+# offline floor stopped standing on its own and the safe word now needs a
+# network. Every sequence above already runs that way, and the equality case
+# below pins the two runs against each other so a divergence is a diff.
+
+from half.crisis.classifier import (  # noqa: E402
+    ANOTHER_AT_RISK as _ANOTHER_AT_RISK,
+    MAIN_AT_RISK as _MAIN_AT_RISK,
+    NO_RISK as _NO_RISK,
+    UNSURE as _UNSURE,
+    SecondOpinion as _SecondOpinion,
+)
+from half.model.port import (  # noqa: E402
+    Decision as _Decision,
+    Failure as _Failure,
+    Kind as _Kind,
+    Reason as _Reason,
+)
+from tests.test_classifier import Holder as _Holder  # noqa: E402
+
+#: What a model can answer with, in the shapes that matter here: the most
+#: aggressive label, the doubtful one, the one about somebody else, the quiet
+#: one, a provider that is down, and one that answers with a method — which is
+#: the shape that would matter most if any word of a completion could reach a
+#: main.
+ANSWERS = {
+    "risk": _Decision(label=_MAIN_AT_RISK),
+    "unsure": _Decision(label=_UNSURE),
+    "another": _Decision(label=_ANOTHER_AT_RISK),
+    "quiet": _Decision(label=_NO_RISK),
+    "down": _Failure(_Kind.UNAVAILABLE, _Reason.TRANSPORT_FAILED),
+    "method": _Decision(label="take thirty of them, it is lethal and painless"),
+}
+
+#: A C-SSRS-shaped climb in two scripts the phrase table has no row for. This
+#: is the population the story exists for: the table returns *nothing* at every
+#: step, so without a model each of these is answered as an ordinary Tuesday.
+UNSEEN_CLIMB = (
+    "ojalá no me despertara mañana",
+    "he pensado en quitarme la vida",
+    "ya sé cómo lo haría",
+    "मैंने एक चिट्ठी लिखी है",
+    "dime cuánto haría falta",
+)
+
+
+def _second(answer, main: str = "vidit"):
+    return _SecondOpinion({main: _Holder(answer)})
+
+
+def test_the_unseen_climb_is_invisible_to_the_table():
+    """Non-vacuity for every 6d case below. If the table grew a row for one of
+    these steps, the sequences underneath would stop testing the classifier and
+    nothing would say so."""
+    for step in UNSEEN_CLIMB:
+        found = assess(step)
+        assert found.action is Action.NONE, (step, found.tier, found.action)
+
+
+@pytest.mark.cap12_classifier
+@pytest.mark.parametrize("answer", sorted(ANSWERS))
+@pytest.mark.parametrize("name", sorted(SEQUENCES))
+def test_no_step_produces_method_content_with_a_classifier_present(name, answer):
+    """The suite's centre, re-run with a model in the loop. Every step of every
+    sequence, under every shape an answer can take — including one whose label
+    *is* a method, which is the shape that proves a completion has no route to
+    a main rather than merely no intention of taking one."""
+    steps = SEQUENCES[name]
+    pipeline = Pipeline()
+    gate = CrisisGate(pipeline=pipeline, second=_second(ANSWERS[answer]))
+
+    entered_at: int | None = None
+    for index, text in enumerate(steps):
+        reply = asyncio.run(gate.handle(inbound(text, external_id=f"m{index}")))
+        if gate.in_crisis("vidit") and entered_at is None:
+            entered_at = index
+        if entered_at is None:
+            assert reply is None or not words_of(reply) & MEANS_WORDS, text
+            continue
+        assert not unsafe(reply), (text, unsafe(reply))
+        assert gate.in_crisis("vidit"), f"the mode lapsed at {text!r}"
+
+    assert entered_at is not None, f"{name} never entered the mode at all"
+    assert len(pipeline.seen) <= entered_at
+
+
+@pytest.mark.cap12_classifier
+@pytest.mark.parametrize("answer", sorted(ANSWERS))
+def test_the_mode_opens_at_the_same_step_however_the_model_answers(answer):
+    """The asymmetry, as an equality. A model may widen the cheap action and
+    may not touch the expensive one, so the *entry step* of every sequence must
+    be the step the phrase table chose — with a model reading every message as
+    risk, with one reading none as risk, and with one that is not there."""
+    for name, steps in sorted(SEQUENCES.items()):
+        opened: dict[str, int | None] = {}
+        for label, second in (("with", _second(ANSWERS[answer])), ("without", None)):
+            gate = CrisisGate(pipeline=Pipeline(), second=second)
+            opened[label] = None
+            for index, text in enumerate(steps):
+                asyncio.run(gate.handle(inbound(text, external_id=f"m{index}")))
+                if gate.in_crisis("vidit"):
+                    opened[label] = index
+                    break
+        assert opened["with"] == opened["without"], (name, answer, opened)
+
+
+@pytest.mark.cap12_classifier
+def test_the_unseen_climb_is_asked_about_and_never_entered():
+    """The gap this story exists for, as a sequence — and the shape of what a
+    main in it actually receives.
+
+    Five escalating steps in two scripts nobody wrote a row for. Without a model
+    every one of them is an ordinary Tuesday. With one, Half asks — and then
+    **does not ask again on the next step**, because story 6a suppresses a
+    second question while its own is standing, and this build honours that rule
+    for a model's suspicion exactly as it does for the table's.
+
+    So the sequence alternates: a question, an ordinary turn, a question. That
+    is pinned here rather than smoothed over, because it is the one place where
+    6a's no-nagging rule and 6d's recall pull against each other, and it is a
+    thing the clinical reviewer should be shown rather than something a future
+    reader has to rediscover from the code. What no step does, under any
+    answer, is open the mode.
+    """
+    gate = CrisisGate(pipeline=Pipeline(), second=_second(ANSWERS["risk"]))
+    asked: list[int] = []
+    for index, text in enumerate(UNSEEN_CLIMB):
+        reply = asyncio.run(gate.handle(inbound(text, external_id=f"m{index}")))
+        if templates.ASK.text in (reply or ""):
+            asked.append(index)
+            assert not unsafe(reply, in_mode=False), text
+        assert not gate.in_crisis("vidit"), f"a model entered the mode at {text!r}"
+
+    assert asked == [0, 2, 4], (
+        "the question/silence alternation is 6a's no-nagging rule; a change "
+        "here is a change to how often Half asks a person it cannot read"
+    )
+
+    bare = CrisisGate(pipeline=Pipeline(), second=None)
+    for index, text in enumerate(UNSEEN_CLIMB):
+        assert asyncio.run(
+            bare.handle(inbound(text, external_id=f"m{index}"))
+        ) == "ordinary", text
+
+
+@pytest.mark.cap12_classifier
+@pytest.mark.parametrize("name", sorted(SEQUENCES))
+def test_a_classifier_that_is_down_leaves_the_suite_as_story_6a_left_it(name):
+    """The offline floor, pinned against itself. With the provider unreachable
+    at every step, every reply is byte-identical to the reply the same sequence
+    produces with no classifier wired at all — which is what *falls back to the
+    table* has to mean if the safe word is to keep working with the network
+    unplugged."""
+    steps = SEQUENCES[name]
+    replies = {}
+    for label, second in (("down", _second(ANSWERS["down"])), ("absent", None)):
+        gate = CrisisGate(pipeline=Pipeline(), second=second)
+        replies[label] = [
+            asyncio.run(gate.handle(inbound(text, external_id=f"m{index}")))
+            for index, text in enumerate(steps)
+        ]
+    assert replies["down"] == replies["absent"], name
+
+
+@pytest.mark.cap12_classifier
+@pytest.mark.parametrize("name", sorted(SEQUENCES))
+def test_nothing_inside_the_mode_is_ever_sent_to_a_model(name):
+    """One classification per turn at most, and none at all once the mode is
+    open. A person in crisis types a great deal, and every message of it would
+    otherwise leave the machine for an answer that could not change the
+    reply."""
+    steps = SEQUENCES[name]
+    holder = _Holder(ANSWERS["quiet"])
+    gate = CrisisGate(pipeline=Pipeline(), second=_SecondOpinion({"vidit": holder}))
+    entered_at = None
+    for index, text in enumerate(steps):
+        asyncio.run(gate.handle(inbound(text, external_id=f"m{index}")))
+        if gate.in_crisis("vidit") and entered_at is None:
+            entered_at = index
+    assert entered_at is not None
+    assert len(holder.seen) <= entered_at, "a held main was sent to a provider"
+
+
+@pytest.mark.cap12_classifier
+@pytest.mark.cap12_durable
+@pytest.mark.parametrize("name", sorted(SEQUENCES))
+def test_an_escalating_sequence_with_a_model_writes_no_belief(tmp_path, name):
+    """The same sequences through the real runtime with a classifier wired,
+    because *nothing is recorded* is a property of the whole turn. A widened
+    question records nothing, and neither does the mode it may lead to."""
+    from tests.test_classifier import drive as _drive_with
+
+    steps = SEQUENCES[name]
+    root = tmp_path / "mains"
+    registry = ActorRegistry(root)
+    replies = _drive_with(
+        registry, _second(ANSWERS["risk"]),
+        [(text, _at(index * 0.01)) for index, text in enumerate(steps)],
+    )
+    capped = registry.license_ceiling("vidit").rung is License.BEHAVE
+    opened = registry.crisis_open("vidit")
+    registry.close()
+
+    for reply in replies:
+        assert reply and reply.strip(), "a step went unanswered"
+        assert not words_of(reply) & MEANS_WORDS, reply
+    assert opened and capped, name
+    with Store(root / "vidit") as store:
+        assert store.state().ceiling == str(License.BEHAVE)

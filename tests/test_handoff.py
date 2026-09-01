@@ -453,6 +453,18 @@ ALLOWED_AWAITS = frozenset({
     # ``hold_safetyplan`` stores it. None takes an address and none carries
     # text anywhere but into the main's own log.
     "_plan_turn", "receive", "_receive", "hold_safetyplan",
+    # Story 6d: the second opinion. ``_second_opinion`` is the gate asking, and
+    # ``classify`` is the port's narrow classifier answering. Argued for here
+    # rather than by exempting ``classifier.py``, because this is the first
+    # await in the crisis package that leaves the machine at all — so it is
+    # exactly the kind that has to arrive in a diff somebody reads.
+    #
+    # Neither takes an address and neither can reach a third party: what goes
+    # out is the main's own message text, and what comes back is one label from
+    # a closed set. There is no generation on this path — the object
+    # ``classify`` is called on has no method that returns text (AD-19) — and
+    # no label maps to entering the mode.
+    "_second_opinion", "consult", "classify",
 })
 
 

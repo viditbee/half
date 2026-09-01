@@ -37,7 +37,8 @@ import hashlib
 
 import pytest
 
-from half.crisis import respond, signals, templates
+from half.crisis import classifier, respond, signals, templates
+from half.crisis.classifier import ACTION_FOR_LABEL, INSTRUCTIONS, LABELS
 from half.crisis.signals import ACTION_FOR, VOCABULARY
 
 pytestmark = pytest.mark.cap12
@@ -67,6 +68,19 @@ def plan_rendering() -> list[str]:
 
 def action_rendering() -> list[str]:
     return [f"{tier} {action}" for tier, action in sorted(ACTION_FOR.items())]
+
+
+def label_rendering() -> list[str]:
+    """The label set and what each label permits, in the set's own order.
+
+    Ordered rather than sorted: the order is what the model is shown, and a
+    reordering is a change to the request even when the set is the same.
+    """
+    return [f"{label} {ACTION_FOR_LABEL[label]}" for label in LABELS]
+
+
+def instruction_rendering() -> list[str]:
+    return list(INSTRUCTIONS)
 
 
 def constant_rendering() -> list[str]:
@@ -121,6 +135,17 @@ TEMPLATES = "316a5e2c7817c9676356c383b5ba5ed2"
 PLANS = "bff98dbf54f79dde63156fd8aa128fec"
 ACTIONS = "82218c538a9a409b87c4a8b72e464f11"
 CONSTANTS = "7579d7e37990280768f4e627b2fda8ad"
+# Story 6d, and the reason this file was the right place for it: *detection
+# quality is a clinical-review item, not an engineering one — the label set and
+# the prompt go to the reviewer with the templates.* Both are pinned here
+# beside the templates so that changing either after review fails by name,
+# exactly as a template wording change does.
+#
+# Nothing above is re-pinned: 6d adds no template, no tier, no plan and no
+# vocabulary row. The corpus a reviewer read is byte-identical, and what needs
+# reviewing is the addition.
+LABEL_SET = "76e23c3739e307a24055a18d5e64b85f"
+INSTRUCTION_SET = "4044adfd528c18840cb31324c482422d"
 VOCABULARY_PINS: dict[str, tuple[str, int]] = {
     "affirmative": ("c5b82ac8c4ebea4ca4e7a9ac6ea0ade0", 34),
     "care_target": ("6252167d8554be8ca92d2477b5659794", 9),
@@ -196,6 +221,45 @@ def test_the_attribution_constants_are_the_ones_that_were_reasoned_about():
     )
 
 
+@pytest.mark.cap12_classifier
+def test_the_label_set_permits_exactly_what_it_was_reviewed_to_permit():
+    """Story 6d's Ask-First rule, made mechanical: *any change to the label
+    set, or to what a label permits.*
+
+    A label is the whole of what a model may decide, and its action is the
+    whole of what that decision may do. Adding a label widens what the model is
+    asked to distinguish; changing an action changes what its answer costs a
+    person. Neither is a thing to adjust while fixing something else.
+    """
+    assert digest(*label_rendering()) == LABEL_SET, (
+        "the crisis classifier's label set or its mapping changed. This is an "
+        "Ask-First change and a clinical-review change; see the module "
+        "docstring for how to re-pin it."
+    )
+
+
+@pytest.mark.cap12_classifier
+def test_the_instructions_are_the_ones_that_were_reviewed():
+    """The prompt is reviewed data, like the templates — the difference being
+    that a template is read by a main and this is read by a model. It decides
+    what Half notices, which makes it the same kind of artefact as the
+    vocabulary tables and not the same kind as code."""
+    assert digest(*instruction_rendering()) == INSTRUCTION_SET, (
+        "the crisis classifier's instructions changed. What the model is told "
+        "is what it detects, and the reviewer read a particular wording."
+    )
+
+
+@pytest.mark.cap12_classifier
+def test_no_label_permits_more_than_the_cheap_action():
+    """The digest above says *this* mapping was reviewed. This says no mapping
+    that could ever be pinned here lets a model do the expensive thing — so
+    re-pinning after an Ask-First conversation still cannot smuggle in an
+    entering label."""
+    for label, action in ACTION_FOR_LABEL.items():
+        assert action in {classifier.Action.ASK, classifier.Action.NONE}, label
+
+
 @pytest.mark.parametrize("name", sorted(VOCABULARY))
 def test_every_vocabulary_table_is_unchanged(name):
     expected, count = VOCABULARY_PINS[name]
@@ -225,6 +289,8 @@ if __name__ == "__main__":  # pragma: no cover - the re-pinning helper
     print(f'PLANS = "{digest(*plan_rendering())}"')
     print(f'ACTIONS = "{digest(*action_rendering())}"')
     print(f'CONSTANTS = "{digest(*constant_rendering())}"')
+    print(f'LABEL_SET = "{digest(*label_rendering())}"')
+    print(f'INSTRUCTION_SET = "{digest(*instruction_rendering())}"')
     print("VOCABULARY_PINS: dict[str, tuple[str, int]] = {")
     for table in sorted(VOCABULARY):
         print(f'    "{table}": ("{vocabulary_digest(table)}", {len(VOCABULARY[table])}),')

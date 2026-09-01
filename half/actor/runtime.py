@@ -39,6 +39,7 @@ from half.actor.registry import Actor, ActorRegistry
 from half.channel.port import Channel, Inbound
 from half.context.build import build as build_context
 from half.crisis.aftercare import Schedule
+from half.crisis.classifier import SecondOpinion
 from half.crisis.gate import CrisisGate
 from half.crisis.handoff import Desk
 from half.crisis.safetyplan import Holder
@@ -73,6 +74,12 @@ class Runtime:
     #: Optional by AD-5 and unimplemented in v1 by AD-19. When absent, results
     #: come back in bm25-fused order carrying an explicit no-op annotation.
     reranker: Reranker | None = None
+    #: The crisis classifier's holder (story 6d). Optional, and absent is a
+    #: supported deployment rather than a degraded one: the phrase table
+    #: decides alone, offline, exactly as it did in story 6a. Passed to the
+    #: gate rather than constructed here, because the key it rests on lives
+    #: beside the store tree and is read at the composition root (AD-11).
+    second: SecondOpinion | None = None
     _gate: CrisisGate = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -100,6 +107,12 @@ class Runtime:
             desk=Desk(held=self.registry, drafter=self.channel),
             schedule=Schedule(store=self.registry),
             holder=Holder(held=self.registry),
+            # The second opinion (story 6d). It widens the cheap action and
+            # nothing else — it cannot enter the mode, cannot write a word a
+            # main reads, and cannot be reached at all until a deployment has
+            # supplied a key and a tier. Passed through rather than defaulted,
+            # so a runtime built without one is story 6a's offline gate.
+            second=self.second,
         )
 
     async def run(self) -> None:

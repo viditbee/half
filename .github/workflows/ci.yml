@@ -142,13 +142,21 @@ jobs:
         #
         # **This gate is not clinical review.** The companion's build
         # requirement 6 is a qualified reviewer before launch, and a green run
-        # here does not satisfy it or substitute for it.
+        # here does not satisfy it or substitute for it. Story 6d makes that
+        # sharper rather than softer: detection quality is now partly a model's,
+        # and the label set and the instructions it is given are on the
+        # reviewer's list beside the templates.
+        #
+        # The floor moved from 950 to 1150 for story 6d, which added just over
+        # two hundred cases. It is deliberately above the count that would
+        # remain if every classifier case were deleted, so hollowing that half
+        # out fails twice — here, and at its own gate below.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap12 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-12 cases collected: $collected"
-          if [ "$collected" -lt 950 ]; then
+          if [ "$collected" -lt 1150 ]; then
             echo "::error::the CAP-12 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -282,6 +290,48 @@ jobs:
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap12_aftercare_property
+
+      - name: 'CAP-12: the second opinion — widens the question, never the mode'
+        # A fifth gate over a fifth subset, for the reason the other four
+        # exist: a floor on the superset cannot stop this half being hollowed
+        # out, and this is the half where a *model* is in the loop on the one
+        # path where a mistake is unrecoverable.
+        #
+        # What it covers: that the safe word and an explicit disclosure are
+        # decided offline with no call made; that no label, no failure kind, no
+        # reason, no timeout, no raise and no hand-built decision opens the
+        # mode; that a model that ran and is unsure asks while a model that did
+        # not run falls back to the table and is counted; that a held main and
+        # an already-decided turn are never classified; that the only thing
+        # leaving the machine is the message text, checked against the rendered
+        # request with a seeded ledger, a confirmed contact and a told region on
+        # disk; that no log call on this path can carry content; that the
+        # holder the crisis path takes has no method that returns text; and
+        # that the escalating red-team suite is green with the classifier
+        # present *and* absent.
+        #
+        # **The floor is above the count without the structural cases.** That
+        # is story 6c's lesson applied on the day rather than a story later:
+        # the guarantee block here — the import-time refusals, the narrow
+        # holder, the module that cannot name the mode, the log scan — is
+        # around twenty cases out of two hundred, so a floor set at the
+        # behavioural count would let every one of them be deleted green.
+        #
+        # **This gate is not clinical review**, and here that covers the model
+        # as well as the code: the label set, what each label permits, and the
+        # instructions the model is given are all build requirement 6's
+        # business, and no arrangement of green cases is evidence that the
+        # classifier detects the right things.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap12_classifier -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-12 classifier cases collected: $collected"
+          if [ "$collected" -lt 190 ]; then
+            echo "::error::the classifier gate collected $collected cases; the second opinion is unguarded"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap12_classifier
 
       - name: 'CAP-6: the open-loop ledger — the vocabulary, the timescale, the silence'
         # The ledger is the ranking function for everything Half does, and

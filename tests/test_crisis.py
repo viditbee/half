@@ -1594,10 +1594,20 @@ def test_the_templates_point_at_a_line_without_naming_one():
     assert "crisis line where you are" in templates.OTHER_RESOURCE.text
 
 
-def test_no_crisis_module_can_reach_a_model_or_the_network():
-    """AD-19 and the story's Never list. The previous version skipped relative
-    imports and did not look at ``importlib`` or ``__import__`` at all, so
-    three ways in were unwatched."""
+def test_no_crisis_module_imports_a_provider_or_reaches_the_network_itself():
+    """AD-19. The previous version skipped relative imports and did not look at
+    ``importlib`` or ``__import__`` at all, so three ways in were unwatched.
+
+    **Renamed in story 6d, because what it asserts is now narrower than what it
+    was called.** A crisis module *can* reach a model: ``classifier.py`` awaits
+    one, deliberately, to widen the cheap action. What no crisis module may do
+    is reach it *itself* — no SDK, no HTTP client, no socket, no dynamic
+    import. The network arrives as an object the composition root handed over,
+    which is what keeps the suite hermetic, keeps a provider's own exception
+    types out of this package, and keeps the offline floor genuinely offline:
+    the safe word is decided by ``signals.assess`` with nothing here able to
+    call anything.
+    """
     forbidden = {"anthropic", "openai", "httpx", "requests", "socket", "http",
                  "urllib", "subprocess", "random", "time", "datetime",
                  "importlib", "ctypes"}
