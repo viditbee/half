@@ -25,12 +25,13 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Self
 
+from half.errors import TensionError
 from half.loops import ledger
 from half.store import db
 from half.store.fold import State, fold
 from half.store.log import BeliefLog
 from half.store.ops import Op
-from half.store.records import RESERVED, Record, make, validate_fields
+from half.store.records import BETWEEN, RESERVED, Record, make, validate_fields
 
 BELIEFS_DIR = "beliefs"
 DB_NAME = "half.db"
@@ -99,8 +100,44 @@ class Store:
             {k: v for k, v in record.data.items() if k not in RESERVED},
             op=record.op,
         )
+        if record.op is Op.TENSION:
+            self._require_pair(record)
         self.log.append(record)
         self.rebuild()
+
+    def _require_pair(self, record: Record) -> None:
+        """A tension's **first** record must name the two entries it links.
+
+        *"A tension is the record of two entries that disagree"* (glossary) was
+        the one part of the definition nothing enforced.
+        ``validate_tension_fields`` cannot: it sees fields and not the log, so
+        it cannot tell a mint from a transition, and it therefore has to treat
+        ``between`` as optional on every record. Review found the consequence
+        from both ends — a mint whose ``between`` was simply left off, and a
+        transition naming an id that was never minted — each producing a
+        tension that is permanently pairless, permanently not computable, and
+        counted by every pass for ever.
+
+        Here, because this is the layer that knows both: the fields *and* which
+        tensions the log already holds. A record whose id the fold has already
+        seen is a transition and carries whatever it carries; a record for a new
+        id is a mint and must say what it is about.
+
+        An id in ``expunged`` counts as seen. The main erased that tension, and
+        a later record for it is refused by the fold rather than by this — the
+        erasure has to stay an erasure and not become a validation error.
+        """
+        if BETWEEN in record.data:
+            return
+        current = self.state()
+        if record.id in current.tensions or record.id in current.expunged:
+            return
+        raise TensionError(
+            f"the first {Op.TENSION.value} record for {record.id!r} must name "
+            f"the two entries it links: a tension is the record of two entries "
+            f"that disagree, and one that names neither is a disagreement "
+            f"nothing can ever evaluate and nothing will ever resolve"
+        )
 
     def record(self, op: Op, ident: str, t: str, **fields: Any) -> Record:
         """Append a new record built from ``op``/``ident``/``t``.

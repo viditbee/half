@@ -27,7 +27,8 @@ declined as somebody who was never asked.
 Stories 1–5a, 6a–6c, 8 and 9a of 12: the store, the Telegram channel, mail
 ingestion, retrieval, the two-channel context, the license ladder, the whole of
 the crisis mode — the switch and the moment, the warm handoff, and coming back —
-the open-loop ledger, and the due-time scheduler that will run the nightly pass.
+the open-loop ledger, the due-time scheduler, and the nightly pass it runs: the
+tension ledger, re-evaluated against what the log holds.
 Half can hold a conversation, remember it, derive claims from your mail without
 keeping the mail, rank what it knows against what you just said, decide which
 of it may be *said* as opposed to merely acted on, step out of all of it when
@@ -64,9 +65,10 @@ purpose. Its five consumers (claim derivation, the crisis classifier,
 consolidation, tension minting, and the reply itself) are each their own story
 with their own risk, and wiring one of them in alongside the port would put the
 port's design and that consumer's risk into a single review. The trust balance
-and the unsaid and unasked queues are story 5b, and the nightly pass the
-scheduler runs today does nothing, which is a first-class outcome rather than a
-placeholder.
+and the unsaid and unasked queues are story 5b. The nightly pass the scheduler
+runs today re-evaluates this main's tensions against the log and an injected
+`now`, appends the transitions that follow, and sends nothing to anybody —
+minting new tensions is story 9d and the morning surface is story 10.
 
 **Not ready for real use.** The crisis subsystem has not been reviewed by a
 qualified clinician, and that review is a launch gate rather than a follow-up.

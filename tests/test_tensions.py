@@ -51,7 +51,9 @@ from half.store.fold import fold
 from half.store.ops import SCHEMA_VERSION, Op
 from half.store.records import (
     HISTORY_VISIBLE,
+    RESERVED as RESERVED_KEYS,
     Record,
+    TENSION_FIELDS,
     history_projection,
     make,
     validate_tension_fields,
@@ -72,8 +74,11 @@ from half.tensions.states import (
 from half.tensions.widening import (
     BETWEEN,
     NO_PAIR,
+    RECORDED_IN_FUTURE,
+    REASONS,
     PERSISTENCE_DAYS,
     RANKED_FIELDS,
+    RANKING_WORDS,
     RESOLVED_ALREADY,
     SIDES,
     UNKNOWN_STATE,
@@ -83,8 +88,13 @@ from half.tensions.widening import (
     Drift,
     Evidence,
     drift,
+    by_entry,
     evidence,
+    pair_of,
+    ranked_names,
+    ranks_a_side,
     supports,
+    words_in,
 )
 
 from tests.conftest import seed_belief
@@ -102,6 +112,70 @@ NOW = "2026-08-04T00:00:00Z"
 #: is how a whole new ``half/loops/decay.py`` slipped past story 8's first
 #: guard.
 SURFACE = ("half/tensions", "half/consolidate")
+
+#: Tension code that lives **outside** those two packages, named function by
+#: function.
+#:
+#: Every neutrality and resolution guard used to scan ``SURFACE`` alone, and
+#: this story wrote tension code into three modules that are not in it: the
+#: fold resolves tensions, the append gate validates them, and the registry
+#: reads and moves them. Review confirmed the hole by injecting
+#: ``held["winner"] = pair[0]`` into the fold's own merge branch and watching
+#: the whole suite pass — a ranking written where no guard was looking, in the
+#: one place that is not even reached by the append gate. That is story 8's
+#: hole exactly: *the guard passed because the violation travelled through a
+#: module it did not cover.*
+#:
+#: Named functions rather than whole files, because these modules do many other
+#: things: ``ActorRegistry`` has a ``close``, which the resolution scan
+#: forbids, and neither that nor the crisis mode's ``score`` has anything to do
+#: with a tension. ``_guarded_trees`` asserts each name still exists, so a
+#: rename drops coverage loudly rather than silently.
+OUTPOSTS: dict[str, tuple[str, ...]] = {
+    "half/store/fold.py": ("fold", "_resolve_tensions"),
+    "half/store/records.py": ("validate_tension_fields",),
+    "half/actor/registry.py": (
+        "tension_table", "belief_history", "tension_view", "note_transition",
+    ),
+}
+
+#: The vocabulary of the guard itself. ``half/tensions/widening.py`` owns the
+#: denylist and is exempt from the name scan for that reason; a *caller*
+#: applying it — ``validate_tension_fields`` asking ``ranked_names(fields)`` —
+#: is the rule being enforced rather than a ranking being written, and these
+#: are the only names that get that reading.
+GUARD_NAMES = {"RANKED_FIELDS", "RANKING_WORDS", "ranked_names", "ranks_a_side"}
+
+
+def _guarded_trees(*, skip_denylist_owner: bool = False):
+    """Every tree the neutrality and resolution guards read, labelled.
+
+    The two packages whole, plus each named function of each outpost. The label
+    is what a failure names, so ``half/store/fold.py:fold`` says which function
+    the offending line is in and not merely which file.
+    """
+    found: list[tuple[str, ast.AST]] = []
+    for area in SURFACE:
+        for path in sorted((ROOT / area).rglob("*.py")):
+            relative = str(path.relative_to(ROOT))
+            if skip_denylist_owner and relative == "half/tensions/widening.py":
+                continue
+            found.append((relative, ast.parse(path.read_text(encoding="utf-8"),
+                                              filename=str(path))))
+    for relative, names in sorted(OUTPOSTS.items()):
+        tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"),
+                         filename=relative)
+        defined = {
+            node.name: node for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        for name in names:
+            assert name in defined, (
+                f"{relative} no longer defines {name!r}; the guards have lost "
+                f"their subject, which is how coverage disappears quietly"
+            )
+            found.append((f"{relative}:{name}", defined[name]))
+    return found
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -156,7 +230,30 @@ def mint(store, ident, t, *, between, state=TensionState.FRESH):
 
 def history(store):
     """The main's belief history, narrowed the way the pass sees it."""
-    return tuple(history_projection(record.data) for record in store.log)
+    return tuple(
+        history_projection(record.data)
+        for record in store.log
+        if record.op is Op.ASSERT and record.data.get("tombstone") is not True
+    )
+
+
+def past_the_gate(store, ident, t, **fields):
+    """Write a tension record the *append gate refuses*, straight to the log.
+
+    **Write strict, read tolerant** is the rule this story shares with story 8,
+    and the read half needs cases: a log written by an older build — before the
+    store required a mint to name its pair — or by a later one through the
+    Ask-First path that adds a state, still has to fold. ``Store.append`` is
+    where strictness lives, so exercising tolerance means going around it, and
+    that is the only thing this helper is for.
+    """
+    store.log.append(
+        Record(op=Op.TENSION, id=ident, t=t,
+               data={"t": t, "op": str(Op.TENSION), "id": ident,
+                     "v": SCHEMA_VERSION, **fields})
+    )
+    store.rebuild()
+    return store.state().tensions[ident]
 
 
 def read_one(store, ident) -> Tension:
@@ -204,7 +301,8 @@ def test_a_minted_tension_is_recorded_fresh_and_readable_from_the_fold(tensions)
 
     found = read_one(tensions, "x_1")
     assert found.state == TensionState.FRESH.value
-    assert found.known_state and found.live and found.paired
+    assert found.known_state and found.paired
+    assert found.state in LIVE_STATES
     assert set(found.between) == {"b_1", "b_2"}
     assert found.at == MINTED
 
@@ -263,10 +361,12 @@ def test_an_unknown_state_is_never_defaulted_to_a_known_one(tensions):
     assert list(tensions.log) == []
 
 
-@pytest.mark.parametrize("state", sorted(TENSION_STATES))
-def test_every_state_in_the_vocabulary_is_accepted_by_the_append_gate(
+@pytest.mark.parametrize("state", sorted(LIVE_STATES))
+def test_every_state_a_record_may_be_written_in_is_accepted_by_the_append_gate(
     tensions, state
 ):
+    """Every state but `resolved`, which is the fold's answer to a correction
+    and which nothing may write — see the terminality cases below."""
     tensions.record(Op.TENSION, f"x_{state}", MINTED,
                     between=["b_1", "b_2"], **{STATE: state})
     assert tensions.state().tensions[f"x_{state}"][STATE] == state
@@ -306,7 +406,8 @@ def test_the_other_vocabularies_still_accept_their_own_words(tensions):
     tensions.record(Op.CRISIS, "cr_1", MINTED, **{STATE: "entered"},
                     tier="disclosure", score=1)
     tensions.record(Op.AFTERCARE, "ac_1", MINTED, **{STATE: "asked"})
-    tensions.record(Op.TENSION, "x_1", MINTED, **{STATE: "widening"})
+    tensions.record(Op.TENSION, "x_1", MINTED, between=["b_1", "b_2"],
+                    **{STATE: "widening"})
     assert tensions.state().tensions["x_1"][STATE] == "widening"
 
 
@@ -380,7 +481,10 @@ def test_a_transition_carries_no_pair_and_is_still_accepted(tensions):
 
 
 def test_a_tension_that_names_no_pair_is_never_evaluated(tensions):
-    tensions.record(Op.TENSION, "x_1", MINTED, **{STATE: "fresh"})
+    """A pairless tension can no longer be *written* — ``Store.append`` refuses
+    a mint that names no pair — but a log an older build wrote still folds, and
+    this is what the pass does with one."""
+    past_the_gate(tensions, "x_1", MINTED, **{STATE: "fresh"})
     found = ledger.evaluate(read_one(tensions, "x_1"), history=(), now=NOW)
     assert not found.computable and found.reason == NO_PAIR
     assert found.state is None
@@ -540,14 +644,28 @@ def test_no_threshold_decides_widening(tensions):
             assert found.state == TensionState.WIDENING.value, age
 
 
-def test_a_tension_recorded_in_the_future_does_not_buy_itself_negative_age(
+def test_a_tension_recorded_in_the_future_is_reported_rather_than_clamped(
     tensions
 ):
-    widening_log(tensions, minted="2026-09-01T00:00:00Z", moves=())
+    """A baseline ahead of ``now`` is not a baseline.
+
+    This used to clamp the age to zero and report the tension as `fresh` with
+    nothing to do — but with the baseline in the future, *every* record for both
+    sides is at or before it, so both counts read as unmoved and the tension
+    could not widen however much evidence arrived. That is a gap, and it says
+    so. It also heals itself: the same tension evaluated after ``now`` passes
+    the stamp computes normally.
+    """
+    widening_log(tensions, minted="2026-09-01T00:00:00Z", moves=("b_1",))
     found = ledger.evaluate(read_one(tensions, "x_1"),
                             history=history(tensions), now=NOW)
-    assert found.age_days == 0.0
-    assert found.state == TensionState.FRESH.value
+    assert not found.computable
+    assert found.reason == RECORDED_IN_FUTURE
+    assert found.state is None and found.age_days is None
+
+    later = ledger.evaluate(read_one(tensions, "x_1"),
+                            history=history(tensions), now="2026-09-03T00:00:00Z")
+    assert later.computable and later.state == TensionState.WIDENING.value
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -590,7 +708,7 @@ def test_every_way_the_answer_would_be_a_guess_reports_instead(
 def test_a_tension_that_cannot_be_evaluated_keeps_the_state_it_has(tensions):
     """Matrix: *not computable*. The pass leaves it alone; the state is the
     state the log recorded and nothing overwrote it."""
-    tensions.record(Op.TENSION, "x_1", MINTED, **{STATE: "widening"})
+    past_the_gate(tensions, "x_1", MINTED, **{STATE: "widening"})
     before = tensions.state().tensions["x_1"]
     found = ledger.plan(ledger.read(tensions.state().tensions),
                         history=history(tensions), now=NOW)
@@ -631,6 +749,58 @@ def test_evidence_refuses_a_side_or_a_baseline_it_cannot_read():
         assert not evidence((), side=side, at=MINTED).readable
     for bad in ("yesterday", None, "2026-02-31T00:00:00Z", 7):
         assert not evidence((), side="b_1", at=bad).readable
+
+
+def test_evidence_reads_the_log_in_stamp_order_not_append_order():
+    """The log is ordered by *append*, and its stamps need not be monotonic —
+    ``half.schedule.tick``'s own notes say a backward clock jump leaves them out
+    of order, and nothing downstream was supposed to depend on it.
+
+    ``evidence`` does: it takes the baseline from the last row at or before the
+    tension's stamp and the current count from the last row of all. Read in
+    append order, both come off the wrong records, and a tension reports
+    accumulation that did not happen — or, as here, misses one that did.
+    """
+    rows = (
+        {"id": "b_1", "t": "2026-08-01T00:00:00Z", "support": ["s_1"]},
+        {"id": "b_1", "t": "2026-08-05T00:00:00Z",
+         "support": ["s_1", "s_2", "s_3"]},
+        {"id": "b_1", "t": "2026-08-03T00:00:00Z", "support": ["s_1", "s_2"]},
+    )
+    found = evidence(rows, side="b_1", at="2026-08-04T00:00:00Z")
+    assert found.before == 2, "the baseline came off the wrong record"
+    assert found.now == 3, "the current count came off the wrong record"
+    assert found.accumulated
+
+
+def test_the_index_and_the_bare_rows_answer_identically():
+    """``by_entry`` exists so a pass walks a main's log once instead of twice
+    per tension. It must not be a second reading of it."""
+    rows = tuple(
+        {"id": ident, "t": stamp_at, "support": cited}
+        for ident, stamp_at, cited in (
+            ("b_1", "2026-08-01T00:00:00Z", ["s_1"]),
+            ("b_2", "2026-08-01T00:00:00Z", ["s_2"]),
+            ("b_1", "2026-08-03T00:00:00Z", ["s_1", "s_9"]),
+            ("b_3", "not a stamp", ["s_3"]),
+        )
+    )
+    indexed = by_entry(rows)
+    for side in ("b_1", "b_2", "b_3", "b_9"):
+        assert evidence(rows, side=side, at=MINTED) == evidence(
+            indexed, side=side, at=MINTED
+        ), side
+
+
+def test_an_erased_body_cannot_be_read_as_citing_nothing():
+    """A tombstone is not a record that cited no sources — it is a record with
+    no body. Counted as a zero it lowers the entry's *current* count, and the
+    next honest append then reads as accumulation."""
+    assert supports({"id": "b_1", "t": MINTED, "tombstone": True}) is None
+    assert supports({"id": "b_1", "t": MINTED}) == 0, (
+        "a belief admitted with no receipt genuinely cites nothing, and its "
+        "first source arriving is real accumulation"
+    )
 
 
 def test_a_reason_is_never_a_state_and_a_state_is_never_a_reason():
@@ -796,17 +966,231 @@ def test_no_module_in_the_tension_surface_offers_a_way_to_resolve_one():
     banned = {"resolve", "resolved", "close", "settle", "invalidate", "delete",
               "remove", "drop", "expunge"}
     offenders: list[str] = []
-    for area in SURFACE:
-        for path in sorted((ROOT / area).rglob("*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                        and node.name.lstrip("_") in banned):
-                    offenders.append(f"{path.relative_to(ROOT)}:{node.name}")
+    for label, tree in _guarded_trees():
+        for node in ast.walk(tree):
+            if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.name.lstrip("_") in banned):
+                offenders.append(f"{label}:{node.name}")
     assert not offenders, (
         f"the tension surface offers {offenders}; resolution is the fold's "
         f"answer to a correction and nothing else records it"
     )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# matrix: append after resolution — `resolved` is terminal by every route
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.cap7_resolution
+@pytest.mark.parametrize("later", sorted(LIVE_STATES))
+def test_a_later_append_cannot_move_a_resolved_tension_out_of_it(tensions, later):
+    """Matrix: *append after resolution*. The defect, reproduced and closed.
+
+    Mint `fresh`, retract a side, read `resolved` from the fold — then append a
+    ``tension`` record carrying any live state at all. The fold merged it
+    straight over its own answer to the correction, and replay reproduced the
+    move faithfully, while ``half.tensions.states`` said in prose that *"there
+    is no path from `resolved` back to any other state"*. The expunge branch
+    had a guard and a case for exactly this shape; this one had neither.
+
+    Asserted through all three readings, because they are three different
+    programs: the SQLite view, a rebuild of it, and a fold in memory.
+    """
+    widening_log(tensions, moves=())
+    tensions.record(Op.RETRACT, "c_1", "2026-08-03T09:00:00Z", target="b_1")
+    assert tensions.state().tensions["x_1"][STATE] == TensionState.RESOLVED.value
+
+    tensions.record(Op.TENSION, "x_1", NOW, **{STATE: later})
+
+    assert tensions.state().tensions["x_1"][STATE] == TensionState.RESOLVED.value
+    assert tensions.rebuild().tensions["x_1"][STATE] == TensionState.RESOLVED.value
+    assert tensions.fold().tensions["x_1"][STATE] == TensionState.RESOLVED.value
+
+
+@pytest.mark.cap7_resolution
+def test_terminality_pins_the_state_and_not_the_whole_record(tensions):
+    """Non-vacuity for the guard above: it must not be *"a resolved tension
+    ignores later records"*, which would also drop the stamp and the tier. What
+    is terminal is the state."""
+    widening_log(tensions, moves=())
+    tensions.record(Op.RETRACT, "c_1", "2026-08-03T09:00:00Z", target="b_1")
+    tensions.record(Op.TENSION, "x_1", NOW, model_tier="frontier",
+                    **{STATE: "widening"})
+
+    held = tensions.state().tensions["x_1"]
+    assert held[STATE] == TensionState.RESOLVED.value
+    assert held["model_tier"] == "frontier"
+    assert held["t"] == NOW
+
+
+@pytest.mark.cap7_resolution
+def test_a_resolved_state_is_refused_before_the_record_is_durable(tensions):
+    """``TensionError``'s own docstring said this gate *"refuses the same values
+    one layer down where they would become durable"*. It did not: only
+    ``ledger.transition`` refused `resolved`, so any caller building the record
+    itself wrote one. Resolution is what the log already means the moment a
+    correction lands, and a second writer of it is a second place for the log
+    and the fold to disagree."""
+    widening_log(tensions, moves=())
+    with pytest.raises(TensionError, match="the fold computes"):
+        tensions.record(Op.TENSION, "x_1", NOW, **{STATE: "resolved"})
+    with pytest.raises(TensionError):
+        make(Op.TENSION, "x_9", MINTED, between=["b_1", "b_2"],
+             **{STATE: "resolved"})
+    assert tensions.state().tensions["x_1"][STATE] == TensionState.FRESH.value
+
+
+@pytest.mark.cap7_resolution
+def test_a_resolved_state_read_off_the_log_is_terminal_too(tensions):
+    """The route the *already-gone-side* rule does not cover, and the reason
+    the state is pinned as well.
+
+    When the fold resolved a tension, both sides being gone is what re-resolves
+    it on every later record — so a guard that only re-pinned the state would
+    look redundant. It is not: a `resolved` that arrived *from the log* — an
+    older build's, written before the append gate refused one — sits on a
+    tension whose two entries are both alive, and nothing but the pin keeps a
+    later append off it. Terminality is *by every route*, and this is a route.
+    """
+    widening_log(tensions, moves=())
+    past_the_gate(tensions, "x_2", MINTED, between=["b_1", "b_2"],
+                  **{STATE: "resolved"})
+    assert set(tensions.state().beliefs) >= {"b_1", "b_2"}, "both sides stand"
+
+    tensions.record(Op.TENSION, "x_2", NOW, **{STATE: "widening"})
+
+    assert tensions.state().tensions["x_2"][STATE] == "resolved"
+    assert tensions.rebuild().tensions["x_2"][STATE] == "resolved"
+
+
+@pytest.mark.cap7_resolution
+def test_a_log_that_already_carries_resolved_still_folds(tensions):
+    """Write strict, read tolerant. The word stays in the vocabulary because
+    the *fold* has to produce it, and a log written before the append gate
+    refused one must not take a main's whole store down."""
+    widening_log(tensions, moves=())
+    past_the_gate(tensions, "x_2", MINTED, between=["b_1", "b_2"],
+                  **{STATE: "resolved"})
+    assert tensions.state().tensions["x_2"][STATE] == "resolved"
+    assert is_state("resolved") and "resolved" in TENSION_STATES
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# matrix: minted over a gone side — not live, and never drift over nothing
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.cap7_resolution
+@pytest.mark.parametrize("verb", [Op.RETRACT, Op.REVISE])
+@pytest.mark.parametrize("side", ["b_1", "b_2"])
+def test_a_tension_minted_over_a_gone_side_is_not_live(tensions, verb, side):
+    """Matrix: *minted over a gone side*.
+
+    ``_resolve_tensions`` fires while folding a correction, so a tension minted
+    *after* that correction was never seen by it: it folded `fresh`, with one
+    of its two entries absent from the ledger, and nothing would ever look
+    again. The pass then computed drift across an entry that does not exist.
+    """
+    entry(tensions, "b_1", at_days(2), support=["s_1"])
+    entry(tensions, "b_2", at_days(2), support=["s_2"])
+    tensions.record(verb, "c_1", at_days(1), target=side)
+
+    mint(tensions, "x_1", MINTED, between=["b_1", "b_2"])
+
+    held = tensions.state().tensions["x_1"]
+    assert held[STATE] == TensionState.RESOLVED.value
+    assert held[BETWEEN] == ["b_1", "b_2"], "the pair was lost"
+    assert "x_1" in tensions.state().tensions, "the mint was deleted"
+    assert side not in tensions.state().beliefs
+    assert tensions.rebuild().tensions["x_1"] == held
+
+
+@pytest.mark.cap7_resolution
+def test_a_tension_minted_over_an_expunged_side_is_not_live(tensions):
+    entry(tensions, "b_1", at_days(2), support=["s_1"])
+    entry(tensions, "b_2", at_days(2), support=["s_2"])
+    tensions.expunge("b_1", t=at_days(1))
+
+    mint(tensions, "x_1", MINTED, between=["b_1", "b_2"])
+    assert tensions.state().tensions["x_1"][STATE] == TensionState.RESOLVED.value
+
+
+@pytest.mark.cap7_resolution
+def test_an_entry_that_never_existed_is_not_an_entry_that_left(tensions):
+    """Non-vacuity, and the distinction the rule turns on.
+
+    *"Resolve whenever a side is absent from the fold"* would have caught this
+    too, and it would be wrong: a tension over an id the log has never seen is
+    not a disagreement that ended, it is one whose evidence cannot be read.
+    Declaring it over is a guess, and the pass already has an honest answer for
+    it.
+    """
+    mint(tensions, "x_1", MINTED, between=["b_1", "b_2"])
+    assert tensions.state().tensions["x_1"][STATE] == TensionState.FRESH.value
+
+    found = ledger.plan(ledger.read(tensions.state().tensions),
+                        history=history(tensions), now=NOW)
+    assert found.transitions == {}
+    assert found.incomputable == {"x_1": UNREADABLE_SIDE}
+
+
+@pytest.mark.cap7_resolution
+def test_the_pass_never_computes_drift_across_an_entry_that_is_gone(tensions):
+    """The whole reason the rule exists, asserted as the pass's own behaviour:
+    evidence keeps arriving on the surviving side, and nothing is computed from
+    it."""
+    widening_log(tensions, moves=())
+    tensions.record(Op.RETRACT, "c_1", "2026-08-03T00:00:00Z", target="b_1")
+    entry(tensions, "b_2", "2026-08-03T12:00:00Z", support=["s_2", "s_more"])
+
+    found = ledger.plan(ledger.read(tensions.state().tensions),
+                        history=history(tensions), now=NOW)
+    assert found.transitions == {}
+    assert found.incomputable == {"x_1": RESOLVED_ALREADY}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# a tension has a pair, and it says so before it is durable (9d's obligation)
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def test_a_tensions_first_record_must_name_the_two_entries_it_links(tensions):
+    """*"A tension is the record of two entries that disagree"* (glossary) was
+    the one part of the definition nothing enforced.
+
+    ``validate_tension_fields`` cannot enforce it — it sees fields and not the
+    log, so it cannot tell a mint from a transition and has to treat ``between``
+    as optional on every record. The result was durable from both ends: a mint
+    that simply left it off, and a transition naming an id that was never
+    minted, each producing a tension that is permanently pairless, permanently
+    not computable, and counted by every pass for ever. The store knows both the
+    fields and which ids the fold holds, so the rule lives there. This is the
+    invariant story 9d mints against.
+    """
+    with pytest.raises(TensionError, match="two entries"):
+        tensions.record(Op.TENSION, "x_1", MINTED, **{STATE: "fresh"})
+    with pytest.raises(TensionError, match="two entries"):
+        tensions.record(Op.TENSION, "never_minted", NOW, **{STATE: "widening"})
+    assert tensions.state().tensions == {}
+
+
+def test_a_transition_over_a_tension_the_log_holds_still_needs_no_pair(tensions):
+    """The other half: the rule is about a *first* record, so the ordinary
+    nightly transition — a state and nothing else — is unaffected."""
+    widening_log(tensions, moves=("b_1",))
+    tensions.record(Op.TENSION, "x_1", NOW, **{STATE: "widening"})
+    assert tensions.state().tensions["x_1"][BETWEEN] == ["b_1", "b_2"]
+
+
+def test_an_erased_tension_is_still_a_tension_the_log_has_seen(tensions):
+    """An expunge has to stay an erasure rather than becoming a validation
+    error: a later record for an erased tension is refused by the *fold*, which
+    is where erasure is enforced, and not by the pair gate."""
+    widening_log(tensions, moves=())
+    tensions.expunge("x_1", t="2026-08-03T09:00:00Z")
+    tensions.record(Op.TENSION, "x_1", NOW, **{STATE: "widening"})
+    assert "x_1" not in tensions.state().tensions
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -899,6 +1283,147 @@ def test_plan_never_raises_on_a_hostile_table():
         found = ledger.plan(hostile, history=(), now=NOW)
         assert isinstance(found, Plan)
         assert found.transitions == {}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# a tension goes on moving — every transition the vocabulary allows, twice
+# ═════════════════════════════════════════════════════════════════════════════
+
+#: Which entries have to accumulate evidence for the log to compute each state.
+#: `fresh` is absent because nothing computes it: every tension is born there
+#: and the pass never puts one back.
+_ACCUMULATE = {"widening": ("b_1",), "closing": ("b_1", "b_2"), "persistent": ()}
+
+#: Every ordered pair of states a tension may move between.
+_ORDERED_MOVES = [
+    (first, second)
+    for first in ("fresh", "widening", "closing", "persistent")
+    for second in sorted(_ACCUMULATE)
+    if first != second
+]
+
+
+def _push(store, *, to, since, cited):
+    """Make the log say ``to`` about ``x_1``, and return the plan and its
+    instant.
+
+    ``cited`` tracks how many sources each entry has cited so far, because
+    accumulation is *strictly more than at the baseline* — a belief re-stated
+    with the same sources has not moved, which is the point of counting the
+    support set rather than the records.
+    """
+    moving = _ACCUMULATE[to]
+    for ident in moving:
+        cited[ident] += 1
+        entry(store, ident, at_hours(1, since=since),
+              support=[f"s_{ident}_{n}" for n in range(cited[ident])])
+    forward = 1.0 if moving else PERSISTENCE_DAYS + 1.0
+    at = at_days(-forward, since=since)
+    found = ledger.plan(ledger.read(store.state().tensions),
+                        history=history(store), now=at)
+    return found, at
+
+
+@pytest.mark.parametrize("first,second", _ORDERED_MOVES,
+                         ids=lambda pair: pair if isinstance(pair, str) else str(pair))
+def test_a_tension_goes_on_moving_after_its_first_transition(
+    tensions, first, second
+):
+    """A tension that moved once must be able to move again — every ordered
+    pair, driven through real appends.
+
+    Review froze one with two mutations that left the whole suite green:
+    ``if state != fresh: target = state`` in ``widening.drift``, and the
+    narrower *"a widening tension never closes"*. Nothing caught either,
+    because every case that drove a state change started from a `fresh`
+    tension — ``widening_log`` writes `fresh`, ``seed_tension`` writes `fresh`,
+    and the only non-`fresh` holders either asserted symmetry without reading
+    the value or called ``ledger.transition`` directly instead of ``drift``.
+    The idempotence cases cannot help: their second run legitimately expects no
+    move.
+
+    A build where tensions freeze on their first transition reports a life
+    permanently widening that never closes — with *drift is tension velocity*
+    and *loop advancement is tensions closing* both counted off it.
+    """
+    base = MINTED
+    minted = at_days(-1.0, since=base)
+    entry(tensions, "b_1", base, support=["s_b_1_0"])
+    entry(tensions, "b_2", base, support=["s_b_2_0"])
+    mint(tensions, "x_1", minted, between=["b_1", "b_2"])
+    cited = {"b_1": 1, "b_2": 1}
+    at = minted
+
+    if first != "fresh":
+        found, at = _push(tensions, to=first, since=at, cited=cited)
+        assert found.transitions == {"x_1": {STATE: first}}, "the first move"
+        tensions.record(Op.TENSION, "x_1", at, **found.transitions["x_1"])
+        assert tensions.state().tensions["x_1"][STATE] == first
+
+    found, at = _push(tensions, to=second, since=at, cited=cited)
+    assert found.transitions == {"x_1": {STATE: second}}, (
+        f"a tension in {first!r} could not move to {second!r}"
+    )
+    tensions.record(Op.TENSION, "x_1", at, **found.transitions["x_1"])
+    assert tensions.state().tensions["x_1"][STATE] == second
+    assert tensions.rebuild().tensions["x_1"][STATE] == second
+
+
+def test_no_threshold_decides_widening_at_the_layer_that_writes(tensions):
+    """The Ask-First rule, asserted where the append is *composed* and not only
+    where the drift is computed.
+
+    ``test_no_threshold_decides_widening`` calls ``ledger.evaluate``, so review
+    inserted the Ask-First-listed change one layer above it — a young-tension
+    suppression in ``ledger.plan`` — and the suite stayed green: the plan-level
+    widening cases are ``for fields in found.transitions.values()`` loops, which
+    pass vacuously over an empty mapping, and every pass-level case uses a
+    tension about three weeks old.
+
+    So this asserts the mapping itself, over the same age sweep.
+    """
+    for age in (0.0, 0.5, 1.0, 3.0, 7.0, PERSISTENCE_DAYS, PERSISTENCE_DAYS * 100):
+        with Store(tensions.root.parent / f"p{age}") as store:
+            widening_log(store, minted=at_days(age), moves=("b_1",))
+            found = ledger.plan(ledger.read(store.state().tensions),
+                                history=history(store), now=NOW)
+            assert found.transitions == {"x_1": {STATE: "widening"}}, age
+            assert found.unchanged == () and found.incomputable == {}
+
+
+def test_every_reason_a_plan_gives_is_one_of_a_closed_set():
+    """``Plan.incomputable`` is documented and logged as a closed set of
+    constants, and ``str(exc)`` was reaching it — a free-form message, from an
+    exception kind that routinely quotes the value that caused it, into a
+    mapping the pass writes to a log line (AD-22)."""
+    hostile = {
+        "a": Tension(id="a"),
+        "b": Tension(id="b", state="fresh"),
+        "c": Tension(id="c", state="resolved", between=("b_1", "b_2"), at=MINTED),
+        "d": "not a tension at all",
+        "e": Tension(id="e", state="fresh", between=("b_1", "b_2"), at="yesterday"),
+        "f": Tension(id="f", state="fresh", between=("b_1", "b_2"),
+                     at="2099-01-01T00:00:00Z"),
+        "g": Tension(id="g", state="widenning", between=("b_1", "b_2"), at=MINTED),
+    }
+    found = ledger.plan(hostile, history=(), now=NOW)
+    assert set(found.incomputable) == set(hostile)
+    assert set(found.incomputable.values()) <= REASONS
+    assert found.transitions == {}
+    # And no reason is a sentence: a reason is a token somebody can group by.
+    assert all(" " not in reason for reason in found.incomputable.values())
+
+
+def test_a_table_with_keys_of_two_kinds_costs_one_tension_and_not_the_pass():
+    """``plan`` sorted the mapping directly, so a single non-string key raised a
+    ``TypeError`` out of the sort — before any tension was looked at — and cost
+    a main every tension they own."""
+    found = ledger.plan(
+        {7: Tension(id="7"), "x_1": Tension(id="x_1"), (): None},
+        history=(), now=NOW,
+    )
+    assert isinstance(found, Plan)
+    assert set(found.incomputable) == {"7", "x_1", "()"}
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1017,6 +1542,174 @@ def test_nothing_the_pass_appends_names_a_side(tensions):
         assert "b_1" not in fields.values() and "b_2" not in fields.values()
 
 
+@pytest.mark.cap7_neutrality
+@pytest.mark.parametrize(
+    "spelling",
+    ["winner_id", "winning_side", "is_winner", "side_that_won",
+     "more_credible", "truer_side", "moved_side", "which_moved",
+     "winnerId", "movedSide", "the_stronger_entry", "loser_side",
+     "entry_that_prevailed", "side_which_moved", "was_mistaken"],
+)
+def test_a_ranked_side_is_refused_under_any_spelling(tensions, spelling):
+    """Matrix: *ranked field, any spelling* — and every one of the first eight
+    was verified **accepted and durable** against the exact-string gate this
+    replaced.
+
+    ``moved_side`` is the one that matters most, because it is the line
+    ``half.tensions.widening`` itself names as the likely breach: *a helpful
+    line recording which entry the evidence went against, so the morning
+    surface can phrase it better*. It passed a denylist containing ``winner``,
+    ``loser`` and twenty-seven other exact spellings, which is what a denylist
+    of exact spellings is worth.
+    """
+    with pytest.raises(TensionError, match="neither side"):
+        tensions.record(Op.TENSION, "x_1", MINTED, between=["b_1", "b_2"],
+                        **{STATE: "widening"}, **{spelling: "b_1"})
+    assert tensions.state().tensions == {}
+
+
+@pytest.mark.cap7_neutrality
+def test_every_exact_spelling_in_the_denylist_still_fails_the_predicate():
+    """The seed set and the rule cannot drift apart: ``RANKED_FIELDS`` is what
+    the suite drives ``ranks_a_side`` over, so a name in it that the predicate
+    lets through is a case passing while the gate does not hold."""
+    escaped = sorted(name for name in RANKED_FIELDS if not ranks_a_side(name))
+    assert not escaped, escaped
+
+
+@pytest.mark.cap7_neutrality
+def test_the_ranking_predicate_leaves_the_honest_names_alone():
+    """Non-vacuity in the other direction, and it is not a formality: a
+    predicate that refused every name would forbid the pass's own ``moved``
+    count and the symmetric computation's own ``sides``, and the only way to
+    ship it would be to stop applying it."""
+    for honest in ("state", "between", "sides", "pair", "paired", "moved",
+                   "moves", "accumulated", "entry_id", "unchanged", "history",
+                   "incomputable", "transition", "tension_id", "readable",
+                   "computable", "support", "license", "model_tier"):
+        assert not ranks_a_side(honest), honest
+
+
+@pytest.mark.cap7_neutrality
+def test_a_name_is_read_as_words_in_both_house_styles():
+    assert words_in("winner_id") == ("winner", "id")
+    assert words_in("winnerId") == ("winner", "id")
+    assert words_in("SIDE_THAT_WON") == ("side", "that", "won")
+    assert ranked_names({"state": 1, "moved_side": 2, "between": 3}) == ("moved_side",)
+
+
+@pytest.mark.cap7_neutrality
+def test_the_ranking_vocabulary_is_pinned_by_value():
+    """The neutrality gate's whole margin was the case that expands over
+    ``RANKED_FIELDS`` one for one, and nothing pinned the set — so deleting
+    twelve entries landed the gate on exactly its floor, green, with ``loser``
+    and ``ranked`` both appending cleanly and folding.
+
+    Pinned by value, the way ``PERSISTENCE_DAYS`` is, so shrinking the
+    vocabulary is a red test rather than a smaller collection.
+    """
+    assert RANKED_FIELDS == frozenset({
+        "winner", "loser", "won", "lost", "beats",
+        "stronger", "weaker", "outranks", "rank", "ranking", "ranked",
+        "primary", "secondary", "dominant", "prevailing", "prevails",
+        "preferred", "favoured", "favored", "favours", "favors",
+        "correct_side", "wrong_side", "right_side",
+        "mistaken", "discredited", "refuted", "disproven", "verdict",
+    })
+    assert {"winner", "winning", "won", "loser", "lost", "stronger", "weaker",
+            "mistaken", "verdict", "truer", "credible", "superseded"} <= RANKING_WORDS
+    assert len(RANKING_WORDS) >= 60
+
+
+@pytest.mark.cap7_neutrality
+@pytest.mark.parametrize(
+    "stray,value",
+    [("claim", "he never writes"), ("subject", "self"), ("independent", 3),
+     ("ledger", "revealed"), ("target", "b_1"), ("note", "a summary"),
+     ("contact", "Asha"), ("plan", ["a line"])],
+)
+def test_a_tension_record_may_carry_nothing_a_tension_is_not(tensions, stray, value):
+    """The allowlist, and the reason a denylist could not do this job.
+
+    A transition would append whatever it was handed: a ``claim`` or an
+    ``independent`` count beside the state validated and became durable, which
+    is belief content written into a tension record — permanently, since no
+    correction to either entry can take a field off a tension (AD-22). A tension
+    is a state, the pair it links and the license the ladder admitted.
+    """
+    widening_log(tensions, moves=())
+    before = dict(tensions.state().tensions["x_1"])
+    with pytest.raises(TensionError, match="state, the pair"):
+        tensions.record(Op.TENSION, "x_1", NOW,
+                        **{STATE: "widening", stray: value})
+    assert tensions.state().tensions["x_1"] == before
+
+
+@pytest.mark.cap7_neutrality
+def test_the_allowlist_still_admits_everything_a_tension_is(tensions):
+    """Non-vacuity: a gate that refused every field would refuse the mint."""
+    entry(tensions, "b_1", at_days(1), support=["s_1"])
+    entry(tensions, "b_2", at_days(1), support=["s_2"])
+    tensions.record(Op.TENSION, "x_1", MINTED, between=["b_1", "b_2"],
+                    model_tier="frontier", **{STATE: "fresh"},
+                    **ladder.admitted(support=["s_1"]))
+    held = tensions.state().tensions["x_1"]
+    assert held[BETWEEN] == ["b_1", "b_2"] and held["license"] == str(ladder.FLOOR)
+    assert set(held) - set(RESERVED_KEYS) <= TENSION_FIELDS
+
+
+@pytest.mark.cap7_neutrality
+def test_the_guards_cover_the_tension_code_outside_the_two_packages():
+    """Matrix: *guard coverage*.
+
+    Every neutrality and resolution scan read ``half/tensions`` and
+    ``half/consolidate`` and nothing else, while this story wrote tension code
+    into the fold, the append gate and the registry. Review confirmed it by
+    injecting ``held["winner"] = pair[0]`` into the fold's own merge branch —
+    the one route into the tension table the append gate never sees — and
+    watching the whole suite pass.
+    """
+    labels = {label for label, _ in _guarded_trees()}
+    assert {
+        "half/store/fold.py:fold",
+        "half/store/fold.py:_resolve_tensions",
+        "half/store/records.py:validate_tension_fields",
+        "half/actor/registry.py:tension_view",
+        "half/actor/registry.py:note_transition",
+    } <= labels
+    assert any(label.startswith("half/tensions/") for label in labels)
+    assert any(label.startswith("half/consolidate/") for label in labels)
+
+
+@pytest.mark.cap7_neutrality
+def test_the_scans_catch_a_ranking_written_into_the_fold():
+    """Non-vacuity for the coverage above, and it is the exact mutation review
+    ran against a green suite."""
+    injected = ast.parse(
+        "def fold(records):\n"
+        "    for record in records:\n"
+        "        held['winner'] = between[0]\n"
+        "        held['mistaken'] = between[1]\n"
+    )
+    assert _ranking_identifiers(injected)
+    assert _ranks_the_pair(injected)
+
+
+@pytest.mark.cap7_neutrality
+def test_the_name_scan_catches_a_ranked_function_the_package_merely_offers():
+    """*"The guard covers what a record carries, not what a module offers."*
+
+    ``def stronger_side(tension)`` added to ``half/tensions/ledger.py`` left the
+    whole suite green, because the record gate matched exact strings and the
+    module scan matched the same exact strings — ``stronger`` was in the set,
+    ``stronger_side`` was not. One vocabulary now, read as words.
+    """
+    for offered in ("def stronger_side(tension):\n    return tension\n",
+                    "def which_moved(sides):\n    return sides\n",
+                    "class TruerSide:\n    pass\n"):
+        assert _ranking_identifiers(ast.parse(offered)), offered
+
+
 #: Names that hold a tension's pair. Any positional read of one is a first and
 #: a second, which is one short step from a winner and a loser.
 _PAIR_NAMES = {"between", "sides", "pair", "ids", "entries"}
@@ -1056,12 +1749,8 @@ def _ranks_the_pair(tree: ast.AST) -> list[int]:
 @pytest.mark.cap7_neutrality
 def test_nothing_in_the_tension_surface_reads_the_pair_positionally():
     offenders: list[str] = []
-    for area in SURFACE:
-        for path in sorted((ROOT / area).rglob("*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            offenders += [
-                f"{path.relative_to(ROOT)}:{line}" for line in _ranks_the_pair(tree)
-            ]
+    for label, tree in _guarded_trees():
+        offenders += [f"{label}:{line}" for line in _ranks_the_pair(tree)]
     assert not offenders, (
         f"the pair is read positionally or ordered at {offenders}. Its order "
         f"is the log's, and it means nothing: a first and a second is one step "
@@ -1086,23 +1775,26 @@ def test_the_positional_scan_catches_every_way_a_side_is_chosen(bypass):
     assert _ranks_the_pair(ast.parse(bypass)), bypass
 
 
-#: The vocabulary of ranking, as *identifiers* rather than as prose. Docstrings
-#: are excluded deliberately — this file's own module docstring says "winner"
-#: four times, and so does the ledger's, because saying what is forbidden is
-#: how the rule survives.
-_RANKING_WORDS = RANKED_FIELDS | {
-    "wrong", "correct", "better", "worse", "outrank", "supersede",
-    "superseded", "defeat", "defeats", "true_side", "false_side",
-}
-
-
 def _ranking_identifiers(tree: ast.AST) -> set[str]:
-    """Every *name* in ``tree`` — never a docstring — from the ranking
-    vocabulary."""
+    """Every *name* in ``tree`` — never a docstring — that ranks a side.
+
+    Read with ``half.tensions.widening.ranks_a_side``, the same predicate the
+    append gate refuses record fields with. It used to be an exact-string
+    membership test against ``RANKED_FIELDS``, which meant the *record* gate
+    and the *module* scan had drifted into two different rules: review added
+    ``def stronger_side(tension)`` to ``half/tensions/ledger.py`` and the whole
+    suite stayed green, because ``stronger`` was in the set and
+    ``stronger_side`` was not. One vocabulary now, read two ways — what a
+    record carries, and what a module offers.
+
+    Docstrings are excluded deliberately — this file's own module docstring
+    says "winner" four times, and so does the ledger's, because saying what is
+    forbidden is how the rule survives.
+    """
     found: set[str] = set()
 
     def note(word: object) -> None:
-        if isinstance(word, str) and word.lower().strip("_") in _RANKING_WORDS:
+        if isinstance(word, str) and word not in GUARD_NAMES and ranks_a_side(word):
             found.add(word)
 
     docstrings = {
@@ -1126,12 +1818,16 @@ def _ranking_identifiers(tree: ast.AST) -> set[str]:
                 if isinstance(key, ast.Constant):
                     note(key.value)
         elif (isinstance(node, ast.Constant) and node not in docstrings
-              and isinstance(node.value, str)
-              and node.value.lower() in _RANKING_WORDS):
+              and isinstance(node.value, str) and node.value.isidentifier()):
             # A bare literal used as a key or a value. Kept because
             # ``fields["winner"] = ...`` is a Subscript, not a Dict.
-            parent_is_denylist = False
-            found.add(node.value) if not parent_is_denylist else None
+            #
+            # Identifiers only. The rule reads a *name*, and every refusal
+            # message in this surface is a sentence saying which names are
+            # forbidden and why — *"neither side of a tension is wrong"* — so
+            # reading prose as a name makes the guard fire on the code that
+            # enforces it.
+            note(node.value)
     return found
 
 
@@ -1148,14 +1844,9 @@ def test_no_name_in_the_tension_surface_comes_from_the_ranking_vocabulary():
     forbids.
     """
     offenders: list[str] = []
-    for area in SURFACE:
-        for path in sorted((ROOT / area).rglob("*.py")):
-            relative = str(path.relative_to(ROOT))
-            if relative == "half/tensions/widening.py":
-                continue  # owns RANKED_FIELDS; a denylist names what it bans
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for word in sorted(_ranking_identifiers(tree)):
-                offenders.append(f"{relative}:{word}")
+    for label, tree in _guarded_trees(skip_denylist_owner=True):
+        for word in sorted(_ranking_identifiers(tree)):
+            offenders.append(f"{label}:{word}")
     assert not offenders, (
         f"the tension surface names {offenders}. Neither side of a tension is "
         f"wrong; for a person both entries can be true at once, which is the "
@@ -1196,7 +1887,10 @@ def test_no_function_in_the_tension_surface_returns_one_of_the_two_sides():
         if name.startswith("_") or not inspect.isfunction(function):
             continue
         arguments = set(inspect.signature(function).parameters)
-        assert not arguments & _RANKING_WORDS, f"ledger.{name} takes a ranking"
+        assert not any(ranks_a_side(argument) for argument in arguments), (
+            f"ledger.{name} takes a ranking"
+        )
+        assert not ranks_a_side(name), f"ledger offers {name!r}"
     assert inspect.signature(Tension.names).return_annotation == "bool"
 
 
@@ -1240,19 +1934,27 @@ def test_no_module_in_the_tension_surface_writes_a_license_field():
     field anybody can set, at the price of three fields instead of one."""
     gated = {"license", "known_to_main", "quarantined", "rung"}
     offenders: list[str] = []
-    for area in SURFACE:
-        for path in sorted((ROOT / area).rglob("*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Dict):
-                    for key in node.keys:
-                        if (isinstance(key, ast.Constant)
-                                and key.value in gated):
-                            offenders.append(f"{path.relative_to(ROOT)}:{key.lineno}")
-                if (isinstance(node, ast.Constant)
-                        and isinstance(node.value, str)
-                        and node.value in gated):
-                    offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    # ``SURFACE`` rather than the outposts, and deliberately: this asks who
+    # *composes* a license, and the fold and the append gate compose nothing —
+    # they carry and check records they are handed, and both legitimately name
+    # ``rung`` on a ceiling record that has nothing to do with a tension. What
+    # a tension record may carry is ``records.TENSION_FIELDS``, asserted as
+    # behaviour above.
+    for label, tree in (
+        (str(path.relative_to(ROOT)),
+         ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
+        for area in SURFACE
+        for path in sorted((ROOT / area).rglob("*.py"))
+    ):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Dict):
+                for key in node.keys:
+                    if isinstance(key, ast.Constant) and key.value in gated:
+                        offenders.append(f"{label}:{key.lineno}")
+            if (isinstance(node, ast.Constant)
+                    and isinstance(node.value, str)
+                    and node.value in gated):
+                offenders.append(f"{label}:{node.lineno}")
     assert not offenders, f"a license field is written outside the ladder: {offenders}"
 
 
@@ -1362,15 +2064,13 @@ def test_nothing_in_the_tension_surface_stores_a_counter_for_a_pass_to_mutate():
     counters = {"salience", "decay", "score", "weight", "count", "counter",
                 "seen", "hits", "velocity", "drift_score"}
     offenders: list[str] = []
-    for area in SURFACE:
-        for path in sorted((ROOT / area).rglob("*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Dict):
-                    for key in node.keys:
-                        if (isinstance(key, ast.Constant)
-                                and str(key.value) in counters):
-                            offenders.append(f"{path.relative_to(ROOT)}:{key.lineno}")
+    for label, tree in _guarded_trees():
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Dict):
+                for key in node.keys:
+                    if (isinstance(key, ast.Constant)
+                            and str(key.value) in counters):
+                        offenders.append(f"{label}:{key.lineno}")
     assert not offenders, f"a stored counter reached a tension record: {offenders}"
 
     imported = set()
@@ -1456,19 +2156,111 @@ def test_drift_and_loop_advancement_are_derivable_from_what_is_recorded(
     assert [r.t for r in moves] == [NOW]
 
 
+def test_when_a_tension_resolved_is_derivable_from_the_log(tensions):
+    """The metric the story owes story 10, on the half that is not a
+    transition.
+
+    No `resolved` record is ever appended: the fold computes it the moment a
+    correction lands, and a second writer of it would be a second place for the
+    log and the fold to disagree. So *when* a tension resolved is recovered the
+    same way *whether* is — the first correction or expunge naming either side —
+    which is arithmetic over the log with no new field. This is the case the
+    existing derivability check does not make: it hand-writes its transitions
+    and resolves nothing.
+    """
+    widening_log(tensions, moves=())
+    entry(tensions, "b_3", at_days(3), support=["s_3"])
+    mint(tensions, "x_2", MINTED, between=["b_2", "b_3"])
+    tensions.record(Op.RETRACT, "c_1", "2026-08-03T09:00:00Z", target="b_1")
+
+    found = ledger.read(tensions.state().tensions)
+    assert found["x_1"].state == "resolved" and found["x_2"].state == "fresh"
+
+    closed = {
+        ident: min(
+            record.t for record in tensions.log
+            if record.op in (Op.RETRACT, Op.REVISE, Op.EXPUNGE)
+            and tension.names(record.data.get("target"))
+        )
+        for ident, tension in found.items()
+        if tension.state == "resolved"
+    }
+    assert closed == {"x_1": "2026-08-03T09:00:00Z"}
+
+
+def test_velocity_counts_the_shape_changes_the_pass_actually_appends(tensions):
+    """*Drift is tension velocity*, over records the pass wrote rather than
+    records a test wrote — and the trade stated rather than assumed.
+
+    A tension that keeps widening appends **one** ``widening`` record, not one a
+    night: ``transition`` refuses a move to the state already held, because a
+    record that changes nothing is a record that says something happened and
+    this runs every night for years. So what the log supports is *how often a
+    disagreement changed shape*, over any window — which is what a velocity is.
+    *How long it has been widening* is a question about the state, and the state
+    answers it.
+    """
+    widening_log(tensions, moves=("b_1",))
+    work = ledger.read(tensions.state().tensions)
+    first = ledger.plan(work, history=history(tensions), now=NOW)
+    assert first.transitions == {"x_1": {STATE: "widening"}}
+    tensions.record(Op.TENSION, "x_1", NOW, **first.transitions["x_1"])
+
+    # More evidence on the same side, a week later: still widening, and the log
+    # says so once.
+    entry(tensions, "b_1", at_days(-6, since=NOW),
+          support=["s_1", "s_new_b_1", "s_newer"])
+    later = at_days(-7, since=NOW)
+    second = ledger.plan(ledger.read(tensions.state().tensions),
+                         history=history(tensions), now=later)
+    assert second.transitions == {} and second.unchanged == ("x_1",)
+
+    changes = [r.t for r in tensions.log
+               if r.op is Op.TENSION and r.data.get(STATE) == "widening"]
+    assert changes == [NOW], "one shape change, one record"
+
+
+def test_the_corrective_path_for_a_wrong_mint_is_erase_and_mint_again(tensions):
+    """The trade the merge buys, written down as a case.
+
+    Merging rather than replacing is what keeps a transition from dropping the
+    pair and the license the mint recorded — a tension that lost its two sides
+    the first night the pass moved it, with replay reproducing the loss. The
+    price is that no append can ever take a field *off* a tension. The
+    corrective path is the one the main already has, and it is the one an
+    append-only log has: erase the record and state it again.
+    """
+    entry(tensions, "b_1", at_days(2), support=["s_1"])
+    entry(tensions, "b_2", at_days(2), support=["s_2"])
+    entry(tensions, "b_3", at_days(2), support=["s_3"])
+    mint(tensions, "x_1", MINTED, between=["b_1", "b_2"])
+
+    # A later record can overwrite a field. It cannot remove one.
+    tensions.record(Op.TENSION, "x_1", NOW, model_tier="frontier")
+    assert tensions.state().tensions["x_1"]["model_tier"] == "frontier"
+    tensions.record(Op.TENSION, "x_1", NOW, **{STATE: "widening"})
+    assert "model_tier" in tensions.state().tensions["x_1"]
+
+    tensions.expunge("x_1", t=at_days(-1, since=NOW))
+    mint(tensions, "x_2", at_days(-2, since=NOW), between=["b_1", "b_3"])
+
+    found = tensions.state().tensions
+    assert "x_1" not in found
+    assert found["x_2"][BETWEEN] == ["b_1", "b_3"]
+    assert "model_tier" not in found["x_2"]
+
+
 def test_nothing_in_the_tension_surface_reports_to_the_main():
     """No metric surface, no unprompted message — story 10's, and a pass that
     sent anything would be doing it at three in the morning."""
     banned = {"send", "notify", "surface", "message", "draft_link", "reply"}
     offenders: list[str] = []
-    for area in SURFACE:
-        for path in sorted((ROOT / area).rglob("*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                if (isinstance(node, ast.Call)
-                        and isinstance(node.func, ast.Attribute)
-                        and node.func.attr in banned):
-                    offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    for label, tree in _guarded_trees():
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in banned):
+                offenders.append(f"{label}:{node.lineno}")
     assert not offenders, f"the nightly pass contacts somebody: {offenders}"
 
 
@@ -1496,6 +2288,15 @@ def test_every_resolution_case_this_story_rests_on_still_exists():
         "test_a_resolved_tension_is_never_re_evaluated",
         "test_nothing_can_move_a_tension_to_resolved_by_hand",
         "test_no_module_in_the_tension_surface_offers_a_way_to_resolve_one",
+        "test_a_later_append_cannot_move_a_resolved_tension_out_of_it",
+        "test_terminality_pins_the_state_and_not_the_whole_record",
+        "test_a_resolved_state_is_refused_before_the_record_is_durable",
+        "test_a_log_that_already_carries_resolved_still_folds",
+        "test_a_resolved_state_read_off_the_log_is_terminal_too",
+        "test_a_tension_minted_over_a_gone_side_is_not_live",
+        "test_a_tension_minted_over_an_expunged_side_is_not_live",
+        "test_an_entry_that_never_existed_is_not_an_entry_that_left",
+        "test_the_pass_never_computes_drift_across_an_entry_that_is_gone",
     }
     missing = required - _cases_defined_here()
     assert not missing, (
@@ -1520,6 +2321,43 @@ def test_every_neutrality_guard_this_story_rests_on_still_exists():
         "test_a_transition_carries_exactly_one_field_and_it_is_the_state",
         "test_nothing_in_the_tension_surface_stores_a_counter_for_a_pass_to_mutate",
         "test_salience_is_still_computed_and_still_decays",
+        "test_a_ranked_side_is_refused_under_any_spelling",
+        "test_every_exact_spelling_in_the_denylist_still_fails_the_predicate",
+        "test_the_ranking_predicate_leaves_the_honest_names_alone",
+        "test_the_ranking_vocabulary_is_pinned_by_value",
+        "test_a_tension_record_may_carry_nothing_a_tension_is_not",
+        "test_the_allowlist_still_admits_everything_a_tension_is",
+        "test_the_guards_cover_the_tension_code_outside_the_two_packages",
+        "test_the_scans_catch_a_ranking_written_into_the_fold",
+        "test_the_name_scan_catches_a_ranked_function_the_package_merely_offers",
     }
     missing = required - _cases_defined_here()
     assert not missing, f"a neutrality guard was deleted: {sorted(missing)}"
+
+
+def test_every_movement_case_this_story_rests_on_still_exists():
+    """The cases review's mutations were red against, named one by one.
+
+    Each carries a whole property that no arithmetic on a collection count can
+    protect: that a tension which moved once can move again, that no threshold
+    decides widening *at the layer that writes*, that a tension names its pair
+    before it is durable, that a reason is a constant, and that the two metrics
+    the story owes story 10 come out of what it records.
+    """
+    required = {
+        "test_a_tension_goes_on_moving_after_its_first_transition",
+        "test_no_threshold_decides_widening",
+        "test_no_threshold_decides_widening_at_the_layer_that_writes",
+        "test_a_tensions_first_record_must_name_the_two_entries_it_links",
+        "test_every_reason_a_plan_gives_is_one_of_a_closed_set",
+        "test_evidence_reads_the_log_in_stamp_order_not_append_order",
+        "test_when_a_tension_resolved_is_derivable_from_the_log",
+        "test_velocity_counts_the_shape_changes_the_pass_actually_appends",
+        "test_the_corrective_path_for_a_wrong_mint_is_erase_and_mint_again",
+        "test_a_tension_recorded_in_the_future_is_reported_rather_than_clamped",
+    }
+    missing = required - _cases_defined_here()
+    assert not missing, (
+        f"a movement case was deleted: {sorted(missing)}. Each was red against "
+        f"a mutation that left the rest of the suite green"
+    )

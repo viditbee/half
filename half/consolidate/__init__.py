@@ -19,7 +19,11 @@ this one — a pass whose expensive half is bounded and whose cheap half is not
 allowed to become expensive by accident.
 
 **This package deliberately re-exports nothing**, following ``half.loops``,
-``half.tensions`` and ``half.schedule``: ``half.consolidate.pass_`` reaches the
-actor registry, and an ``__init__`` that pulled it in would make importing the
-package cost the whole store. Every consumer names the module it wants.
+``half.tensions`` and ``half.schedule``. The reason given here used to be that
+``half.consolidate.pass_`` reaches the actor registry — it does not, and the
+``Ledger`` protocol it defines instead exists precisely so that it never has to.
+The real reason is the one the other three packages give: an ``__init__`` that
+imports a module makes importing the package cost that module, and a consumer
+that names what it wants can be read for what it depends on. Every consumer
+names the module it wants.
 """

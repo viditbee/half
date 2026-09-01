@@ -140,10 +140,18 @@ class TensionError(HalfError, ValueError):
     Raised by the *writing* half of ``half.tensions.ledger`` — moving a tension
     to a state outside the vocabulary, or to `resolved`, which is not a state
     anything decides — and by ``records.validate_tension_fields``, which refuses
-    the same values one layer down where they would become durable. The
-    *reading* half never raises: reading a tension happens on the nightly pass,
-    and one unreadable tension must cost that tension its evaluation rather than
-    the whole pass.
+    the same values one layer down where they would become durable. That second
+    half was a claim rather than a check until review: a hand-written
+    ``state="resolved"`` validated and folded, so the only refusal was the one
+    a caller could route around by building the record itself. It refuses now,
+    along with a ranked field under any spelling and any field a tension has no
+    business carrying. ``ActorRegistry.note_transition`` raises it too, for a
+    transition naming a tension the log does not hold or planned from a state
+    the log has since left.
+
+    The *reading* half never raises: reading a tension happens on the nightly
+    pass, and one unreadable tension must cost that tension its evaluation
+    rather than the whole pass.
 
     **Also a ``ValueError``**, and for the reason ``LoopError`` and
     ``ScheduleError`` are both: the conventions say no public store operation

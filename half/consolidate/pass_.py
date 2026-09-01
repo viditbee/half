@@ -13,10 +13,25 @@ transition moves the tension's own stamp to ``now``, so nothing has accumulated
 since. Everything impure in this module is the reading and the appending, and
 neither of them decides anything.
 
-**It costs nothing.** No model call, no network, no batch submission — every
-answer is arithmetic over the log. The budget is zero and the scheduler's
-timeout is not approached, which is why ``tests/test_pass.py`` asserts the
-module reaches no model port at all rather than trusting that it does not.
+**It costs nothing to *decide*, and it is not free to *write*.** No model call,
+no network, no batch submission — every answer is arithmetic over the log, which
+is why ``tests/test_pass.py`` asserts the module reaches no model port at all
+rather than trusting that it does not. The arithmetic runs behind
+``asyncio.to_thread``, because ``half.schedule.tick``'s own notes say a pass
+doing real CPU work stalls the loop it shares with the inbound path — and
+because ``asyncio.wait_for`` cannot cancel a coroutine that is not yielding, so
+the scheduler's timeout only means something once the work yields.
+
+What it does *not* do is make the writes cheap. ``Store.append`` re-folds the
+log and rebuilds the SQLite view on every record, so a main whose tensions all
+move on one night costs one fold and one rebuild per transition. That is the
+store's shape and not this pass's to change — the single writer is what lets the
+store skip a journal (AD-1) — and it is bounded rather than unbounded: at most
+one transition per tension per night, under the scheduler's per-main timeout,
+with ``tests/test_pass.py`` driving twenty-five of them under a timeout two
+orders of magnitude below the shipped one. The reads are what this story made
+cheap: one narrowed pass over the log per main instead of one per tension per
+side, and the asserts only.
 
 **A transition is an append, never an edit** (AD-3, AD-30). Appended under the
 tension's own id through the registry's mutex, so the fold merges the new state
@@ -40,11 +55,13 @@ no append names the entry that moved, and the counts below are counts.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from half.errors import HalfError
 from half.schedule.clock import Now
 from half.tensions import ledger as tension_ledger
 from half.tensions.states import STATE
@@ -53,24 +70,33 @@ logger = logging.getLogger(__name__)
 
 
 class Ledger(Protocol):
-    """The three doors the pass needs into a main's durable state.
+    """The two doors the pass needs into a main's durable state.
 
     A protocol rather than the concrete ``ActorRegistry`` for the reason
-    ``half.schedule.tick.Registry`` is one: two narrowed reads and one write
-    that goes through the per-main mutex is the whole dependency. Nothing here
-    opens a store, and that is deliberate — a pass with its own path to the log
-    would be a second writer, and the single writer is what lets the store skip
-    a journal (AD-1).
+    ``half.schedule.tick.Registry`` is one: one narrowed read and one write,
+    both through the per-main mutex, is the whole dependency. Nothing here opens
+    a store, and that is deliberate — a pass with its own path to the log would
+    be a second writer, and the single writer is what lets the store skip a
+    journal (AD-1).
+
+    It was three doors, and the reads were two: the tension table came from the
+    SQLite view and the history from the log file, unsynchronised, with an
+    inbound turn free to land between them. One door now returns both.
     """
 
-    def tension_table(self, main_id: str) -> Mapping[str, Mapping[str, Any]]:
-        ...
-
-    def belief_history(self, main_id: str) -> Sequence[Mapping[str, Any]]:
+    async def tension_view(
+        self, main_id: str
+    ) -> tuple[Mapping[str, Mapping[str, Any]], Sequence[Mapping[str, Any]]]:
         ...
 
     async def note_transition(
-        self, main_id: str, *, tension_id: str, t: str, fields: Mapping[str, Any]
+        self,
+        main_id: str,
+        *,
+        tension_id: str,
+        t: str,
+        fields: Mapping[str, Any],
+        was: object = None,
     ) -> None:
         ...
 
@@ -107,7 +133,16 @@ class PassResult:
 
     @property
     def quiet(self) -> bool:
-        """True when this pass changed nothing at all — a normal night."""
+        """True when nothing moved **and nothing failed** — a normal night.
+
+        Not *"changed nothing at all"*, which is what this used to say and is
+        not what it computes: a pass whose every append raised changed nothing
+        either, and calling that quiet is how a night of failed writes becomes
+        indistinguishable from a night with nothing to do. ``unrecorded`` is in
+        the test for that reason. ``incomputable`` is not — a tension the log
+        cannot answer for is an ordinary thing to find, and a main who has one
+        would otherwise never have a quiet night again.
+        """
         return not (self.moved or self.unrecorded)
 
 
@@ -124,27 +159,50 @@ class TensionPass:
     ledger: Ledger
 
     async def run(self, main_id: str, now: Now) -> None:
-        """The ``Pass`` protocol's method. Returns nothing; raises for nothing
-        normal.
+        """The ``Pass`` protocol's method. Returns ``None``; raises when a
+        transition this main's log should be carrying is not in it.
 
         ``await``s so the appends go through the per-main mutex, and returns
         ``None`` so that the tick's own contract — a pass that completes is a
-        pass that ran — is unchanged. ``evaluate`` is the same work with the
-        result handed back.
+        pass that ran — is unchanged for the ordinary night. ``evaluate`` is the
+        same work with the result handed back.
+
+        **A night on which every write failed is not a quiet night.** ``run``
+        used to discard the result, so it was one: the tick counted the main
+        under ``ran``, ``next_pass_at`` had already advanced past the failures
+        by design (at-most-once), and nothing anywhere said the log was missing
+        the transitions the log itself computes. Raising puts the main in
+        ``TickResult.failed``, which is logged without content and isolates
+        nobody else — the counts are still on the result for a caller who wants
+        them, and the next pass computes the same answer again from the same
+        log, because nothing was recorded.
         """
-        await self.evaluate(main_id, now)
+        result = await self.evaluate(main_id, now)
+        if result.unrecorded:
+            raise TensionPassIncomplete(
+                f"{len(result.unrecorded)} transition(s) for main={main_id} "
+                f"could not be recorded"
+            )
 
     async def evaluate(self, main_id: str, now: Now) -> PassResult:
         """One main's pass, with what it found.
 
-        The reads happen first and together, so the plan is computed against
-        one consistent view of the log rather than one that moved underneath
-        it; the appends happen after, one at a time, each isolated.
+        The read happens **once, under the main's own mutex**, so the tension
+        table and the belief history are one consistent view rather than two an
+        inbound turn could land between; the deciding happens off the event
+        loop; the appends happen after, one at a time, each isolated and each
+        carrying the state it was planned against.
+
+        **The deciding runs in a thread.** ``half.schedule.tick``'s own notes
+        say a pass that does real CPU work stalls the loop it shares with the
+        inbound path and belongs behind ``asyncio.to_thread``, and this is that
+        pass: ``plan`` walks a main's whole narrowed log. It also makes the
+        scheduler's timeout mean something — ``asyncio.wait_for`` cannot cancel
+        a coroutine that is not yielding.
         """
-        table = self.ledger.tension_table(main_id)
-        history = self.ledger.belief_history(main_id)
-        found = tension_ledger.plan(
-            tension_ledger.read(table), history=history, now=now.stamp
+        table, history = await self.ledger.tension_view(main_id)
+        found, premise = await asyncio.to_thread(
+            _decide, table=table, history=history, at=now.stamp
         )
 
         if found.incomputable:
@@ -163,7 +221,8 @@ class TensionPass:
         for tension_id, fields in found.transitions.items():
             try:
                 await self.ledger.note_transition(
-                    main_id, tension_id=tension_id, t=now.stamp, fields=fields
+                    main_id, tension_id=tension_id, t=now.stamp, fields=fields,
+                    was=premise.get(tension_id),
                 )
             except Exception as exc:  # noqa: BLE001 - one tension, not the main
                 # A failed append costs this tension its transition and nothing
@@ -189,3 +248,32 @@ class TensionPass:
             incomputable=dict(found.incomputable),
             unrecorded=tuple(unrecorded),
         )
+
+
+class TensionPassIncomplete(HalfError):
+    """A pass computed transitions this main's log did not end up carrying.
+
+    Raised only by ``run``, so the scheduler counts the main under ``failed``
+    rather than under ``ran``. It carries a count and a main id and no record,
+    no claim and no tension id (AD-22): what could not be written is on the
+    ``PassResult`` for a caller who asked for one, and the log line the tick
+    writes for a failure names the exception type and nothing else.
+    """
+
+
+def _decide(
+    *,
+    table: Mapping[str, Mapping[str, Any]],
+    history: Sequence[Mapping[str, Any]],
+    at: str,
+) -> tuple[tension_ledger.Plan, dict[str, str | None]]:
+    """The whole deciding half: pure, total, and run off the event loop.
+
+    Returns the plan and the state each tension was in when it was planned, so
+    the append can refuse a premise that moved underneath it. Both come out of
+    one ``read`` of one table, which is what makes the premise the plan's own
+    rather than a second look at a log that may have moved again.
+    """
+    tensions = tension_ledger.read(table)
+    found = tension_ledger.plan(tensions, history=history, now=at)
+    return found, {ident: item.state for ident, item in tensions.items()}

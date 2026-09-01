@@ -38,7 +38,8 @@ from half.loops.timescale import (
 from half.store.ops import SCHEMA_VERSION, Op, parse_op
 from half.tensions.states import TENSION_STATES
 from half.tensions.states import is_state as is_tension_state
-from half.tensions.widening import BETWEEN, RANKED_FIELDS, SIDES
+from half.tensions.states import TensionState
+from half.tensions.widening import BETWEEN, SIDES, ranked_names
 from half.text import terms
 
 #: Fields every record must carry.
@@ -432,6 +433,30 @@ _TYPED_FIELDS: Final[dict[str, type | tuple[type, ...]]] = {
 }
 
 
+#: Everything a tension record may carry, beside the reserved four. An
+#: **allowlist**, and the reason is that every denylist this story shipped was
+#: walked around: the ranked-field gate matched exact strings, so ``winner``
+#: failed and ``moved_side`` and ``winner_id`` were durable, and nothing at all
+#: stopped a ``claim`` or an ``independent`` count riding in beside the state on
+#: a transition — belief content written into a tension record, which is AD-22
+#: at the one layer where it becomes permanent.
+#:
+#: A tension is a state, a pair, and the license the ladder admitted. Anything
+#: else is a field somebody added; widening this set is a deliberate edit with a
+#: reviewer on it, which is exactly what story 9d's minting will need.
+TENSION_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        STATE, BETWEEN, "license", "support", "known_to_main", QUARANTINED,
+        # What produced the record, which the replay fixture pins and no rule
+        # reads. It says which build wrote a line, never anything about either
+        # entry.
+        "model_tier",
+        # Written by ``BeliefLog.expunge_bodies``, never by a caller.
+        "tombstone",
+    }
+)
+
+
 def validate_tension_fields(fields: Mapping[str, Any]) -> None:
     """Reject a tension the ledger could never read back (CAP-7, story 9c).
 
@@ -445,20 +470,38 @@ def validate_tension_fields(fields: Mapping[str, Any]) -> None:
       **optional** rather than required because a transition append carries a
       state and a license change carries none, and demanding one on every
       record would make promoting a tension impossible without restating it.
-    * **no ranked side, ever.** A field out of ``RANKED_FIELDS`` — a winner, a
-      loser, a primary, a mistaken one — is refused outright, because *"neither
-      side of a tension is wrong"* is structural and the log is append-only. A
-      ranking written once is one every future fold carries and no correction
-      takes back, and the natural way to write it is not malice but a helpful
-      line recording which entry the evidence went against so a message can be
-      phrased better. That is Half rendering the verdict the constitution
-      forbids, and it fails here rather than in review.
+    * ``state`` is never `resolved`. Resolution is what the log *already means*
+      the moment a correction to one of the two entries lands, computed by
+      ``half.store.fold``; a hand-written one is a second writer of the same
+      fact and a second place for the log and the fold to disagree.
+      ``ledger.transition`` refuses it too — review found that was the only
+      refusal, so ``TensionError``'s own docstring, which promised this gate
+      *"refuses the same values one layer down where they would become
+      durable"*, was describing a check that did not exist. The word stays in
+      the vocabulary, because the fold still has to be able to *read* it.
+    * **no ranked side, ever**, and not by exact spelling. A field name that
+      *reads* as a verdict on one of the two entries —
+      ``half.tensions.widening.ranks_a_side`` — is refused outright, because
+      *"neither side of a tension is wrong"* is structural and the log is
+      append-only. A ranking written once is one every future fold carries and
+      no correction takes back, and the natural way to write it is not malice
+      but a helpful line recording which entry the evidence went against so a
+      message can be phrased better. Review verified eight spellings of exactly
+      that line getting past the old exact-string check, ``moved_side`` among
+      them — the very example ``widening`` names.
+    * **nothing outside ``TENSION_FIELDS``.** The denylist above says what a
+      tension may not rank; this says what a tension *is*. A ``claim`` or an
+      ``independent`` count arriving beside the state — which is what a
+      transition append could carry until review found it — is belief content
+      written into a tension record, permanently (AD-22).
     * ``between`` — two **distinct** entry ids, or nothing. A tension is a
       record linking *two* entries that disagree (glossary); one naming a
       single entry, three of them, or the same entry twice is not a
       disagreement, and stored permanently it is a tension whose drift can
-      never be computed. Optional for the reason ``state`` is: a transition
-      does not restate the pair.
+      never be computed. Optional **here** because a transition does not
+      restate the pair; that a tension's *first* record must carry one is
+      ``Store.append``'s rule, because only the store knows which ids the fold
+      has already seen.
 
     There is no branch here that picks a state for the main, none that supplies
     a missing side, and none that puts the two sides in an order.
@@ -475,16 +518,33 @@ def validate_tension_fields(fields: Mapping[str, Any]) -> None:
             f"field {STATE!r} must be one of {', '.join(sorted(TENSION_STATES))} "
             f"on a {Op.TENSION.value} record, got {state!r}"
         )
-    ranked = sorted(RANKED_FIELDS & fields.keys())
-    if ranked:
+    if state == TensionState.RESOLVED.value:
+        raise TensionError(
+            f"a {Op.TENSION.value} record may not be written {state!r}: a "
+            f"tension resolves when one of its two entries leaves the ledger, "
+            f"which the fold computes the moment that correction lands. A "
+            f"second writer of it is a second place for the log and the fold "
+            f"to disagree"
+        )
+    refused = ranked_names(fields)
+    if refused:
         # The value is deliberately not quoted back: it names one of the main's
         # own entries, and an exception message reaches a log line through
         # every handler that formats one (AD-22). The field name is enough.
         raise TensionError(
-            f"a {Op.TENSION.value} record may not carry {ranked}: neither side "
-            f"of a tension is wrong. For a person both entries can be true at "
-            f"once, which is the whole reason the object exists — a tension "
+            f"a {Op.TENSION.value} record may not carry {list(refused)}: neither "
+            f"side of a tension is wrong. For a person both entries can be true "
+            f"at once, which is the whole reason the object exists — a tension "
             f"names the gap and never renders the verdict"
+        )
+    stray = sorted(fields.keys() - TENSION_FIELDS)
+    if stray:
+        raise TensionError(
+            f"a {Op.TENSION.value} record may not carry {stray}: a tension is a "
+            f"state, the pair of entries it links and the license the ladder "
+            f"admitted. Everything a tension is about lives on those two "
+            f"entries, and a claim written here is one no correction to either "
+            f"of them can ever take back"
         )
     pair = fields.get(BETWEEN)
     if pair is None:

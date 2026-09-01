@@ -26,7 +26,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from half.errors import StoreError
+from half.errors import StoreError, TensionError
 from half.governance.aftercare import FLOOR_DAYS, answered, at_least, entered_at
 from half.governance.ladder import (
     TOP,
@@ -59,6 +59,7 @@ from half.store.records import (
     zone_record,
 )
 from half.store.store import Store
+from half.tensions.states import STATE as TENSION_STATE
 
 #: A main_id becomes a directory name, so it is validated before it can reach
 #: the filesystem. It arrives from configuration, which is operator input, and
@@ -588,15 +589,14 @@ class ActorRegistry:
         }
 
     def belief_history(self, main_id: str) -> tuple[dict[str, Any], ...]:
-        """Every belief append this main has, narrowed to id, stamp and support.
+        """Every ``assert`` this main has, narrowed to id, stamp and support.
 
-        **The log, in log order — not the fold**, and that is the one place in
-        Half where a read goes to the authority rather than the derived view.
-        It has to: *"what did this entry cite when the tension was recorded"* is
-        a question about the past, the fold holds only the present, and the
-        alternative is writing a counter onto the tension for the pass to
-        mutate — the AD-30 violation story 4 avoided by making salience
-        computed.
+        **The log — not the fold**, and that is the one place in Half where a
+        read goes to the authority rather than the derived view. It has to:
+        *"what did this entry cite when the tension was recorded"* is a question
+        about the past, the fold holds only the present, and the alternative is
+        writing a counter onto the tension for the pass to mutate — the AD-30
+        violation story 4 avoided by making salience computed.
 
         **Narrowed by field, hard.** A log read is every claim Half holds about
         the main, and the pass has business with none of it: what decides
@@ -605,19 +605,68 @@ class ActorRegistry:
         set and drops the claim, the subject, the ledger, the phone book and
         the safety plan — see ``records.HISTORY_VISIBLE``.
 
-        Correction and expunge records are kept, carrying no support: a side
-        that was retracted stops accumulating, which is what the fold has
-        already turned into a resolution, and dropping the record would leave
-        the pass unable to see the entry at all.
+        **Narrowed by op too**, which review found this claimed and did not do.
+        It said *"every belief append"* and returned a projection of every
+        record of every op, plus a paragraph about correction and expunge
+        records being *"kept, carrying no support, so a side that was retracted
+        stops accumulating"* — which was never implemented and could not be: a
+        correction record carries its own id and never its target's, and
+        ``HISTORY_VISIBLE`` drops ``target``, so nothing downstream could ever
+        match one to what it corrects. It was also unnecessary. A side that was
+        retracted has already resolved its tension in the fold, and a resolved
+        tension is never evaluated. So the rows are the asserts, which is what
+        the name says, and every schedule record, crisis record, loop
+        transition and tombstone stops being decoded, held and rescanned once
+        per tension per night.
         """
         actor = self._reached(main_id)
         self._evict_if_needed()
         return tuple(
-            history_projection(record.data) for record in actor.store.log
+            history_projection(record.data)
+            for record in actor.store.log
+            if record.op is Op.ASSERT and record.data.get("tombstone") is not True
         )
 
+    async def tension_view(self, main_id: str) -> tuple[
+        dict[str, dict[str, Any]], tuple[dict[str, Any], ...]
+    ]:
+        """This main's tensions and their entries' history, read **together**.
+
+        One read under one mutex, and that is a correctness rule rather than a
+        convenience. The pass used to call ``tension_table`` and
+        ``belief_history`` separately, and the two go to different authorities —
+        the first to the SQLite view, the second to the log file — with nothing
+        between them. An inbound turn landing in the gap handed the plan a table
+        and a history that disagreed, and the pass's own docstring claimed the
+        opposite: *"the reads happen first and together, so the plan is computed
+        against one consistent view of the log"*. They now do.
+
+        Held only for the read. The append happens afterwards, outside this, and
+        carries the premise it was planned against — see ``note_transition`` —
+        because a pass that held the mutex from its first read to its last write
+        would block the main's own turn for the length of the whole pass.
+        """
+        async with self.acquire(main_id) as actor:
+            state = actor.store.state()
+            table = {
+                ident: dict(record) for ident, record in state.tensions.items()
+            }
+            history = tuple(
+                history_projection(record.data)
+                for record in actor.store.log
+                if record.op is Op.ASSERT
+                and record.data.get("tombstone") is not True
+            )
+        return table, history
+
     async def note_transition(
-        self, main_id: str, *, tension_id: str, t: str, fields: Mapping[str, Any]
+        self,
+        main_id: str,
+        *,
+        tension_id: str,
+        t: str,
+        fields: Mapping[str, Any],
+        was: object = None,
     ) -> None:
         """Move one tension, under the mutex (AD-1, AD-3).
 
@@ -628,8 +677,45 @@ class ActorRegistry:
         Appended under the **tension's own id**, which is what makes the fold
         merge the new state over the pair and the license the mint recorded
         rather than replacing them. A transition is an append and never an edit.
+
+        **A transition carries a state and nothing else.** Review found this
+        would append whatever a caller handed it: a ``claim`` or an
+        ``independent`` count beside the state validated and became durable,
+        writing belief content into a tension record where no correction to
+        either entry could take it back (AD-22). The append gate refuses those
+        now as well; this refuses them one layer earlier, where the caller can
+        still be told which field it was.
+
+        **``was`` is the premise the move was planned against**, and the append
+        is refused if it has moved. The plan is computed outside this mutex — it
+        has to be, or the pass would hold a main's actor from its first read to
+        its last write — so a correction can land in between, resolve the
+        tension, and have this write a live state straight back over it. That is
+        the ordinary-operation route into the terminality hole the fold now also
+        guards; this is the half of it that keeps the *log* honest rather than
+        only the fold. It also refuses a transition for a tension the fold has
+        never seen, which would otherwise mint a pairless one out of nothing.
         """
+        stray = sorted(set(fields) - {TENSION_STATE})
+        if stray:
+            raise TensionError(
+                f"a transition carries {TENSION_STATE!r} and nothing else; "
+                f"refusing {stray}"
+            )
         async with self.acquire(main_id) as actor:
+            held = actor.store.state().tensions.get(tension_id)
+            if held is None:
+                raise TensionError(
+                    f"no tension {tension_id!r} to move: a transition names a "
+                    f"tension the log already holds, and one that names nothing "
+                    f"would mint a disagreement with no two entries in it"
+                )
+            if held.get(TENSION_STATE) != was:
+                raise TensionError(
+                    f"the state {tension_id!r} was planned from is not the state "
+                    f"it is in; the log moved under the plan and this pass will "
+                    f"compute the answer again"
+                )
             actor.store.record(Op.TENSION, tension_id, t, **dict(fields))
 
     async def suspend_for_crisis(

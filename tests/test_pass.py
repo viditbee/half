@@ -37,11 +37,18 @@ import pytest
 
 from half.actor.registry import ActorRegistry
 from half.civil import instant
-from half.consolidate.pass_ import Ledger, PassResult, TensionPass
+from half.consolidate.pass_ import (
+    Ledger,
+    PassResult,
+    TensionPass,
+    TensionPassIncomplete,
+)
+from half.errors import TensionError
 from half.governance import ladder
 from half.schedule.clock import FrozenClock, Now, moment, stamp
 from half.schedule.tick import Nothing, Pass, Scheduler
-from half.store.ops import Op
+from half.store.ops import SCHEMA_VERSION, Op
+from half.store.records import Record
 from half.store.records import NEXT_PASS_AT, TOLD_ZONE, ZONE
 from half.store.store import Store
 from half.tensions import ledger as tension_ledger
@@ -100,6 +107,22 @@ def seed_tension(store, *, minted=MINTED, moves=("b_1",), ident="x_1",
 def seeded_main(root, main_id, **kwargs):
     with Store(Path(root) / main_id) as store:
         seed_tension(store, **kwargs)
+
+
+def past_the_gate(store, ident, t, **fields):
+    """A tension record the append gate refuses, written straight to the log.
+
+    A mint must name its pair — ``Store.append`` enforces it, because only the
+    store knows which ids the fold has already seen — so a *pairless* tension is
+    something only an older build's log can contain. The pass still has to read
+    one, which is what these cases are for.
+    """
+    store.log.append(
+        Record(op=Op.TENSION, id=ident, t=t,
+               data={"t": t, "op": str(Op.TENSION), "id": ident,
+                     "v": SCHEMA_VERSION, **fields})
+    )
+    store.rebuild()
 
 
 def scheduler(registry, root, mains, *, work, at=NOON, **kwargs):
@@ -255,7 +278,7 @@ def test_a_tension_that_cannot_be_evaluated_is_counted_and_left_alone(
 ):
     """Matrix: *not computable*. Reported as such; state unchanged."""
     with Store(tmp_path / "vidit") as store:
-        store.record(Op.TENSION, "x_1", MINTED, **{STATE: "widening"})
+        past_the_gate(store, "x_1", MINTED, **{STATE: "widening"})
         before = dict(store.state().tensions["x_1"])
 
     result = asyncio.run(TensionPass(ledger=registry).evaluate("vidit", NOW))
@@ -269,8 +292,8 @@ def test_one_incomputable_tension_never_blocks_the_others(registry, tmp_path):
     the ordinary case, not the exceptional one."""
     with Store(tmp_path / "vidit") as store:
         seed_tension(store, ident="x_ok", pair=("b_1", "b_2"), moves=("b_1",))
-        store.record(Op.TENSION, "x_bad", MINTED, **{STATE: "fresh"})
-        store.record(Op.TENSION, "x_later", MINTED, **{STATE: "widening"})
+        past_the_gate(store, "x_bad", MINTED, **{STATE: "fresh"})
+        past_the_gate(store, "x_later", MINTED, **{STATE: "widening"})
 
     result = asyncio.run(TensionPass(ledger=registry).evaluate("vidit", NOW))
     assert result.moved == {"x_ok": "widening"}
@@ -316,17 +339,15 @@ def test_a_failed_append_costs_that_tension_and_nothing_else(registry, tmp_path)
         def __init__(self, inner):
             self.inner = inner
 
-        def tension_table(self, main_id):
-            return self.inner.tension_table(main_id)
+        async def tension_view(self, main_id):
+            return await self.inner.tension_view(main_id)
 
-        def belief_history(self, main_id):
-            return self.inner.belief_history(main_id)
-
-        async def note_transition(self, main_id, *, tension_id, t, fields):
+        async def note_transition(self, main_id, *, tension_id, t, fields,
+                                  was=None):
             if tension_id == "x_1":
                 raise OSError("the disk is full")
             await self.inner.note_transition(
-                main_id, tension_id=tension_id, t=t, fields=fields
+                main_id, tension_id=tension_id, t=t, fields=fields, was=was
             )
 
     result = asyncio.run(
@@ -337,6 +358,214 @@ def test_a_failed_append_costs_that_tension_and_nothing_else(registry, tmp_path)
     assert not result.quiet
     assert tensions_of(registry, "vidit")["x_1"][STATE] == "fresh"
     assert tensions_of(registry, "vidit")["x_2"][STATE] == "widening"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# the read is one view, the write carries its premise, and neither is content
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def test_the_two_reads_are_one_read_under_the_mains_own_mutex(registry, tmp_path):
+    """``evaluate``'s docstring claimed *"the reads happen first and together,
+    so the plan is computed against one consistent view of the log"*. They were
+    two unsynchronised reads of two different authorities — the tension table
+    from the SQLite view, the history from the log file — with an inbound turn
+    free to land between them.
+
+    Asserted as exclusion rather than as a comment: while a turn holds this
+    main's actor, the read does not complete.
+    """
+    seeded_main(tmp_path, "vidit", moves=("b_1",))
+
+    async def drive():
+        async with registry.acquire("vidit"):
+            reading = asyncio.ensure_future(registry.tension_view("vidit"))
+            await asyncio.sleep(0)
+            held = reading.done()
+        table, history = await reading
+        return held, table, history
+
+    done_while_held, table, history = asyncio.run(drive())
+    assert not done_while_held, "the pass read a main's log around their mutex"
+    assert set(table) == {"x_1"}
+    assert {row["id"] for row in history} == {"b_1", "b_2"}
+
+
+def test_a_correction_landing_between_the_plan_and_the_append_is_refused(
+    registry, tmp_path
+):
+    """The ordinary-operation route into the terminality hole.
+
+    The plan is computed outside the mutex — it has to be, or a pass would hold
+    a main's actor from its first read to its last write — so a correction can
+    land in between and resolve a tension the pass is about to move. The append
+    carries the state it was planned from and is refused when the log has left
+    it, which keeps the *log* honest rather than only the fold.
+    """
+    seeded_main(tmp_path, "vidit", moves=("b_1",))
+
+    async def drive():
+        # planned from `fresh` ...
+        await registry.note_transition(
+            "vidit", tension_id="x_1", t=MOVED,
+            fields={STATE: "widening"}, was="fresh",
+        )
+        # ... and the same premise a second time, after the state moved.
+        with pytest.raises(TensionError, match="planned from"):
+            await registry.note_transition(
+                "vidit", tension_id="x_1", t=MOVED,
+                fields={STATE: "closing"}, was="fresh",
+            )
+
+    asyncio.run(drive())
+    assert tensions_of(registry, "vidit")["x_1"][STATE] == "widening"
+
+
+def test_a_correction_that_resolved_a_tension_stops_the_planned_append(
+    registry, tmp_path
+):
+    """The whole point of the premise, end to end: a retract lands after the
+    plan was computed, and the transition it planned does not overwrite the
+    resolution."""
+    seeded_main(tmp_path, "vidit", moves=("b_1",))
+
+    async def drive():
+        async with registry.acquire("vidit") as actor:
+            actor.store.record(Op.RETRACT, "c_1", MOVED, target="b_1")
+        with pytest.raises(TensionError):
+            await registry.note_transition(
+                "vidit", tension_id="x_1", t=MOVED,
+                fields={STATE: "widening"}, was="fresh",
+            )
+
+    asyncio.run(drive())
+    assert tensions_of(registry, "vidit")["x_1"][STATE] == "resolved"
+
+
+def test_a_transition_carries_a_state_and_nothing_else(registry, tmp_path):
+    """``note_transition`` appended whatever it was handed. A ``claim`` beside
+    the state validated and became durable — belief content written into a
+    tension record, where no correction to either entry can take it back
+    (AD-22)."""
+    seeded_main(tmp_path, "vidit", moves=("b_1",))
+    for stray in ({"claim": "he never writes"}, {"independent": 3},
+                  {"subject": "self"}, {"between": ["b_1", "b_9"]}):
+        with pytest.raises(TensionError, match="nothing else"):
+            asyncio.run(registry.note_transition(
+                "vidit", tension_id="x_1", t=MOVED,
+                fields={STATE: "widening", **stray}, was="fresh",
+            ))
+    assert tensions_of(registry, "vidit")["x_1"][STATE] == "fresh"
+
+
+def test_a_transition_naming_a_tension_the_log_does_not_hold_is_refused(
+    registry, tmp_path
+):
+    """A pairless tension minted out of nothing: permanently not computable,
+    counted every night, and nothing would ever resolve it."""
+    seeded_main(tmp_path, "vidit", moves=("b_1",))
+    with pytest.raises(TensionError, match="no tension"):
+        asyncio.run(registry.note_transition(
+            "vidit", tension_id="never_minted", t=MOVED,
+            fields={STATE: "widening"}, was=None,
+        ))
+    assert set(tensions_of(registry, "vidit")) == {"x_1"}
+
+
+def test_the_history_the_pass_reads_is_the_asserts_and_nothing_else(
+    registry, tmp_path
+):
+    """``belief_history`` was documented as *"every belief append this main
+    has"* and returned a projection of every record of every op — schedule
+    records, crisis records, loop transitions, tombstones and the tension
+    records themselves. It also promised behaviour it did not have, about
+    correction records letting a retracted side stop accumulating, which cannot
+    work: a correction carries its own id and never its target's, and the
+    projection drops ``target``.
+    """
+    with Store(tmp_path / "vidit") as store:
+        seed_tension(store, moves=("b_1",))
+        store.record(Op.LOOP_TRANSITION, "l_1", MOVED, loop="write-more",
+                     state="advancing", timescale="weeks",
+                     last_movement="2026-08-11")
+        store.expunge("b_2", t=MOVED)
+    set_due(registry, "vidit", NOON - 60)
+
+    rows = registry.belief_history("vidit")
+    assert {row["id"] for row in rows} == {"b_1"}
+    assert all(set(row) <= {"id", "t", "support"} for row in rows)
+
+
+def test_the_deciding_runs_off_the_event_loop(registry, tmp_path):
+    """``half.schedule.tick``'s own notes say a pass that does real CPU work
+    stalls the loop it shares with the inbound path and belongs behind
+    ``asyncio.to_thread``. It also makes the scheduler's timeout mean
+    something: ``asyncio.wait_for`` cannot cancel a coroutine that is not
+    yielding."""
+    import inspect
+
+    source = inspect.getsource(TensionPass.evaluate)
+    assert "asyncio.to_thread" in source
+    tree = ast.parse((ROOT / "half/consolidate/pass_.py").read_text())
+    threaded = {
+        ast.unparse(node.args[0])
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "to_thread"
+        and node.args
+    }
+    assert threaded == {"_decide"}
+
+
+def test_a_night_on_which_every_write_failed_is_not_a_quiet_night(
+    registry, tmp_path
+):
+    """``run`` discarded the result, so the tick counted the main under ``ran``
+    while ``next_pass_at`` had already advanced past the failures — a night of
+    failed writes indistinguishable from a night with nothing to do."""
+    seeded_main(tmp_path, "vidit", moves=("b_1",))
+    set_due(registry, "vidit", NOON - 60)
+
+    class EveryWriteFails:
+        def __init__(self, inner):
+            self.inner = inner
+
+        async def tension_view(self, main_id):
+            return await self.inner.tension_view(main_id)
+
+        async def note_transition(self, main_id, *, tension_id, t, fields,
+                                  was=None):
+            raise OSError("the disk is full")
+
+    work = TensionPass(ledger=EveryWriteFails(registry))
+    result = asyncio.run(work.evaluate("vidit", NOW))
+    assert result.unrecorded == ("x_1",) and not result.quiet
+
+    with pytest.raises(TensionPassIncomplete):
+        asyncio.run(work.run("vidit", NOW))
+
+    outcome = asyncio.run(
+        scheduler(registry, tmp_path, ["vidit"], work=work).tick()
+    )
+    assert outcome.failed == ("vidit",) and outcome.ran == ()
+    assert tensions_of(registry, "vidit")["x_1"][STATE] == "fresh"
+
+
+def test_a_pass_that_moved_nothing_and_failed_at_nothing_is_still_quiet(
+    registry, tmp_path
+):
+    """Non-vacuity: ``run`` must not have become *"raise whenever anything was
+    left alone"*. A tension the log cannot answer for is an ordinary thing to
+    find, and a main who has one would otherwise never have a quiet night
+    again."""
+    with Store(tmp_path / "vidit") as store:
+        seed_tension(store, minted=stamp(NOON - 86_400), moves=())
+        past_the_gate(store, "x_bad", MINTED, **{STATE: "fresh"})
+
+    result = asyncio.run(TensionPass(ledger=registry).evaluate("vidit", NOW))
+    assert result.incomputable and result.quiet
+    assert asyncio.run(TensionPass(ledger=registry).run("vidit", NOW)) is None
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -459,10 +688,10 @@ def test_a_main_whose_record_is_unreadable_is_counted_and_the_rest_still_run(
         def __getattr__(self, name):
             return getattr(self.inner, name)
 
-        def tension_table(self, main_id):
+        async def tension_view(self, main_id):
             if main_id == "broken":
                 raise OSError("this main's store cannot be read")
-            return self.inner.tension_table(main_id)
+            return await self.inner.tension_view(main_id)
 
     result = asyncio.run(
         scheduler(registry, tmp_path, ["broken", "vidit"],
@@ -625,8 +854,8 @@ def test_the_pass_body_is_a_pure_function_of_what_it_was_given(
     same plan for ever. Asserted through the registry's own reads, so a store
     that had started returning something time-dependent would fail here."""
     seeded_main(tmp_path, "vidit", moves=("b_1",))
-    table = tension_ledger.read(registry.tension_table("vidit"))
-    history = registry.belief_history("vidit")
+    table, history = asyncio.run(registry.tension_view("vidit"))
+    table = tension_ledger.read(table)
     plans = {
         repr(tension_ledger.plan(table, history=history, now=NOW.stamp))
         for _ in range(5)
@@ -644,8 +873,7 @@ def test_the_pass_reads_the_log_and_never_writes_one_by_itself(
     source = inspect.getsource(TensionPass)
     assert "Store(" not in source
     assert set(TensionPass.__dataclass_fields__) == {"ledger"}
-    assert set(dir(Ledger)) >= {"tension_table", "belief_history",
-                                "note_transition"}
+    assert set(dir(Ledger)) >= {"tension_view", "note_transition"}
 
 
 def test_no_log_line_on_this_path_can_carry_content(registry, tmp_path):
@@ -708,6 +936,15 @@ def test_every_pass_guarantee_this_story_rests_on_still_exists():
         "test_the_pass_reaches_no_model_and_no_network",
         "test_no_log_line_on_this_path_can_carry_content",
         "test_the_transition_is_an_append_that_keeps_the_pair_and_the_license",
+        "test_the_two_reads_are_one_read_under_the_mains_own_mutex",
+        "test_a_correction_landing_between_the_plan_and_the_append_is_refused",
+        "test_a_correction_that_resolved_a_tension_stops_the_planned_append",
+        "test_a_transition_carries_a_state_and_nothing_else",
+        "test_a_transition_naming_a_tension_the_log_does_not_hold_is_refused",
+        "test_the_history_the_pass_reads_is_the_asserts_and_nothing_else",
+        "test_the_deciding_runs_off_the_event_loop",
+        "test_a_night_on_which_every_write_failed_is_not_a_quiet_night",
+        "test_a_pass_that_moved_nothing_and_failed_at_nothing_is_still_quiet",
     }
     missing = required - _cases_defined_here()
     assert not missing, (

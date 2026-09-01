@@ -38,6 +38,7 @@ Pure and clockless; imports nothing from ``half`` but ``civil``.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
@@ -86,6 +87,14 @@ SIDES: Final[int] = 2
 #: you"* is a real and necessary distinction and it lives on the ``revise`` op,
 #: which is a statement about a *belief*. What must not exist is a tension
 #: saying which of two true-for-a-person claims was the bad one.
+#: **Exact spellings are the seed, never the rule.** Review found the gate was
+#: an exact-string membership test, so ``winner`` failed and ``winner_id``,
+#: ``winning_side``, ``is_winner``, ``side_that_won``, ``more_credible``,
+#: ``truer_side``, ``moved_side`` and ``which_moved`` were all accepted and
+#: durable — including the one ``widening`` itself names as the likely breach,
+#: *a helpful line recording which entry the evidence went against*. The rule is
+#: ``ranks_a_side`` below, which reads a name as words; this set is the list of
+#: spellings the suite drives it over, and every one of them must still fail.
 RANKED_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "winner", "loser", "won", "lost", "beats",
@@ -96,6 +105,97 @@ RANKED_FIELDS: Final[frozenset[str]] = frozenset(
         "mistaken", "discredited", "refuted", "disproven", "verdict",
     }
 )
+
+#: Words that rank one thing over another wherever they appear in a name. One
+#: of these as a *word* — ``winner_id``, ``is_winner``, ``side_that_won`` — is
+#: enough on its own, because there is no innocent reason for a tension to say
+#: any of them about its two entries.
+RANKING_WORDS: Final[frozenset[str]] = frozenset(
+    {
+        "win", "wins", "winner", "winners", "winning", "won",
+        "lose", "loses", "loser", "losers", "losing", "lost",
+        "beat", "beats", "beaten", "defeat", "defeats", "defeated",
+        "strong", "stronger", "strongest", "weak", "weaker", "weakest",
+        "outrank", "outranks", "outranked",
+        "rank", "ranks", "ranked", "ranking", "rankings",
+        "primary", "secondary", "dominant", "dominates",
+        "prevail", "prevails", "prevailing", "prevailed",
+        "prefer", "prefers", "preferred",
+        "favour", "favours", "favoured", "favor", "favors", "favored",
+        "favourite", "favorite",
+        "correct", "incorrect", "wrong", "wrongly", "right",
+        "mistaken", "discredited", "refuted", "disproven", "verdict",
+        "truer", "truest", "credible", "credibility",
+        "better", "worse", "best", "worst", "superior", "inferior",
+        "supersede", "supersedes", "superseded",
+    }
+)
+
+#: Words that name *one of the two* — half of a pair.
+SIDE_WORDS: Final[frozenset[str]] = frozenset({"side", "sides", "entry", "entries"})
+
+#: Words that *choose*. Harmless alone — the pass's own result says ``moved``,
+#: and a mapping of ids says ``sides`` — and a verdict when combined: ``moved``
+#: plus ``side`` is the line the constitution forbids, and ``which`` plus
+#: ``moved`` is the same sentence with the noun dropped.
+SELECTOR_WORDS: Final[frozenset[str]] = frozenset(
+    {
+        "which", "whichever", "whose", "that",
+        "moved", "mover", "moving", "shifted", "changed",
+        "more", "most", "less", "least",
+        "chosen", "choose", "chose", "pick", "picked", "picks",
+        "true", "real", "good", "bad",
+    }
+)
+
+#: ``winnerId`` and ``winner_id`` are the same field with two house styles.
+_WORDS = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|[0-9]+")
+
+
+def words_in(name: object) -> tuple[str, ...]:
+    """``name`` split into lowercase words, on underscores and camel humps.
+
+    Public because the neutrality guards in ``tests/test_tensions.py`` read
+    *identifiers* out of an AST with the same rule the append gate reads
+    *fields* with. One vocabulary, two readers: review found the two had
+    drifted, so ``stronger_side`` was refused as a record field and accepted as
+    a function name in the very package that defines the denylist.
+    """
+    if not isinstance(name, str):
+        return ()
+    return tuple(word.lower() for word in _WORDS.findall(name))
+
+
+def ranks_a_side(name: object) -> bool:
+    """Whether ``name`` ranks one side of a tension over the other.
+
+    Two rules, both read over the *words* of the name rather than the whole
+    string:
+
+    * any word that ranks on its own — ``winner_id``, ``is_winner``,
+      ``side_that_won``, ``more_credible``, ``truer_side``;
+    * two or more words drawn from the vocabulary of *choosing between two*,
+      at least one of which does the choosing — ``moved_side``,
+      ``which_moved``, ``which_side``. Neither half fails alone, deliberately:
+      ``sides`` is what a symmetric computation calls its pair and ``moved`` is
+      what a count of transitions is called, and forbidding either would forbid
+      the honest code as well as the verdict.
+
+    Never raises, and false for anything that is not a string.
+    """
+    found = set(words_in(name))
+    if found & RANKING_WORDS:
+        return True
+    chosen = found & SELECTOR_WORDS
+    return bool(chosen) and len(found & (SELECTOR_WORDS | SIDE_WORDS)) >= 2
+
+
+def ranked_names(names: object) -> tuple[str, ...]:
+    """Every name in ``names`` that ranks a side, sorted. Never raises."""
+    try:
+        return tuple(sorted(name for name in names if ranks_a_side(name)))
+    except TypeError:  # pragma: no cover - a caller handing a non-iterable
+        return ()
 
 #: How long both sides may stand still before the standing still is itself the
 #: fact — the one threshold in this module, and it decides `persistent`, never
@@ -111,10 +211,13 @@ RANKED_FIELDS: Final[frozenset[str]] = frozenset(
 #: Half noticed. Short enough that a fortnight-old tension is not still being
 #: called `fresh` when the morning surface reaches for something to say, long
 #: enough that an ordinary busy week does not reclassify everything at once.
-#: The value is pinned and both sides of the boundary are asserted — anything
-#: between roughly a week and a month passes the suite, which is a band rather
-#: than a number, and a threshold nobody can be wrong about is a threshold
-#: nobody chose.
+#:
+#: **Pinned to this value, exactly.** An earlier comment here described a band —
+#: *"anything between roughly a week and a month passes the suite"* — which the
+#: suite does not permit and never did: ``tests/test_tensions.py`` asserts the
+#: constant by value and asserts both sides of the boundary against it, so
+#: moving it is a red test rather than a quiet reclassification of every
+#: standing disagreement a main has. Changing it is an Ask-First change.
 PERSISTENCE_DAYS: Final[float] = 14.0
 
 #: Why a tension could not be evaluated. A reason rather than a bare ``False``,
@@ -128,6 +231,57 @@ RESOLVED_ALREADY: Final[str] = "resolved"
 UNREADABLE_RECORDED_AT: Final[str] = "unreadable-recorded-at"
 UNREADABLE_NOW: Final[str] = "unreadable-now"
 UNREADABLE_SIDE: Final[str] = "unreadable-side"
+#: The tension's own record is stamped *after* ``now``. A baseline in the future
+#: is not a baseline: every record for both sides is at or before it, so both
+#: counts read as unmoved and the tension cannot widen however much evidence
+#: arrives. Reported rather than folded into *"nothing changed"*, because
+#: *"neither side moved"* and *"we cannot yet tell whether either side moved"*
+#: are different facts and only one of them is a gap. Self-healing — the next
+#: pass after ``now`` passes the stamp evaluates it normally.
+RECORDED_IN_FUTURE: Final[str] = "recorded-in-future"
+#: A transition the ledger refused. Unreachable from ``drift``, which never
+#: computes `resolved` and never leaves the vocabulary; kept because the
+#: alternative to catching it is one malformed tension ending the pass for every
+#: other one this main has. A **constant**, because ``Plan.incomputable``'s
+#: reasons are logged as a closed set and an exception message routinely quotes
+#: the value that caused it (AD-22).
+REFUSED_TRANSITION: Final[str] = "refused-transition"
+#: Not a tension at all, from a table this build was handed rather than folded.
+NOT_A_TENSION: Final[str] = "not-a-tension"
+
+#: Every reason a tension may be left alone, as a closed set. ``Plan`` and the
+#: pass both log these; nothing else may reach ``incomputable``.
+REASONS: Final[frozenset[str]] = frozenset(
+    {
+        NO_PAIR, UNKNOWN_STATE, RESOLVED_ALREADY, UNREADABLE_RECORDED_AT,
+        UNREADABLE_NOW, UNREADABLE_SIDE, RECORDED_IN_FUTURE,
+        REFUSED_TRANSITION, NOT_A_TENSION,
+    }
+)
+
+
+def pair_of(fields: Mapping[str, Any] | Any) -> tuple[str, ...]:
+    """The entries a tension record names, as ids. Tolerant; never raises.
+
+    **One reading of ``between``, for every caller.** ``half.store.fold``
+    resolves a tension by asking whether a corrected entry is one of its sides,
+    and ``half.tensions.ledger`` reads the same field back for the pass; review
+    found two implementations of that question which disagreed on hostile input
+    — one matched the raw list, the other a list already filtered to non-empty
+    strings — so a tension whose ``between`` held a blank string resolved under
+    one and not the other. There is one now, and it is here, beside the
+    ``BETWEEN`` constant it reads.
+
+    Order is preserved because the log's order is preserved, not because it
+    means anything: nothing reads ``pair_of(...)[0]`` as the first, the stated,
+    the true or the winning side.
+    """
+    if not isinstance(fields, Mapping):
+        return ()
+    value = fields.get(BETWEEN)
+    if isinstance(value, (list, tuple)):
+        return tuple(item for item in value if isinstance(item, str) and item.strip())
+    return ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,8 +361,20 @@ def supports(record: Mapping[str, Any] | Any) -> int | None:
     """
     if not isinstance(record, Mapping):
         return None
+    if record.get("tombstone") is True:
+        # An erased body cites nothing because there is no body, which is not
+        # the same fact as *"this entry cited no sources"*. Reading it as zero
+        # would move the entry's current count down and make the next honest
+        # append look like accumulation.
+        return None
     cited = record.get(SUPPORT)
     if cited is None:
+        # A **known** zero, and deliberately not ``None``: a belief admitted
+        # with no receipt genuinely cites nothing, and its first source
+        # arriving is real accumulation that a ``None`` here would hide for
+        # ever. The ``None`` cases are the ones where the count cannot be read
+        # at all — a row that is not a record, an erased body, or a ``support``
+        # of a type this build does not understand.
         return 0
     if isinstance(cited, str):
         return 1 if cited.strip() else 0
@@ -217,36 +383,86 @@ def supports(record: Mapping[str, Any] | Any) -> int | None:
     return None
 
 
+def by_entry(
+    history: Sequence[Mapping[str, Any]] | None,
+) -> dict[str, tuple[Mapping[str, Any], ...]]:
+    """``history`` indexed by entry id, each entry's rows in stamp order.
+
+    Built **once per pass** rather than per side: ``evidence`` used to filter
+    the whole narrowed log for each of a tension's two entries, so a main with
+    forty tensions read their log eighty times a night for an answer that does
+    not change between the reads.
+
+    **Stamp order, not append order.** The log is ordered by append and its
+    stamps need not be monotonic — the scheduler's own notes say a backward
+    clock jump leaves them out of order — and ``evidence`` reads *the last row
+    at or before the baseline* and *the last row of all*. Taking those in
+    append order picks the wrong records and reports accumulation that did not
+    happen. Rows whose stamp this build cannot read sort last and keep their
+    relative order; ``evidence`` refuses the whole entry when it meets one.
+    """
+    found: dict[str, list[Mapping[str, Any]]] = {}
+    for row in history or ():
+        if not isinstance(row, Mapping):
+            continue
+        ident = row.get("id")
+        if isinstance(ident, str) and ident:
+            found.setdefault(ident, []).append(row)
+    return {
+        ident: tuple(
+            # ``sorted`` is stable, so rows sharing a stamp — and every row
+            # whose stamp is unreadable — keep the order the log wrote them in.
+            sorted(rows, key=lambda row: (instant(row.get("t")) is None,
+                                          instant(row.get("t")) or 0.0))
+        )
+        for ident, rows in found.items()
+    }
+
+
 def evidence(
-    history: Sequence[Mapping[str, Any]] | None, *, side: object, at: object
+    history: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None,
+    *,
+    side: object,
+    at: object,
 ) -> Evidence:
     """What ``side`` cited at ``at``, and what it cites now, from ``history``.
 
     ``history`` is the main's belief records narrowed to ``id``, ``t`` and
-    ``support`` — the log itself, in log order, not the fold. The fold holds
-    only the *current* record for each entry, so it cannot answer *"what did
-    this cite a week ago"*, and the alternative to reading the log is storing a
-    counter for the pass to mutate, which is the AD-30 violation story 4 exists
-    to have avoided.
+    ``support`` — the log itself, not the fold. The fold holds only the
+    *current* record for each entry, so it cannot answer *"what did this cite a
+    week ago"*, and the alternative to reading the log is storing a counter for
+    the pass to mutate, which is the AD-30 violation story 4 exists to have
+    avoided.
 
-    Every way this can fail to know produces a ``None`` count and never a zero:
+    Accepts either the narrowed rows or the ``by_entry`` index over them. The
+    index is what a pass hands down, so the log is walked once for a main
+    rather than twice for every tension; a bare sequence is indexed here, which
+    keeps every caller that holds only the rows working unchanged.
+
+    Every way this can fail to *know* the count produces a ``None`` and never a
+    zero:
 
     * ``side`` is not an id, or ``at`` is not a real instant;
     * the entry has no record in the log at all;
     * the entry has no record at or before ``at`` — the tension is older than
       the entry it names, so there is no baseline to compare against;
     * any record for the entry carries a stamp this build cannot read, which
-      would silently move the baseline.
+      would silently move the baseline;
+    * any record for the entry is an erased body, or cites its sources in a
+      shape this build cannot count.
+
+    An entry that cites *nothing* is a zero rather than a ``None``, because
+    that is a thing this build knows.
     """
     ident = side if isinstance(side, str) and side.strip() else None
     baseline = instant(at)
     if ident is None or baseline is None:
         return Evidence(id=str(side), before=None, now=None)
 
-    rows = [
-        row for row in (history or [])
-        if isinstance(row, Mapping) and row.get("id") == ident
-    ]
+    if isinstance(history, Mapping):
+        rows: Sequence[Mapping[str, Any]] = history.get(ident, ())
+    else:
+        rows = by_entry(history).get(ident, ())
     if not rows:
         return Evidence(id=ident)
 
@@ -299,11 +515,12 @@ def drift(
       unchanged. That is what *"no transition is appended"* looks like: a
       target identical to what is already there.
 
-    ``computable=False``, with a reason and no state, for every case where the
-    answer would be a guess: a tension that names no pair of entries, a state
-    from a later build, a stamp on either side that is not a real instant, or an
-    entry whose evidence cannot be counted. A tension that cannot be evaluated
-    keeps the state it has.
+    ``computable=False``, with a reason out of ``REASONS`` and no state, for
+    every case where the answer would be a guess: a tension that names no pair
+    of entries, a state from a later build, a stamp on either side that is not
+    a real instant, a tension stamped after ``now``, or an entry whose evidence
+    cannot be counted. A tension that cannot be evaluated keeps the state it
+    has.
 
     A `resolved` tension is reported as ``RESOLVED_ALREADY`` rather than
     evaluated. Resolution is the fold's answer to a correction, it is terminal,
@@ -328,13 +545,20 @@ def drift(
         # The caller's own stamp, not the log's. Reported separately because
         # the fix is a different one: the log is fine and the caller is not.
         return Drift(reason=UNREADABLE_NOW)
+    if since > at:
+        # A tension recorded in the future — a skewed clock on some other node,
+        # or a hand-written stamp. Reported rather than clamped to age zero,
+        # which is what this used to do: with the baseline ahead of ``now``,
+        # *every* record for both sides is at or before it, so both counts read
+        # as unmoved and the tension cannot widen however much evidence
+        # arrives. The clamp made that look like a `fresh` tension nothing had
+        # happened to. It says so instead, and the next pass after ``now``
+        # passes the stamp evaluates it normally.
+        return Drift(reason=RECORDED_IN_FUTURE)
     if not all(item.readable for item in pair):
         return Drift(reason=UNREADABLE_SIDE)
 
-    # Clamped, so a tension recorded in the future — a skewed clock on some
-    # other node — cannot buy itself negative age and look permanently fresh.
-    # The same clamp ``loops.timescale.silence`` applies, for the same reason.
-    age = max(0.0, (at - since) / DAY)
+    age = (at - since) / DAY
     moved = {item.id: item.accumulated for item in pair}
     count = sum(1 for accumulated in moved.values() if accumulated)
 

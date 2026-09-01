@@ -586,20 +586,30 @@ jobs:
         # because another step happened to run one of the same files.
         #
         # **The floor carries margin that is not the cases it protects**, the
-        # rule review has had to establish for five stories running. 251
-        # selected, 215 required — and the 101 guarantee cases are marked
-        # separately and gated below, so deleting them lands on 150 and fails
+        # rule review has had to establish for five stories running. 327
+        # selected, 286 required — and the 147 guarantee cases are marked
+        # separately and gated below, so deleting them lands on 180 and fails
         # *three* times: both subset gates collect nothing, and this one drops
-        # 65 beneath its floor. The margin, 36, is deliberately far smaller
+        # 106 beneath its floor. The margin, 40, is deliberately far smaller
         # than the guarantee count, so the slack cannot be absorbed by deleting
         # guarantees — which is what review round 2 measured happening on the
         # AD-19 gate.
+        #
+        # **Review round 1 of this story found that a floor is not enough on
+        # its own, twice over.** A tension frozen on its first transition — two
+        # separate one-line mutations in ``widening.drift`` — passed all 2950
+        # cases, because every case that drove a state change started from a
+        # `fresh` tension. And the Ask-First threshold this story forbids could
+        # be inserted into ``ledger.plan``, one layer above the guard that
+        # forbids it, with the same result. Both are now named cases inside the
+        # suite (``test_every_movement_case_this_story_rests_on_still_exists``),
+        # so deleting one fails by name rather than by arithmetic.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap7 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-7 cases collected: $collected"
-          if [ "$collected" -lt 215 ]; then
+          if [ "$collected" -lt 286 ]; then
             echo "::error::the CAP-7 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -627,13 +637,25 @@ jobs:
         # expunge, keeps its pair and its license, is absent from the expunged
         # set, and comes back from a rebuild.
         #
-        # 14 selected, 12 required.
+        # **And `resolved` is terminal by every route, which review round 1
+        # found it was not.** A correction resolved a tension, a later
+        # ``tension`` append carrying any live state merged straight over it,
+        # and the tension came back live from a rebuild — while
+        # ``half/tensions/states.py`` said in prose that there is no path from
+        # `resolved` back to any other state. The expunge path had a guard and a
+        # case; this one had neither. A tension *minted over a side that was
+        # already gone* was the same hole from the other end: the fold only
+        # resolved while folding the correction, so a mint that arrived
+        # afterwards folded live and the pass computed drift across an entry
+        # that does not exist.
+        #
+        # 29 selected, 24 required.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap7_resolution -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-7 resolution cases collected: $collected"
-          if [ "$collected" -lt 12 ]; then
+          if [ "$collected" -lt 24 ]; then
             echo "::error::the resolution gate collected $collected cases; a correction may now delete a tension"
             exit 1
           fi
@@ -668,13 +690,37 @@ jobs:
         # arriving one object over — so the pass's whole append vocabulary is
         # pinned to one field and the half-life is pinned by value.
         #
-        # 87 selected, 75 required.
+        # **Review round 1 found three holes in this gate and they are all
+        # closed here.** The ranked-field check matched *exact strings*, so
+        # ``winner`` failed and ``winner_id``, ``winning_side``, ``is_winner``,
+        # ``side_that_won``, ``more_credible``, ``truer_side``, ``moved_side``
+        # and ``which_moved`` were every one of them accepted and durable —
+        # including ``moved_side``, which is the line ``widening.py`` itself
+        # names as the likely breach. The same exact-string rule was the module
+        # scan, so ``def stronger_side(tension)`` in the tension package left
+        # the whole suite green: the guard covered what a record carries and not
+        # what a module offers, and it needed both. And every scan read
+        # ``half/tensions`` and ``half/consolidate`` only, while this story
+        # wrote tension code into the fold, the append gate and the registry —
+        # ``held["winner"] = pair[0]`` injected into the fold's merge branch
+        # passed all 2950 cases. That is story 8's hole exactly: the guard
+        # passed because the violation travelled through a module it did not
+        # cover.
+        #
+        # **This gate's whole margin used to be absorbable by shrinking the set
+        # it guards.** The largest case expands over ``RANKED_FIELDS`` one for
+        # one, and nothing pinned it: deleting twelve entries landed the gate on
+        # exactly its floor, green, with ``loser=`` and ``ranked=`` appending
+        # cleanly. The set is pinned by value now, the way the persistence
+        # window is.
+        #
+        # 118 selected, 100 required.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap7_neutrality -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-7 neutrality cases collected: $collected"
-          if [ "$collected" -lt 75 ]; then
+          if [ "$collected" -lt 100 ]; then
             echo "::error::the neutrality gate collected $collected cases; a tension may now rank its two sides"
             exit 1
           fi

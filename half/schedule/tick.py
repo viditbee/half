@@ -63,7 +63,11 @@ the lock file is non-blocking by construction (``LOCK_NB`` never waits), and a
 fold read is local disk; the genuinely unbounded wait — a turn holding a main's
 mutex — is an ``await`` under a timeout rather than a blocked thread. A pass
 that does real CPU work will still stall the loop, and belongs behind
-``asyncio.to_thread`` when story 9b writes one.
+``asyncio.to_thread``. ``half.consolidate.pass_`` is written that way: its
+deciding half is a pure function run in a thread, which is also what lets the
+timeout below reach it — ``asyncio.wait_for`` cannot cancel a coroutine that
+never yields, so a pass that blocked would run past its bound with the tick
+looking healthy the whole time.
 
 *A clock that jumps.* A forward jump past the grace window reads as a missed
 window, which is the honest answer. A backward jump leaves due times in the

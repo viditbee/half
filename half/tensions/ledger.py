@@ -46,20 +46,21 @@ from typing import Any
 
 from half.errors import TensionError
 from half.tensions.states import (
-    LIVE_STATES,
     STATE,
-    TENSION_STATES,
     TensionState,
     is_state,
     parse_state,
 )
 from half.tensions.widening import (
-    BETWEEN,
+    NOT_A_TENSION,
+    REFUSED_TRANSITION,
     SIDES,
     Drift,
     Evidence,
+    by_entry,
     drift,
     evidence,
+    pair_of,
 )
 
 
@@ -87,11 +88,6 @@ class Tension:
     def known_state(self) -> bool:
         """Whether this build recognises the state. False for a later build's."""
         return is_state(self.state)
-
-    @property
-    def live(self) -> bool:
-        """Whether the pass may still move this tension. False once resolved."""
-        return self.state in LIVE_STATES
 
     @property
     def paired(self) -> bool:
@@ -135,10 +131,6 @@ class Plan:
     #: cannot tell"* are different facts and only one of them is a gap.
     unchanged: tuple[str, ...] = ()
 
-    @property
-    def moves(self) -> int:
-        return len(self.transitions)
-
 
 def read(tensions: Mapping[str, Mapping[str, Any]] | None) -> dict[str, Tension]:
     """The folded tension table as ``Tension`` values, id-keyed.
@@ -147,25 +139,34 @@ def read(tensions: Mapping[str, Mapping[str, Any]] | None) -> dict[str, Tension]
     Tolerant: an entry whose fields are the wrong type keeps the tension and
     drops the field, because one malformed record must cost that tension its
     evaluation and not the whole pass. Never raises.
+
+    Keys are coerced with ``str`` rather than required to be strings. The fold
+    cannot produce anything else — a record's id is a non-empty string before
+    it is durable — but this is handed whatever a caller has, and review found
+    a table with one non-string key raising a ``TypeError`` out of ``plan``'s
+    sort and costing a main every tension they own.
     """
     if not isinstance(tensions, Mapping):
         return {}
     found: dict[str, Tension] = {}
     for ident, entry in tensions.items():
-        if not isinstance(ident, str) or not ident:
+        key = ident if isinstance(ident, str) else str(ident)
+        if not key.strip():
             continue
         fields: Mapping[str, Any] = entry if isinstance(entry, Mapping) else {}
-        found[ident] = Tension(
-            id=ident,
+        found[key] = Tension(
+            id=key,
             state=_text(fields.get(STATE)),
-            between=_pair(fields.get(BETWEEN)),
+            between=pair_of(fields),
             at=_text(fields.get("t")),
         )
     return found
 
 
 def sides(
-    tension: Tension, *, history: Sequence[Mapping[str, Any]] | None
+    tension: Tension,
+    *,
+    history: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None,
 ) -> tuple[Evidence, ...]:
     """What each of ``tension``'s entries cited then and now, from the log.
 
@@ -181,7 +182,10 @@ def sides(
 
 
 def evaluate(
-    tension: Tension, *, history: Sequence[Mapping[str, Any]] | None, now: object
+    tension: Tension,
+    *,
+    history: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None,
+    now: object,
 ) -> Drift:
     """What the log says about ``tension`` at ``now``.
 
@@ -190,7 +194,7 @@ def evaluate(
     re-runnable without a second transition landing (AD-30).
     """
     if not isinstance(tension, Tension):
-        return Drift(reason="not-a-tension")
+        return Drift(reason=NOT_A_TENSION)
     return drift(
         state=tension.state,
         recorded_at=tension.at,
@@ -248,7 +252,7 @@ def transition(tension: Tension, *, to: object) -> dict[str, Any]:
 def plan(
     tensions: Mapping[str, Tension] | None,
     *,
-    history: Sequence[Mapping[str, Any]] | None,
+    history: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None,
     now: object,
 ) -> Plan:
     """Every append one pass over ``tensions`` would make, and every one it
@@ -264,61 +268,49 @@ def plan(
     skipped silently: *"there were four we did not look at"* is a fact the pass
     should be able to state, and a tension quietly absent from every count is
     how a whole state stops being exercised.
+
+    Every value in ``incomputable`` is a constant out of
+    ``half.tensions.widening.REASONS``. Review found ``str(exc)`` reaching it
+    from the refusal branch below, which put a free-form message — and an
+    exception message routinely quotes the value that caused it — into a
+    mapping the pass logs (AD-22).
+
+    **The log is walked once.** ``by_entry`` indexes the narrowed history by
+    entry id before the loop, so a main with forty tensions reads their log
+    once rather than eighty times.
     """
     if not isinstance(tensions, Mapping):
         return Plan()
+    indexed = history if isinstance(history, Mapping) else by_entry(history)
     moves: dict[str, dict[str, Any]] = {}
     gaps: dict[str, str] = {}
     still: list[str] = []
-    for ident, tension in sorted(tensions.items()):
+    # Keyed by ``str`` so a table carrying two kinds of key sorts rather than
+    # raising a ``TypeError`` that would cost this main every tension they own.
+    for ident, tension in sorted(tensions.items(), key=lambda item: str(item[0])):
+        key = str(ident)
         if not isinstance(tension, Tension):
-            gaps[str(ident)] = "not-a-tension"
+            gaps[key] = NOT_A_TENSION
             continue
-        found = evaluate(tension, history=history, now=now)
+        found = evaluate(tension, history=indexed, now=now)
         if not found.computable:
-            gaps[ident] = found.reason or "unknown"
+            gaps[key] = found.reason or NOT_A_TENSION
             continue
         if found.state == tension.state:
-            still.append(ident)
+            still.append(key)
             continue
         try:
-            moves[ident] = transition(tension, to=found.state)
-        except TensionError as exc:  # pragma: no cover - drift cannot produce one
+            moves[key] = transition(tension, to=found.state)
+        except TensionError:  # pragma: no cover - drift cannot produce one
             # ``drift`` never computes `resolved` and never returns a state
             # outside the vocabulary, so this is unreachable today. It is here
             # because the alternative to catching it is one malformed tension
             # ending the pass for every other one this main has, and AD-9's
             # isolation rule is about mains rather than an excuse to drop it
-            # inside one.
-            gaps[ident] = str(exc)
+            # inside one. The *reason* is a constant and the message is
+            # dropped: it names a tension out of a main's own ledger.
+            gaps[key] = REFUSED_TRANSITION
     return Plan(transitions=moves, incomputable=gaps, unchanged=tuple(still))
-
-
-def resolved_by(
-    tensions: Mapping[str, Tension] | None, *, entry_id: object
-) -> tuple[str, ...]:
-    """Every tension ``entry_id`` is a side of, id-ordered.
-
-    The predicate the fold applies when a correction lands, expressed here so
-    that *"a correction resolves a tension"* is one rule in one place rather
-    than a condition spelled into three branches of a match statement.
-
-    It names no winner and reads no correction verb. A `retract` (*"you
-    changed"*) and a `revise` (*"Half was wrong about you"*) resolve a tension
-    identically, because the difference between them is what Half owes the main
-    and not which of two entries about their life was mistaken — and the log
-    keeps that distinction on the correction record, where whoever composes the
-    apology reads it.
-    """
-    if not isinstance(tensions, Mapping) or not isinstance(entry_id, str):
-        return ()
-    return tuple(
-        sorted(
-            ident
-            for ident, tension in tensions.items()
-            if isinstance(tension, Tension) and tension.names(entry_id)
-        )
-    )
 
 
 def _text(value: object) -> str | None:
@@ -328,19 +320,6 @@ def _text(value: object) -> str | None:
     return None
 
 
-def _pair(value: object) -> tuple[str, ...]:
-    """The ``between`` field as a tuple of ids. Tolerant; never raises.
-
-    Order is preserved because the log's order is preserved, not because it
-    means anything.
-    """
-    if isinstance(value, (list, tuple)):
-        return tuple(
-            item for item in value if isinstance(item, str) and item.strip()
-        )
-    return ()
-
-
 def _state(value: object, what: str) -> TensionState:
     try:
         return parse_state(value)
@@ -348,16 +327,21 @@ def _state(value: object, what: str) -> TensionState:
         raise TensionError(f"{what}: {exc}") from None
 
 
-#: Re-exported so a caller holding only this module can still ask the
-#: membership question without importing the vocabulary twice.
+#: What this module offers. ``TENSION_STATES`` used to be re-exported here on
+#: the argument that a caller holding only this module should be able to ask the
+#: membership question — and nothing ever asked it, so the re-export was a
+#: second name for the vocabulary with no reader. ``resolved_by`` went the same
+#: way: it was a second implementation of *"which tensions does this entry
+#: resolve"*, never called, and it disagreed with the fold's on hostile input
+#: because it read a ``between`` the fold read raw. The rule lives once, in
+#: ``half.store.fold``, where the resolution happens, over
+#: ``half.tensions.widening.pair_of``, which both readings now share.
 __all__ = [
     "Plan",
     "Tension",
-    "TENSION_STATES",
     "evaluate",
     "plan",
     "read",
-    "resolved_by",
     "sides",
     "transition",
 ]

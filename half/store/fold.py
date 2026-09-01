@@ -35,6 +35,26 @@ record. And nothing here says *which* of the two entries went, or that either
 was wrong: a `retract` and a `revise` resolve a tension identically, and the
 difference between *"you changed"* and *"Half was wrong about you"* stays on the
 correction record where the apology is composed from it.
+
+**`resolved` is terminal by every route, and two of them arrive here.** The rule
+was prose in ``half.tensions.states`` and a guard on one path only, which is the
+shape three earlier stories shipped. Review reproduced the hole: a correction
+resolved a tension, a later ``tension`` append carrying ``state="persistent"``
+merged straight over it, and the tension came back live from a rebuild. So the
+merge below re-pins the state, and a tension whose side is *already gone when
+the record is folded* — minted over an entry a correction removed earlier in the
+log — is resolved on the spot rather than left live until a correction that has
+already happened happens again.
+
+**Merged, not replaced — and the trade is that a mint is not editable.** A
+transition carries a state and nothing else, so replacing the held record would
+drop the pair and the license every time the pass moved a tension. Merging keeps
+them, at the price of a wrong ``between`` being permanent: no later append can
+take a field off a tension. The corrective path is the one the main already has
+— ``Store.expunge`` names the tension itself, which removes it from the fold
+entirely, and story 9d mints a new one. That is deliberate rather than missing:
+an append-only log corrects by erasing and re-stating, and a mint that could be
+edited in place is a mint whose two sides could be swapped after the fact.
 """
 
 from __future__ import annotations
@@ -48,7 +68,6 @@ from typing import Any, Final
 from half.errors import CorruptLogError
 from half.store.ops import AFTERCARE_STATES, CRISIS_STATES, Op
 from half.store.records import (
-    BETWEEN,
     LAST_MOVEMENT,
     LOOP,
     NEXT_PASS_AT,
@@ -58,6 +77,7 @@ from half.store.records import (
     carried_forward,
 )
 from half.tensions.states import TensionState
+from half.tensions.widening import pair_of
 
 #: The fields a ``loop_transition`` carries forward into the loop table. Read
 #: from ``half.store.records`` rather than spelled here, so that the append
@@ -159,9 +179,22 @@ class State:
 def fold(records: Iterable[Record]) -> State:
     """Fold records into current state. Pure: same input, same output, always."""
     state = State()
+    # Entries a correction, an expunge or a tombstone has already taken out of
+    # the ledger, in log order. Local rather than a field of ``State``: it is
+    # not part of the derived view — nothing downstream asks it — and it is the
+    # answer to a question only this pass can ask, *"was this side already gone
+    # when that tension record was folded?"*.
+    #
+    # Deliberately **not** *"absent from ``state.beliefs``"*, which would also
+    # catch an entry that never existed. A tension over an id the log has never
+    # seen is not a resolved disagreement, it is one whose evidence cannot be
+    # read — which ``half.tensions.widening`` already reports as such, rather
+    # than declaring a disagreement over.
+    gone: set[str] = set()
 
     for record in records:
         if record.data.get("tombstone") is True:
+            gone.add(record.id)
             if record.op is not Op.LOOP_TRANSITION:
                 # A transition's id is the *append's*, not the loop's, so
                 # remembering it here says nothing about any object and
@@ -215,6 +248,7 @@ def fold(records: Iterable[Record]) -> State:
                 # cases never mention the loop table.
                 target = _require_target(record)
                 state.beliefs.pop(target, None)
+                gone.add(target)
                 # **The resolution rule (CAP-7), and it is the firewall's
                 # deliberate inverse.** A tension is a claim about *two
                 # entries*, so removing one of them genuinely ends the
@@ -250,6 +284,7 @@ def fold(records: Iterable[Record]) -> State:
                 target = _require_target(record)
                 state.expunged.add(target)
                 state.beliefs.pop(target, None)
+                gone.add(target)
                 # An expunge that names *the tension itself* removes it: an
                 # erasure is an erasure, and this is the main's own deliberate
                 # *"erase this"* rather than a correction to one of its sides.
@@ -279,7 +314,34 @@ def fold(records: Iterable[Record]) -> State:
                     # Ask-First path that adds a state — took a main's whole
                     # fold down rather than costing one tension its evaluation.
                     held = state.tensions.setdefault(record.id, {})
+                    # **`resolved` is terminal, and this is the route review
+                    # reproduced.** The merge below is a plain ``update``, so a
+                    # later record carrying any state at all wrote straight
+                    # over the fold's own answer to a correction: retract a
+                    # side, append ``state="persistent"``, and the tension came
+                    # back live — through a rebuild as faithfully as through a
+                    # fold, because replay reproduces the append. The expunge
+                    # path had a guard and a case for exactly this shape; the
+                    # resolution path had neither, while
+                    # ``half.tensions.states`` said in prose that *"there is no
+                    # path from `resolved` back to any other state"*.
+                    #
+                    # Read before the merge and re-pinned after it, so the
+                    # record's other fields still travel through: what is
+                    # terminal is the *state*, not the record.
+                    was_resolved = held.get(STATE) == _RESOLVED
                     held.update(copy.deepcopy(dict(record.data)))
+                    if was_resolved:
+                        held[STATE] = _RESOLVED
+                    # **A tension is resolved whenever a side is already gone,
+                    # not only while folding the correction.** Minting over an
+                    # entry a correction removed earlier in the log used to
+                    # produce a live `fresh` tension nothing would ever revisit
+                    # — ``_resolve_tensions`` fires on the correction, and the
+                    # correction had already happened — so the nightly pass
+                    # computed drift across an entry that does not exist.
+                    elif any(side in gone for side in pair_of(held)):
+                        held[STATE] = _RESOLVED
 
             case Op.LOOP_TRANSITION:
                 # The only op that opens or moves a loop, and the only place in
@@ -414,10 +476,15 @@ def _resolve_tensions(state: State, entry_id: str) -> None:
 
     Pure, like everything else in this module: it reads the tension table it
     was handed and writes one string.
+
+    The pair is read through ``half.tensions.widening.pair_of``, which is also
+    what ``half.tensions.ledger.read`` uses. There were two readings of
+    ``between`` — one matching the raw list here, one matching a list already
+    filtered to non-empty strings in the ledger — and review found they
+    disagreed on hostile input while the ledger's copy had no caller at all.
     """
     for tension in state.tensions.values():
-        pair = tension.get(BETWEEN)
-        if not isinstance(pair, (list, tuple)) or entry_id not in pair:
+        if entry_id not in pair_of(tension):
             continue
         # Idempotent. A second correction to the other side, or a replay over
         # the same log, must not produce a different fold.
