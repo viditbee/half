@@ -25,6 +25,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Self
 
+from half.loops import ledger
 from half.store import db
 from half.store.fold import State, fold
 from half.store.log import BeliefLog
@@ -112,18 +113,50 @@ class Store:
         return rec
 
     def expunge(self, target: str, *, t: str) -> None:
-        """Erase ``target`` genuinely: append the op, then tombstone its body.
+        """Erase ``target`` genuinely: append the op, then tombstone its bodies.
 
         Rare and main-initiated. Without the tombstoning pass an expunged
         belief's text would survive in the log — unacceptable for an erasure
         request and for the secrets rule.
+
+        **Erases whatever ``target`` names, including a loop (CAP-6).** The
+        façade looks the name up in the current fold: it is the main's own
+        *"erase this"*, and requiring them — or the surface above them — to know
+        whether a name is a belief id or a loop slug is how an erasure becomes a
+        silent no-op. Before this it was exactly that: ``expunge`` wrote a
+        ``target``-only record, which the firewall correctly refuses to let
+        reach a loop, so the loop stayed in the fold, survived replay, and kept
+        its slug and every movement date in the log verbatim.
+
+        This is **not** a hole in the refutation firewall, and the difference is
+        the record shape. A correction (``retract``, ``revise``) and a bare
+        ``expunge`` op never carry the ``loop`` field, so they can never take a
+        wanting with them whatever identifier they name. Only this path — the
+        main deliberately erasing something they named — builds the wider
+        record, and only for a loop the fold can actually show.
         """
+        current = self.fold()
+        loops = {target} & set(current.loops)
+        also_an_object = target in current.beliefs or target in current.tensions
         # Tombstone bodies first, then append the op. A crash between the two
         # then leaves text already gone with no op yet — the fold still sees
         # the tombstone, so state is correct — rather than an op claiming
         # erasure while the text is still on disk.
-        self.log.expunge_bodies({target})
-        self.log.append(make(Op.EXPUNGE, f"x_{target}_{t}", t, target=target))
+        #
+        # Transitions are tombstoned by the loop they name rather than by their
+        # own record id, because a transition's id is the append's, not the
+        # loop's — matching on the id alone erased nothing at all.
+        self.log.expunge_bodies({target}, loops=loops)
+        # A name that is only a loop produces a loop-only record; a name that is
+        # only a belief produces the record it always did; a name that is
+        # somehow both erases both. What is never written is a loop's slug into
+        # the belief namespace, or the reverse.
+        fields: dict[str, Any] = {}
+        if loops:
+            fields.update(ledger.expunged(target))
+        if also_an_object or not loops:
+            fields["target"] = target
+        self.log.append(make(Op.EXPUNGE, f"x_{target}_{t}", t, **fields))
         self.rebuild()
 
     # -- read ----------------------------------------------------------------

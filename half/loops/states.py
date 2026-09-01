@@ -41,6 +41,12 @@ from typing import Final
 #: not a log it must refuse to read — it is one whose ranking degrades.
 VOCABULARY_VERSION: Final[int] = 1
 
+#: The record field a loop's state is stored in. Owned here for the reason
+#: ``timescale.TIMESCALE`` is owned there: the store imports it to validate the
+#: append, and one definition flowing upward is what keeps the append gate, the
+#: fold and the ledger from drifting to two spellings of the same word.
+STATE: Final[str] = "state"
+
 
 class LoopState(StrEnum):
     """Every state an open loop may be in. The set is closed."""

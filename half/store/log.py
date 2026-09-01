@@ -89,14 +89,24 @@ class BeliefLog:
         if is_new:
             _fsync_dir(self.root)
 
-    def expunge_bodies(self, ids: set[str]) -> int:
+    def expunge_bodies(self, ids: set[str], *, loops: set[str] | None = None) -> int:
         """Replace the bodies of ``ids`` with tombstones, in place.
 
         The one deliberate exception to append-only. An ``expunge`` op alone
         removes an id from the fold but leaves its text on disk, which cannot
         satisfy a genuine erasure request or the secrets rule. The record's
         position, timestamp and id survive so replay still accounts for it.
+
+        ``loops`` names loops rather than records, and it exists because a
+        transition is **not keyed on the thing it is about** (CAP-6). A
+        transition's record id is the append's own (``l_1``); the loop it moves
+        is a field. So matching on ``ids`` alone never matched a single
+        transition, and erasing a loop left its slug, state, timescale and every
+        movement date sitting in the log verbatim — for an object whose
+        identifier is a human-meaningful phrase the main chose. A loop slug is
+        text about a person's life, and surviving an erasure is not an erasure.
         """
+        wanted_loops = loops or set()
         # Pass one: decode every shard before mutating any of them. A corrupt
         # or unknown-op line in a later shard must not abort the run after
         # earlier shards were already replaced — that leaves a half-erased log
@@ -115,7 +125,13 @@ class BeliefLog:
                 if not line.strip():
                     continue
                 rec = decode(line, path=str(path), lineno=lineno)
-                if rec.id in ids and rec.data.get("tombstone") is not True:
+                names_loop = (
+                    bool(wanted_loops)
+                    and rec.data.get("loop") in wanted_loops
+                )
+                if (rec.id in ids or names_loop) and rec.data.get(
+                    "tombstone"
+                ) is not True:
                     stub = Record(
                         op=rec.op,
                         id=rec.id,

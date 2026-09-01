@@ -105,6 +105,64 @@ def test_pure_modules_never_call_dunder_import(relative):
     assert "__import__" not in source, f"{relative} uses __import__ — AD-30 forbids it"
 
 
+#: Calls that read something the log does not contain. Import scanning alone is
+#: not enough: a module can reach ``dt.datetime.now()`` through an import its
+#: own line looks innocent, and ``getenv`` is not an import at all.
+#:
+#: **Lifted here from ``tests/test_ladder.py``, where it globbed
+#: ``half/governance/**``.** Story 8 moved the civil-date arithmetic out of
+#: ``half/governance/aftercare.py`` into ``half/civil.py`` — and moved it out
+#: from under this scan at the same time. A/B verified with identical code: a
+#: clock read in ``half/civil.py`` passed the whole suite, while the same read
+#: in ``half/governance/aftercare.py`` failed by name. That module is now the
+#: arithmetic *both* the thirty-day crisis floor and every loop timescale run
+#: on, so it is the last place that may contain a hidden clock. Shared code
+#: keeps the guards it had.
+AMBIENT_CALLS = {
+    "now", "utcnow", "today", "time", "monotonic", "perf_counter",
+    "random", "getenv", "urandom", "uuid4",
+}
+
+
+@pytest.mark.parametrize("relative", PURE_MODULES)
+def test_pure_modules_call_nothing_ambient(relative):
+    """AD-30, at call level rather than import level."""
+    tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
+    called = {
+        node.func.attr if isinstance(node.func, ast.Attribute) else
+        node.func.id if isinstance(node.func, ast.Name) else ""
+        for node in ast.walk(tree) if isinstance(node, ast.Call)
+    }
+    assert not called & AMBIENT_CALLS, (
+        f"{relative} calls {sorted(called & AMBIENT_CALLS)} — a fold, a floor "
+        f"and a loop's silence must be pure functions of what they are given "
+        f"(AD-30)"
+    )
+
+
+@pytest.mark.parametrize(
+    "bypass", ["dt.datetime.now()", "time()", "os.getenv('X')", "uuid4()",
+               "datetime.utcnow()", "random()"],
+)
+def test_the_ambient_scan_sees_each_shape_of_a_clock_read(bypass):
+    """Non-vacuity, one shape at a time — the scan is only as good as the names
+    it knows, and a scan nobody has tried to defeat is a scan nobody has
+    tested."""
+    tree = ast.parse(f"def _f():\n    return {bypass}\n")
+    called = {
+        node.func.attr if isinstance(node.func, ast.Attribute) else
+        node.func.id if isinstance(node.func, ast.Name) else ""
+        for node in ast.walk(tree) if isinstance(node, ast.Call)
+    }
+    assert called & AMBIENT_CALLS, f"the ambient scan does not see {bypass!r}"
+
+
+def test_the_scan_covers_the_arithmetic_two_subsystems_share():
+    """The specific regression: ``half/civil.py`` must be in the list."""
+    assert "half/civil.py" in PURE_MODULES
+    assert "half/governance/aftercare.py" in PURE_MODULES
+
+
 def test_fold_is_indifferent_to_ambient_process_state(tier_change_log, monkeypatch):
     """The mutation the earlier suite could not catch.
 

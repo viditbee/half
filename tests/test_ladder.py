@@ -1540,10 +1540,14 @@ GOVERNANCE_MODULES = sorted(
     str(p.relative_to(ROOT)) for p in (ROOT / "half/governance").rglob("*.py")
 )
 
-_AMBIENT_CALLS = {
-    "now", "utcnow", "today", "time", "monotonic", "perf_counter",
-    "random", "getenv", "urandom", "uuid4",
-}
+#: Imported rather than re-declared. A second copy of this list is a weaker
+#: copy — and story 8 showed the *scope* is the fragile half, not the names:
+#: moving the civil-date arithmetic to ``half/civil.py`` moved it out from
+#: under a scan that globbed ``half/governance/**``, with the suite green. The
+#: canonical scan now runs over ``tests/test_purity.py::PURE_MODULES``, which
+#: names modules rather than a directory, so moving one out of a package
+#: cannot silently move it out of the gate.
+from tests.test_purity import AMBIENT_CALLS as _AMBIENT_CALLS
 
 
 def test_the_purity_scans_have_modules_to_scan():

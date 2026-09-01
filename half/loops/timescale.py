@@ -38,6 +38,15 @@ from typing import Final
 
 from half.civil import DAY, instant
 
+#: The record fields this module reads. **Owned here**, because ``half.loops``
+#: is the lower layer: ``half.store.records`` imports these to validate an
+#: append and ``half.store.fold`` to build the loop entry, and the arrow cannot
+#: run the other way without closing a cycle. One definition per name, flowing
+#: upward, is what stops ``last_movement`` acquiring a second spelling — which
+#: would be a loop that is permanently and invisibly not silent-detectable.
+TIMESCALE: Final[str] = "timescale"
+LAST_MOVEMENT: Final[str] = "last_movement"
+
 #: Bumped for the reason ``states.VOCABULARY_VERSION`` is: the set of periods a
 #: loop may declare is closed, and a build reading a log that names a scale it
 #: has never heard of must degrade rather than guess.
@@ -92,6 +101,14 @@ UNREADABLE_NOW: Final[str] = "unreadable-now"
 #: movement date is often all anybody knows, so it is widened to midnight UTC
 #: here rather than by loosening the parser every floor in the product shares.
 _DATE_ONLY: Final[re.Pattern[str]] = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+#: What a bare date is widened *to*. Midnight, never end-of-day, and pinned by
+#: name so the choice is a decision rather than a literal three lines down: a
+#: loop is treated as last moved at the **start** of that day, so the silence
+#: computed from it is never shorter than the truth. Widening to ``T23:59Z``
+#: instead would make every bare-date loop up to a day fresher than it is, which
+#: is the direction that lets Half stay quiet about something it should raise.
+DAY_STARTS_AT: Final[str] = "T00:00Z"
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,7 +187,7 @@ def moment(stamp: object) -> int | None:
         return None
     text = stamp.strip()
     if _DATE_ONLY.fullmatch(text):
-        text = f"{text}T00:00Z"
+        text = f"{text}{DAY_STARTS_AT}"
     return instant(text)
 
 
@@ -192,20 +209,26 @@ def silence(loop: Mapping[str, object] | None, *, now: object) -> Silence:
     """
     entry: Mapping[str, object] = loop if isinstance(loop, Mapping) else {}
 
-    scale = entry.get("timescale")
+    scale = entry.get(TIMESCALE)
     if scale is None or (isinstance(scale, str) and not scale.strip()):
         return Silence(reason=NO_TIMESCALE)
     period = period_days(scale)
     if period is None:
         return Silence(reason=UNKNOWN_TIMESCALE)
 
-    moved = entry.get("last_movement")
+    moved = entry.get(LAST_MOVEMENT)
     if moved is None or (isinstance(moved, str) and not moved.strip()):
         return Silence(reason=NO_MOVEMENT, period_days=period)
     moved_at = moment(moved)
     if moved_at is None:
         return Silence(reason=UNREADABLE_MOVEMENT, period_days=period)
-    now_at = instant(now)
+    # ``moment`` on both sides, not ``instant``. The two used to disagree about
+    # what a stamp is — ``last_movement`` widened a bare date and ``now`` did
+    # not — so a caller working in bare dates got ``unreadable-now`` for every
+    # loop it owned while the same call with a ``T00:00Z`` reported hundreds of
+    # periods. One shape rule, read on both sides, or the two drift apart and
+    # the drift is a silent, total loss of detection.
+    now_at = moment(now)
     if now_at is None:
         # The caller's own stamp, not the log's. Reported separately because
         # the fix is a different one: the log is fine and the caller is not.
@@ -217,6 +240,12 @@ def silence(loop: Mapping[str, object] | None, *, now: object) -> Silence:
     days = max(0.0, (now_at - moved_at) / DAY)
     return Silence(
         detectable=True,
+        # **Strictly greater, and the boundary is pinned** (see
+        # ``tests/test_loops.py``). At exactly one period the loop has moved
+        # inside its own rhythm — a weekly swim swum seven days ago is a loop
+        # keeping to its period, not one that has gone quiet — so equality is
+        # not silence. The direction matters because ``>=`` would put every
+        # perfectly-kept loop one tick into the silent set for ever.
         silent=days > period,
         elapsed_days=days,
         period_days=period,

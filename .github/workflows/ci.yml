@@ -287,9 +287,9 @@ jobs:
         # The ledger is the ranking function for everything Half does, and
         # every one of its rules is the kind that decays quietly: nothing
         # breaks the day a state is spelled two ways, a timescale acquires a
-        # default, or silence starts being stored instead of computed. The
-        # suite stays green and the ranking is silently different. So this
-        # names it.
+        # default, a movement date stops being validated, or silence starts
+        # being stored instead of computed. The suite stays green and the
+        # ranking is silently different. So this names it.
         #
         # Marker-selected rather than file-selected, for the reason the AD-18,
         # AD-28 and CAP-12 steps are: it must not go green because another step
@@ -298,42 +298,46 @@ jobs:
         # The count is asserted because `pytest -m cap6` against a renamed
         # marker deselects everything and exits 0, which looks identical to a
         # passing run. --strict-markers (pyproject) catches a misspelling; this
-        # floor catches a rename, and catches someone quietly unmarking the
-        # cases the gate exists for.
+        # floor catches a rename.
         #
-        # **The floor is not the size of what it protects.** 92 selected, 80
-        # required — twelve cases of headroom, so a redundant parametrize entry
-        # can be pruned and the gate cannot be gutted. And the eleven firewall
-        # cases carry their own marker and their own gate below, so deleting
-        # them fails twice: that gate collects nothing, and a floor set here
-        # could never have caught it on its own.
+        # **A floor is the weakest of the three protections here, and review
+        # proved it.** The first version was 92 collected against 80 required,
+        # and deleting exactly the two AST guards the firewall rests on dropped
+        # it to 90 — comfortably green, with the property unguarded. So the
+        # firewall and the structural guards now carry their own markers and
+        # their own gates below, *and* the cases each of those gates exists for
+        # are named inside the suite itself
+        # (`test_every_structural_guard_this_story_rests_on_still_exists`), so
+        # deleting one fails by name rather than by arithmetic. 187 selected,
+        # 160 required.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap6 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-6 cases collected: $collected"
-          if [ "$collected" -lt 80 ]; then
+          if [ "$collected" -lt 160 ]; then
             echo "::error::the CAP-6 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap6
 
-      - name: 'CAP-6: the refutation firewall — a wanting is never demoted'
+      - name: 'CAP-6: the refutation firewall — a wanting is never demoted or frozen'
         # A second gate over the subset that matters most, for the reason the
         # CAP-12 durability and handoff gates exist: a floor on the superset
-        # cannot stop this half being hollowed out. Every case below could be
-        # deleted with the step above still green and still above its floor —
-        # and the half that would go with them is the half where Half starts
-        # treating *"the main has done nothing about the farmland for a year"*
-        # as evidence that they never wanted it.
+        # cannot stop this half being hollowed out, and the half that would go
+        # with it is the half where Half starts treating *"the main has done
+        # nothing about the farmland for a year"* as evidence they never wanted
+        # it.
         #
         # These are the cases for a retracted, revised and expunged support; a
         # correction that names the loop's own identifier; a tombstone that
-        # shares it; a year of no evidence leaving the wanting standing; and
-        # the two AST assertions that the correction branches of the fold
-        # cannot name the loop table at all. That last pair is why the marker
-        # exists: they are what make the rule structural rather than agreed,
-        # and a behavioural floor would never have missed them.
+        # shares it; a year of no evidence leaving the wanting standing; and —
+        # added after review — that a loop left standing can **still move**.
+        # That last one is not a refinement: one shared `expunged` set left a
+        # loop present in the fold, passing every assertion above, while
+        # silently dropping every later transition on it for ever. A wanting
+        # that can never advance, be achieved, or change at all has been demoted
+        # under another name.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap6_firewall -q --collect-only \
@@ -344,6 +348,34 @@ jobs:
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap6_firewall
+
+      - name: 'CAP-6: the firewall as a property of the package, not a spelling'
+        # A third gate, over the structural guards, and it exists because the
+        # first version of this story had none worth the name. It asserted that
+        # two `fold` case bodies did not contain the substring "loops" — a
+        # spelling — and three mutations walked past it with all 1836 tests
+        # green: a demotion in the `Op.TENSION` branch (Half lowering a wanting
+        # because contradicting evidence arrived, the exact CAP-6 violation),
+        # the same demotion moved into a module-scope helper, and a new
+        # `half/loops/decay.py` exporting `demote`.
+        #
+        # What these assert instead: that only the transition case and the
+        # loop-named expunge block may *name* the loop table inside `fold`;
+        # that nothing anywhere under `half/` mutates it outside those two
+        # places, by any of the seven ways a dict can be changed; and that only
+        # the ledger can compose a record carrying both a loop and a state, in
+        # either of the two shapes such a record gets built. Each runs against
+        # a synthetic bypass of its own, so none can pass having seen nothing.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap6_structure -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-6 structural cases collected: $collected"
+          if [ "$collected" -lt 12 ]; then
+            echo "::error::the structural gate collected $collected cases; the firewall is a spelling again"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap6_structure
 
       - name: 'AD-5 and AD-30: retrieval degrades, and never writes'
         # The reranker fallback, the salience-is-derived assertions, the

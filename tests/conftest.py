@@ -109,20 +109,37 @@ def tier_change_log(tmp_path):
         s.record(Op.LOOP_TRANSITION, "l_2", "2026-08-03T02:42Z",
                  **ledger.opened("swim-weekly", state="advancing",
                                  timescale="weeks",
-                                 last_movement="2026-07-28T06:00Z"))
+                                 last_movement="2026-07-28T06:00Z",
+                                 loops=s.state().loops))
         s.record(Op.LOOP_TRANSITION, "l_3", "2026-08-10T02:42Z",
                  **ledger.move("swim-weekly", at="2026-08-09T06:30Z"))
         s.record(Op.LOOP_TRANSITION, "l_4", "2026-08-12T02:42Z",
                  **ledger.move("swim-weekly", at="2026-08-11T06:30Z",
                                state="achieved"))
         s.record(Op.LOOP_TRANSITION, "l_5", "2026-08-13T02:42Z",
-                 **ledger.opened("learn-tabla", state="advancing"))
+                 **ledger.opened("learn-tabla", state="advancing",
+                                 loops=s.state().loops))
+        # A loop that acquired its period after the fact — its own named op,
+        # never a passenger on a movement append. Separate from `learn-tabla`,
+        # which stays period-less on purpose: a rebuild that quietly filled that
+        # gap in would look like a successful replay and be a different ranking
+        # function.
+        s.record(Op.LOOP_TRANSITION, "l_5b", "2026-08-13T03:00Z",
+                 **ledger.opened("write-more", state="advancing",
+                                 last_movement="2026-08-01",
+                                 loops=s.state().loops))
+        s.record(Op.LOOP_TRANSITION, "l_5c", "2026-08-13T03:01Z",
+                 **ledger.rescale("write-more", to="weeks",
+                                  loops=s.state().loops))
         s.record(Op.LOOP_TRANSITION, "l_6", "2026-08-14T02:42Z",
                  **ledger.opened("sell-the-flat", state="stalled",
                                  timescale="months",
-                                 last_movement="2026-01-04"))
-        s.record(Op.EXPUNGE, "x_loop", "2026-08-15T02:42Z",
-                 **ledger.expunged("sell-the-flat"))
+                                 last_movement="2026-01-04",
+                                 loops=s.state().loops))
+        # Erased through the **public** path, which is what a main's erasure
+        # actually goes through: it removes the loop and tombstones the
+        # transition bodies, where a bare op leaves the slug in the log.
+        s.expunge("sell-the-flat", t="2026-08-15T02:42Z")
         # A crisis entry and an operator reversal (CAP-12). Here rather than in
         # a fixture of their own because the replay test is what proves the new
         # op folds, round-trips through SQLite and reproduces byte-identically

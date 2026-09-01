@@ -89,15 +89,26 @@ class LadderError(HalfError):
     """
 
 
-class LoopError(HalfError):
-    """An open-loop change the ledger refuses (CAP-6).
+class LoopError(HalfError, ValueError):
+    """An open-loop change the ledger or the append gate refuses (CAP-6).
 
-    Raised only by the *writing* half of ``half.loops.ledger`` — opening a loop
-    with a state outside the vocabulary, moving one to a date that is not a
-    date, or recording `abandoned-but-unadmitted` without both a candidate and
-    the main's answer. The *reading* half never raises: reading a loop happens
-    on the turn's ranking path, and an exception there would cost the main their
-    reply over a tie-break, so an unreadable field degrades instead.
+    Raised by the *writing* half of ``half.loops.ledger`` — opening a loop with
+    a state outside the vocabulary, moving one to a date that is not a date, or
+    recording `abandoned-but-unadmitted` without both a candidate and the main's
+    confirmation — and by ``records.validate_loop_fields``, which refuses the
+    same values one layer down where they would become durable. The *reading*
+    half never raises: reading a loop happens on the turn's ranking path, and an
+    exception there would cost the main their reply over a tie-break, so an
+    unreadable field degrades instead.
+
+    **Also a ``ValueError``**, and deliberately both. The conventions say no
+    public store operation raises a non-``HalfError``, so a caller wrapping the
+    write path in ``except HalfError`` has to catch the append gate's refusals —
+    which before this were bare ``ValueError``s that slipped straight through.
+    But ``validate_fields`` has raised ``ValueError`` for every other malformed
+    field since story 1, and callers written against that must not start
+    leaking either. Inheriting from both is how one refusal answers to both
+    names rather than one of them silently winning.
 
     A refusal is loud on purpose. The log is append-only, so every path this
     rejects is one that would have put a permanent value into the ledger that

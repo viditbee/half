@@ -40,12 +40,20 @@ AFTERCARE_KEY: Final[str] = "aftercare"
 #: discarding it and replaying the log — never by an in-place migration, which
 #: would be a second way for derived state to exist that the log does not
 #: describe.
-DERIVED_VERSION: Final[int] = 6
+#:
+#: v7 added ``expunged_loops`` (story 8), and the bump is not optional for a
+#: reason a new *table* makes obvious but which would hold even without one:
+#: the fold's loop semantics changed. A view built by v6 recorded an expunged
+#: loop in the shared ``expunged`` set, where the new transition guard does not
+#: look — so a stale view surviving the upgrade would have a main's ranking
+#: function disagree with their own log about which wantings are still open.
+DERIVED_VERSION: Final[int] = 7
 
 #: Every object this module owns, in an order safe to drop: the FTS table
 #: references ``beliefs`` as its external content.
 _TABLES: Final[tuple[str, ...]] = (
-    "belief_fts", "beliefs", "tensions", "loops", "expunged", "governance",
+    "belief_fts", "beliefs", "tensions", "loops", "expunged", "expunged_loops",
+    "governance",
 )
 
 #: There is deliberately no ``license`` column. One existed, materialized from
@@ -73,6 +81,12 @@ CREATE TABLE IF NOT EXISTS beliefs (
 CREATE TABLE IF NOT EXISTS tensions (id TEXT PRIMARY KEY, data TEXT NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS loops    (id TEXT PRIMARY KEY, data TEXT NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS expunged (id TEXT PRIMARY KEY) STRICT;
+
+-- Loops the main erased, kept apart from the beliefs and tensions they erased
+-- (CAP-6). One shared table was a demotion wearing another name: a belief
+-- whose id collided with a loop's slug froze that loop's future transitions
+-- for ever. See ``State.expunged_loops``.
+CREATE TABLE IF NOT EXISTS expunged_loops (id TEXT PRIMARY KEY) STRICT;
 
 -- Folded governance state that belongs to the main rather than to any one
 -- belief: the license ceiling (AD-28), whether the crisis mode is open, and
@@ -129,7 +143,8 @@ def _discard_if_stale(conn: sqlite3.Connection) -> None:
 
 def is_empty(conn: sqlite3.Connection) -> bool:
     """True when the derived view holds nothing — fresh, or just discarded."""
-    for table in ("beliefs", "tensions", "loops", "expunged", "governance"):
+    for table in ("beliefs", "tensions", "loops", "expunged", "expunged_loops",
+                  "governance"):
         if conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None:
             return False
     return True
@@ -173,7 +188,8 @@ def rebuild(
         # prefix is never indexed. ``delete-all`` discards the index outright
         # and consults nothing.
         conn.execute("INSERT INTO belief_fts(belief_fts) VALUES('delete-all')")
-        for table in ("beliefs", "tensions", "loops", "expunged", "governance"):
+        for table in ("beliefs", "tensions", "loops", "expunged",
+                      "expunged_loops", "governance"):
             conn.execute(f"DELETE FROM {table}")
 
         for ident, data in state.beliefs.items():
@@ -214,6 +230,8 @@ def rebuild(
                          (ident, _dump(data)))
         for ident in sorted(state.expunged):
             conn.execute("INSERT INTO expunged (id) VALUES (?)", (ident,))
+        for ident in sorted(state.expunged_loops):
+            conn.execute("INSERT INTO expunged_loops (id) VALUES (?)", (ident,))
 
         conn.execute(
             "INSERT INTO belief_fts(rowid, claim_terms, prefix_terms)"
@@ -237,6 +255,8 @@ def read_state(conn: sqlite3.Connection) -> State:
         state.loops[row["id"]] = json.loads(row["data"])
     for row in conn.execute("SELECT id FROM expunged ORDER BY id"):
         state.expunged.add(row["id"])
+    for row in conn.execute("SELECT id FROM expunged_loops ORDER BY id"):
+        state.expunged_loops.add(row["id"])
     row = conn.execute("SELECT value FROM governance WHERE key = ?",
                        (CEILING_KEY,)).fetchone()
     state.ceiling = row["value"] if row is not None else None

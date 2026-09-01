@@ -254,7 +254,9 @@ The suite is hermetic — it makes no network calls and needs no bot token.
 | `half/retrieval/` | Strand weighting, contextual prefix, salience, bm25 fusion |
 | `half/context/` | The license split: content, directives, question candidates |
 | `half/governance/` | The license ladder: rung rules, quarantine, the ceiling, and the aftercare schedule both the actor and crisis enforce |
+| `half/loops/` | The open-loop ledger: the closed state vocabulary, each loop's own timescale, computed silence, and the abandonment candidate |
 | `half/text.py` | One script-neutral tokenizer, shared by index and matcher |
+| `half/civil.py` | Clockless civil-date arithmetic, shared by the crisis floor and the loop timescales |
 | `half/channel/` | The `Channel` port, reachability, the Telegram adapter |
 | `half/actor/` | One actor per main — an inbox and a mutex — and the wiring |
 | `half/crisis/` | Owns the inbound entrypoint: the tier table, the two actions, the templates, the handoff, aftercare and the held safety plan |
@@ -332,6 +334,20 @@ package re-exports, because a gate whose reach depends on which of two
 equivalent import lines you wrote is not a gate — and a second proves no module
 outside the ladder writes a license field at all. Both are checked against
 synthetic bypasses of their own so neither can pass having seen nothing.
+
+`test_loops.py` is the CAP-6 gate, and its shape is a lesson about what a
+structural test is. Its first version asserted that two `fold` case bodies did
+not contain the substring `"loops"` — a spelling — and three mutations walked
+past it with the whole suite green: a demotion in the tension branch, the same
+demotion behind a helper, and a whole new module. So it now asserts the
+*property*: only two regions of `fold` may name the loop table, nothing under
+`half/` may mutate it outside them by any of the seven ways a dict changes, and
+only the ledger may compose a record carrying both a loop and a state. Every
+scan runs against a synthetic bypass of its own. Beside them, every refutation
+case records a movement **after** the correction, because a loop that stands and
+can no longer move has been demoted under another name — and every period,
+threshold and boundary is pinned to its value with both sides asserted, after
+review found each of them satisfied by a whole band of wrong ones.
 
 `test_context.py` is the AD-18 gate. It scans the rendered context and the
 reply for any *fragment* of a withheld claim — adjacent word pairs,

@@ -17,9 +17,21 @@ from dataclasses import dataclass, field
 from collections.abc import Mapping
 from typing import Any, Final
 
-from half.errors import CorruptLogError, SchemaVersionError, UnknownOpError
-from half.loops.states import LOOP_STATES, is_state
-from half.loops.timescale import TIMESCALES, is_timescale
+from half.errors import (
+    CorruptLogError,
+    LoopError,
+    SchemaVersionError,
+    UnknownOpError,
+)
+from half.loops.ledger import LOOP
+from half.loops.states import LOOP_STATES, STATE, is_state
+from half.loops.timescale import (
+    LAST_MOVEMENT,
+    TIMESCALE,
+    TIMESCALES,
+    is_timescale,
+    moment,
+)
 from half.store.ops import SCHEMA_VERSION, Op, parse_op
 from half.text import terms
 
@@ -155,14 +167,15 @@ REGION: Final[str] = "region"
 #: invisible to it.
 HANDOFF_FIELDS: Final[tuple[str, ...]] = (CONTACT, REGION)
 
-#: The open-loop fields, named here for the reason ``QUARANTINED`` is: the
-#: append gate, the fold and the ledger all need the spelling, and only one
-#: layer may own it. ``half.loops.ledger`` spells them once too and the two
-#: agree by test — a second spelling of ``last_movement`` is a loop that is
-#: permanently, invisibly, not silent-detectable.
-LOOP: Final[str] = "loop"
-TIMESCALE: Final[str] = "timescale"
-LAST_MOVEMENT: Final[str] = "last_movement"
+#: ``LOOP``, ``STATE``, ``TIMESCALE`` and ``LAST_MOVEMENT`` are **imported**
+#: above rather than declared here, and re-exported for ``half.store.fold``.
+#: The open-loop package is the lower layer and owns the spelling of its own
+#: record shape; this module validates it and the fold materializes it. One
+#: definition per name, flowing upward — a second spelling of ``last_movement``
+#: is a loop that is permanently, invisibly, not silent-detectable, and the
+#: agreement test that was supposed to catch that covered every field *except*
+#: ``state``, which was the one spelled as a literal in one layer and a
+#: constant in the other.
 
 #: The safety plan a main made **with a professional** and gave Half to hold
 #: (CAP-12, story 6c). A list of lines, in the order they were written, kept
@@ -341,35 +354,66 @@ def validate_loop_fields(fields: Mapping[str, Any]) -> None:
 
     **Write strict, read tolerant**, and the asymmetry is the whole design. The
     log is append-only and the open-loop ledger is the ranking function for
-    everything Half does: a state outside the closed vocabulary, once durable,
-    is a wanting that every future fold carries and no build can weigh, and a
-    timescale outside its vocabulary is a loop whose silence — and therefore
-    whose nagging bound — can never be computed. So both are refused **before
-    the record is durable**, with a hard error and never a default. There is no
-    branch here that picks a state for the main, and none that lends a period
-    from a loop this one is nothing like.
+    everything Half does, so every value that decides how a loop is weighed or
+    whether it is silent is refused **before the record is durable**, with a
+    hard error and never a default:
 
-    The other direction is deliberately not enforced anywhere: a log written by
-    a *later* build, through the Ask-First path that adds a state, still folds
-    and still ranks — degrading to ``salience.UNKNOWN_LOOP_STATE`` — because a
-    build that refused to read it would take a main's whole retrieval down over
-    a tie-break.
+    * ``loop`` — **required**, because the fold raises ``CorruptLogError`` on a
+      transition that names none. Without this check that record was accepted,
+      became durable, and then bricked every future rebuild for that main with
+      the offending line unremovable: the exact failure this gate exists to
+      prevent, arriving through the gate's own blind spot.
+    * ``state`` — one of the four, or nothing. A fifth, once durable, is a
+      wanting every future fold carries and no build can weigh.
+    * ``timescale`` — one of the four, or nothing. An unknown one is a loop
+      whose silence, and therefore whose nagging bound, can never be computed.
+    * ``last_movement`` — a stamp ``half.civil`` can actually read. This was the
+      hole review found: the paragraphs above argued at length that a bad
+      timescale must not become durable, and the identical argument applies
+      verbatim to the date the timescale is measured *against*. ``"yesterday"``,
+      ``2026-02-31`` and a bare ``2026-01-01`` all went in permanently, and a
+      loop whose movement date cannot be read is exactly as undetectable as one
+      with no period — silently, and for ever.
 
-    Neither field is *required*. A loop may be opened with no timescale, which
+    There is no branch here that picks a state for the main, and none that lends
+    a period or a date from a loop this one is nothing like.
+
+    The read direction is deliberately not enforced anywhere: a log written by a
+    *later* build, through the Ask-First path that adds a state, still folds and
+    still ranks — degrading to ``salience.UNKNOWN_LOOP_STATE`` — because a build
+    that refused to read it would take a main's whole retrieval down over a
+    tie-break.
+
+    Only ``loop`` is required. A loop may be opened with no timescale, which
     ``timescale.silence`` reports honestly as not detectable, and a transition
     may record movement without changing state.
     """
-    state = fields.get("state")
+    loop = fields.get(LOOP)
+    if not isinstance(loop, str) or not loop.strip():
+        raise LoopError(
+            f"a {Op.LOOP_TRANSITION.value} record must name its loop in "
+            f"{LOOP!r}; the fold cannot fold one that does not, and the record "
+            f"would be durable"
+        )
+    state = fields.get(STATE)
     if state is not None and not is_state(state):
-        raise ValueError(
-            f"field 'state' must be one of {', '.join(sorted(LOOP_STATES))} on a "
-            f"{Op.LOOP_TRANSITION.value} record, got {state!r}"
+        raise LoopError(
+            f"field {STATE!r} must be one of {', '.join(sorted(LOOP_STATES))} on "
+            f"a {Op.LOOP_TRANSITION.value} record, got {state!r}"
         )
     scale = fields.get(TIMESCALE)
     if scale is not None and not is_timescale(scale):
-        raise ValueError(
+        raise LoopError(
             f"field {TIMESCALE!r} must be one of {', '.join(sorted(TIMESCALES))}, "
             f"got {scale!r}"
+        )
+    moved = fields.get(LAST_MOVEMENT)
+    if moved is not None and moment(moved) is None:
+        raise LoopError(
+            f"field {LAST_MOVEMENT!r} must be a stamp this build can read "
+            f"(YYYY-MM-DD or YYYY-MM-DDThh:mm[:ss]Z), got {moved!r}; a movement "
+            f"date nothing can read is a loop that is silently never "
+            f"silent-detectable"
         )
 
 
@@ -384,6 +428,14 @@ def validate_fields(fields: dict[str, Any], *, op: Op | None = None) -> None:
     ``state`` op-blind would have to accept the union, which accepts
     ``state="widening"`` on a loop.
     """
+    if op is Op.LOOP_TRANSITION:
+        # **First**, so that a malformed loop field refuses as a ``LoopError``
+        # rather than as the generic type check's bare ``ValueError``. The
+        # conventions say no public store operation raises a non-``HalfError``,
+        # and a caller wrapping the write path in ``except LoopError`` has to
+        # catch every refusal this gate makes — including "that is not a
+        # string".
+        validate_loop_fields(fields)
     for name, expected in _TYPED_FIELDS.items():
         if name not in fields or fields[name] is None:
             continue
@@ -412,8 +464,6 @@ def validate_fields(fields: dict[str, Any], *, op: Op | None = None) -> None:
         # produced whole or not at all, and a line this build cannot show is a
         # section missing from a document a clinician wrote.
         raise ValueError(f"field {PLAN!r} must hold the plan's own lines as strings")
-    if op is Op.LOOP_TRANSITION:
-        validate_loop_fields(fields)
     for value in fields.values():
         _reject_untokenizable(value)
 

@@ -247,11 +247,17 @@ def test_state_carries_only_durable_objects(store):
     The crisis record is also the one place in the log that names a *state* of
     the main, so its fields are checked here: tier, signal count and mode
     state, and never a word of what was said (AD-22). The aftercare record is
-    held to the same rule and carries only a state and a time."""
+    held to the same rule and carries only a state and a time.
+
+    ``expunged_loops`` joins them in story 8, and it is a *separate* set rather
+    than tidiness: belief ids and loop slugs share one id space, and one shared
+    set meant erasing a belief froze a loop that happened to share its name —
+    the loop stayed in the fold, which every firewall test asserted, while every
+    later transition on it was silently dropped."""
     store.record(Op.ASSERT, "b_1", "2026-08-01T00:00Z", claim="durable")
     names = {f.name for f in dataclasses.fields(store.state())}
-    assert names == {"beliefs", "tensions", "loops", "expunged", "ceiling",
-                     "crisis", "aftercare"}
+    assert names == {"beliefs", "tensions", "loops", "expunged",
+                     "expunged_loops", "ceiling", "crisis", "aftercare"}
 
 
 # ── findings from review: gaps the original suite could not observe ─────────

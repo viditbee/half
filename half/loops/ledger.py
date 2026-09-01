@@ -45,9 +45,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final
 
+from enum import StrEnum
+
 from half.errors import LoopError
-from half.loops.states import LIVE_STATES, LoopState, is_state, parse_state
+from half.loops.states import LIVE_STATES, STATE, LoopState, is_state, parse_state
 from half.loops.timescale import (
+    LAST_MOVEMENT,
+    TIMESCALE,
     Silence,
     Timescale,
     is_timescale,
@@ -56,13 +60,11 @@ from half.loops.timescale import (
 )
 from half.loops.timescale import silence as silence_of
 
-#: The field a loop-transition record names its loop in. Spelled once, because
-#: two spellings is how an append lands in the log carrying a loop nothing can
-#: find. ``half.store.fold`` reads the same name.
+#: The field a loop-transition record names its loop in. Owned here — the other
+#: three are owned beside the things they describe, in ``states`` and
+#: ``timescale``, and imported above. One definition per name: two spellings is
+#: how an append lands in the log carrying a loop nothing can find.
 LOOP: Final[str] = "loop"
-STATE: Final[str] = "state"
-TIMESCALE: Final[str] = "timescale"
-LAST_MOVEMENT: Final[str] = "last_movement"
 
 #: How many of a loop's **own periods** of silence make abandonment worth
 #: asking about. Twelve, which for a months-loop is gbrain's twelve months
@@ -73,7 +75,30 @@ LAST_MOVEMENT: Final[str] = "last_movement"
 #: would nag the first and never reach the second.
 #:
 #: It is a threshold for *raising a question*, never for recording anything.
+#: The value is pinned, and both sides of the boundary are asserted: review
+#: found anything between roughly six and thirteen passed the suite, which is a
+#: band rather than a number, and a threshold nobody can be wrong about is a
+#: threshold nobody chose.
 ABANDONMENT_PERIODS: Final[float] = 12.0
+
+
+class Answer(StrEnum):
+    """What the main said when Half asked whether a wanting was over.
+
+    A boolean was not enough, and the gap it left is the one that matters most
+    in the product. ``abandon(answered=True)`` recorded only that *an answer
+    came back* — so a caller wiring *"no, I still want this"* into the obvious
+    place recorded abandonment on the strength of the main denying it. For the
+    most delicate state in the ledger the flag has to carry the **sense** of the
+    answer, not its arrival.
+    """
+
+    #: *"Yes — I've let that go."* The only value that records anything.
+    CONFIRMED = "confirmed"
+    #: *"No, I still want this."* Records nothing here. What a denial *does*
+    #: mean — the loop is alive and Half was wrong about it — is a movement the
+    #: main's own turn produces, not something this module infers from a no.
+    DENIED = "denied"
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +154,15 @@ class AbandonmentCandidate:
     #: whoever puts the question can say *"a year"* or *"a fortnight"* without
     #: recomputing it against a clock.
     periods: float
+    #: The ``now`` the candidate was raised at, and the ``last_movement`` it was
+    #: raised **against**. Both exist because a candidate outlives the moment it
+    #: was made: Half raises it, asks, and the main answers on some later turn —
+    #: possibly after having gone and *done* the thing. Without these, answering
+    #: a fortnight-old question recorded abandonment on a loop that had since
+    #: advanced, and the staleness was not merely unchecked but undetectable.
+    #: ``abandon`` refuses when the loop has moved since.
+    raised_at: str
+    against_movement: str | None
 
 
 def read(loops: Mapping[str, Mapping[str, Any]] | None) -> dict[str, Loop]:
@@ -160,23 +194,46 @@ def opened(
     loop_id: str,
     *,
     state: object,
+    loops: Mapping[str, Any],
     timescale: object = None,
     last_movement: object = None,
 ) -> dict[str, Any]:
-    """The fields of the append that opens ``loop_id``.
+    """The fields of the append that opens ``loop_id``. Refuses to re-open.
+
+    ``loops`` is the current loop table — ``State.loops`` or ``Store.loops()`` —
+    and it is **required**, the way ``ladder.promote`` requires the belief it is
+    promoting. Without it ``opened`` and ``move`` were indistinguishable at the
+    log: the fold merges by ``setdefault``, so re-opening a live loop silently
+    overwrote its state and its timescale, dropped its ``last_movement``, and
+    raised nothing. A loop can be opened once. Everything after that is a move.
 
     ``state`` is required and must be one of the four: a loop opened without one
     is a wanting the ranking function cannot weigh, and a loop opened with a
     fifth is a durable value nothing will ever recognise.
+    `abandoned-but-unadmitted` is refused here as it is in ``move`` — the CAP-10
+    rule was one function wide, so a loop could be *opened* straight into the
+    state that exists to be asked about.
 
     ``timescale`` is **optional and never defaulted**. Recording a loop with no
     period is honest — ``silence`` reports it as not detectable and says which
     piece is missing — where a default would hide the gap behind a number that
     is right for somebody else's wanting.
     """
+    ident = _loop_id(loop_id, "opened")
+    if not isinstance(loops, Mapping):
+        raise LoopError(
+            "opened: the current loop table is required; without it opening and "
+            "moving are the same append and a live loop is silently overwritten"
+        )
+    if ident in loops:
+        raise LoopError(
+            f"opened: {ident!r} is already open; use move() to record movement "
+            f"on it. Re-opening would overwrite its state and its timescale "
+            f"with no record that anything was lost"
+        )
     fields: dict[str, Any] = {
-        LOOP: _loop_id(loop_id, "opened"),
-        STATE: str(_state(state, "opened")),
+        LOOP: ident,
+        STATE: str(_live_state(state, "opened")),
     }
     if timescale is not None:
         fields[TIMESCALE] = str(_timescale(timescale, "opened"))
@@ -185,9 +242,7 @@ def opened(
     return fields
 
 
-def move(
-    loop_id: str, *, at: object, state: object = None, timescale: object = None
-) -> dict[str, Any]:
+def move(loop_id: str, *, at: object, state: object = None) -> dict[str, Any]:
     """The fields of the append that records movement on ``loop_id``.
 
     ``at`` is when the loop moved, and it is required — movement with no date is
@@ -199,25 +254,51 @@ def move(
     own path, ``abandon``, which requires the main — and so is passing it here
     dressed as ordinary movement.
 
-    ``timescale`` is optional and is how a loop that was opened without one
-    acquires one later. It is never removed: there is no argument here that
-    clears a period.
+    **There is deliberately no ``timescale`` argument.** It used to be here, as
+    the way a loop that was opened without a period acquired one, and it meant a
+    single ordinary-looking movement append could flip a years-loop to days —
+    making it instantly silent, instantly abandonment-eligible, and looking on
+    the record exactly like the main having done something. Changing how fast a
+    wanting is *supposed* to move is a judgement about the wanting, not a
+    movement in it, so it has its own named call: ``rescale``.
     """
     fields: dict[str, Any] = {
         LOOP: _loop_id(loop_id, "move"),
         LAST_MOVEMENT: _stamp(at, "move"),
     }
     if state is not None:
-        target = _state(state, "move")
-        if target is LoopState.ABANDONED_BUT_UNADMITTED:
-            raise LoopError(
-                "move: abandoned-but-unadmitted is never applied on inference "
-                "alone; raise a candidate and ask the main (see abandon)"
-            )
-        fields[STATE] = str(target)
-    if timescale is not None:
-        fields[TIMESCALE] = str(_timescale(timescale, "move"))
+        fields[STATE] = str(_live_state(state, "move"))
     return fields
+
+
+def rescale(loop_id: str, *, to: object, loops: Mapping[str, Any]) -> dict[str, Any]:
+    """The fields of the append that gives ``loop_id`` a period, or a new one.
+
+    Its own operation rather than an argument to ``move``, because it is not
+    movement: it is Half's or the main's judgement about how fast this wanting
+    is *supposed* to go, and it changes whether every future silence check fires.
+    Riding along with a movement append made that invisible.
+
+    Refuses a loop it cannot see, and refuses a no-op, so that a rescale in the
+    log is always a real change somebody meant. It carries no ``last_movement``:
+    re-scaling a loop is not the loop moving, and writing a date here would
+    reset the very silence the new period is there to measure.
+    """
+    ident = _loop_id(loop_id, "rescale")
+    if not isinstance(loops, Mapping) or ident not in loops:
+        raise LoopError(
+            f"rescale: {ident!r} is not an open loop; a period belongs to a "
+            f"wanting that exists"
+        )
+    target = _timescale(to, "rescale")
+    entry = loops[ident]
+    current = entry.get(TIMESCALE) if isinstance(entry, Mapping) else None
+    if current == str(target):
+        raise LoopError(
+            f"rescale: {ident!r} is already on {target}; a record that changes "
+            f"nothing is a record that says something happened"
+        )
+    return {LOOP: ident, TIMESCALE: str(target)}
 
 
 def abandonment_candidate(
@@ -244,6 +325,16 @@ def abandonment_candidate(
     """
     if not isinstance(loop, Loop):
         return None
+    if not _positive(periods):
+        # Zero, a negative, or a NaN would each make *every* loop a candidate —
+        # NaN because every comparison against it is false, so the threshold
+        # below stops rejecting anything. A threshold that cannot say no is not
+        # a threshold, and this one guards the most delicate state there is.
+        raise LoopError(
+            f"abandonment_candidate: {periods!r} is not a number of periods; "
+            f"a threshold of zero or less proposes that the main has given up "
+            f"on everything"
+        )
     if loop.state not in LIVE_STATES:
         return None
     quiet = loop.silence(now=now)
@@ -259,11 +350,13 @@ def abandonment_candidate(
             f"{loop.last_movement}"
         ),
         periods=quiet.periods,
+        raised_at=str(now),
+        against_movement=loop.last_movement,
     )
 
 
 def abandon(
-    loop: Loop, *, candidate: AbandonmentCandidate, answered: bool
+    loop: Loop, *, candidate: AbandonmentCandidate, answered: Answer
 ) -> dict[str, Any]:
     """The fields of the append that records ``loop`` as abandoned-but-unadmitted.
 
@@ -273,6 +366,18 @@ def abandon(
     candidate to have been raised **and** the main to have answered. This is
     ``ladder.quarantine``'s shape, deliberately, because it is the same
     governance rule about the same kind of mistake (CAP-10).
+
+    ``answered`` is an ``Answer``, not a boolean, and a bare ``True`` is refused.
+    A boolean recorded that *an answer arrived*, so the obvious wiring of
+    *"no, I still want this"* recorded abandonment on the strength of the main
+    denying it — the worst single mistake available in this module.
+
+    **The candidate must still be current.** A candidate outlives the moment it
+    was raised: Half asks, and the main answers on a later turn, possibly having
+    gone and done the thing in between. So this refuses when the loop's
+    ``last_movement`` is no longer the one the candidate was raised against —
+    the loop has moved, the question is about a different loop than the one in
+    front of us, and the main's *"yes"* was about the old one.
 
     Note what this does **not** carry: no ``last_movement``. Admitting that a
     wanting is over is not the wanting moving, and writing a movement date here
@@ -289,10 +394,23 @@ def abandon(
         raise LoopError(
             f"abandon: candidate names {candidate.loop_id!r}, not {loop.id!r}"
         )
-    if answered is not True:
+    if not isinstance(answered, Answer):
         raise LoopError(
-            "abandon: applying a candidate requires the main's answer; "
-            "detection produces a candidate and Half asks"
+            "abandon: the main's answer must be an Answer, not a flag. A "
+            "boolean says only that a reply arrived, and 'no, I still want "
+            "this' is a reply"
+        )
+    if answered is not Answer.CONFIRMED:
+        raise LoopError(
+            f"abandon: the main answered {answered.value!r}; only a confirmed "
+            f"'yes, I've let that go' records abandonment"
+        )
+    if candidate.against_movement != loop.last_movement:
+        raise LoopError(
+            f"abandon: {loop.id!r} has moved since the candidate was raised "
+            f"at {candidate.raised_at} (movement was "
+            f"{candidate.against_movement!r}, is now {loop.last_movement!r}); "
+            f"raise it again against the loop as it is now"
         )
     return {
         LOOP: loop.id,
@@ -309,27 +427,45 @@ def expunged(loop_id: str) -> dict[str, Any]:
     An expunge aimed at a belief can therefore never take a wanting with it, no
     matter what its identifier happens to be.
 
-    Rare and main-initiated, like every expunge.
+    Rare and main-initiated, like every expunge — and reached through
+    ``Store.expunge``, which is the public erase path and which builds this
+    record itself when the name the main gave it is a loop the fold can see. A
+    caller assembling it by hand is not the normal route; that route also
+    tombstones the transition bodies, which an op alone does not.
     """
     ident = _loop_id(loop_id, "expunged")
-    return {"target": ident, LOOP: ident}
+    # ``loop`` alone, with **no** ``target``. A loop-only erasure that also
+    # wrote its slug into ``target`` would land in the belief namespace and
+    # suppress every later belief sharing the name — the collision the split
+    # ``expunged`` sets exist to prevent, arriving from the other side. The
+    # fold accepts an expunge with no target precisely when it names a loop.
+    return {LOOP: ident}
 
 
 def silent(
     loops: Mapping[str, Loop] | None, *, now: object
 ) -> dict[str, Silence]:
-    """Every loop that has been quiet past its own period, id-keyed.
+    """Every **live** loop that has been quiet past its own period, id-keyed.
 
-    The ranking input, and the whole reason the ledger exists. Loops whose
-    silence is not detectable are absent rather than present-and-false: *"we
-    cannot tell"* is not *"it is fine"*, and a caller that wants the difference
-    asks ``Loop.silence`` directly and reads the reason.
+    The ranking input, and the whole reason the ledger exists — which is exactly
+    why the filter is not just *detectable and silent*:
+
+    * **Live states only.** An `achieved` loop that has not moved in a year is
+      finished, not silent, and an `abandoned-but-unadmitted` one has already
+      been asked about and answered. Reporting either as silent would have
+      stories 9 and 10 raising a wanting the main already completed, which is
+      the single most trust-destroying thing this ranking input could produce.
+      A loop whose state this build cannot read is out too: it belongs to a
+      later build, and inferring anything about it is a guess.
+    * **Undetectable is absent, not false.** *"We cannot tell"* is not *"it is
+      fine"*, and a caller that wants the difference asks ``Loop.silence``
+      directly and reads the reason.
     """
     if not isinstance(loops, Mapping):
         return {}
     found: dict[str, Silence] = {}
     for ident, loop in loops.items():
-        if not isinstance(loop, Loop):
+        if not isinstance(loop, Loop) or loop.state not in LIVE_STATES:
             continue
         quiet = loop.silence(now=now)
         if quiet.detectable and quiet.silent:
@@ -360,6 +496,31 @@ def _state(value: object, what: str) -> LoopState:
         return parse_state(value)
     except ValueError as exc:
         raise LoopError(f"{what}: {exc}") from None
+
+
+def _live_state(value: object, what: str) -> LoopState:
+    """A state a caller may set without the main, or a refusal.
+
+    `abandoned-but-unadmitted` is the one state inference may never apply, and
+    the check belongs on **every** function that sets a state rather than on the
+    one somebody thought of. It used to live only in ``move``, so ``opened``
+    could put a loop straight into the state that exists to be asked about —
+    the CAP-10 gate was one function wide.
+    """
+    target = _state(value, what)
+    if target is LoopState.ABANDONED_BUT_UNADMITTED:
+        raise LoopError(
+            f"{what}: abandoned-but-unadmitted is never applied on inference "
+            f"alone; raise a candidate and ask the main (see abandon)"
+        )
+    return target
+
+
+def _positive(value: object) -> bool:
+    """A real, strictly positive number. ``NaN`` answers ``False``."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return value > 0 and value == value  # noqa: PLR0124 - the NaN test
 
 
 def _timescale(value: object, what: str) -> Timescale:

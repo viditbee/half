@@ -25,11 +25,25 @@ import copy
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Final
 
 from half.errors import CorruptLogError
 from half.store.ops import AFTERCARE_STATES, CRISIS_STATES, Op
-from half.store.records import Record, carried_forward
+from half.store.records import (
+    LAST_MOVEMENT,
+    LOOP,
+    STATE,
+    TIMESCALE,
+    Record,
+    carried_forward,
+)
+
+#: The fields a ``loop_transition`` carries forward into the loop table. Read
+#: from ``half.store.records`` rather than spelled here, so that the append
+#: gate, the fold and ``half.loops.ledger`` cannot drift to three spellings of
+#: ``last_movement`` — which would be a loop that is permanently and invisibly
+#: not silent-detectable.
+_TRANSITION_FIELDS: Final[tuple[str, ...]] = (STATE, TIMESCALE, LAST_MOVEMENT)
 
 
 @dataclass(slots=True)
@@ -39,7 +53,22 @@ class State:
     beliefs: dict[str, dict[str, Any]] = field(default_factory=dict)
     tensions: dict[str, dict[str, Any]] = field(default_factory=dict)
     loops: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Beliefs and tensions the main has genuinely erased.
     expunged: set[str] = field(default_factory=set)
+    #: Loops the main has genuinely erased — **a separate namespace, and that
+    #: is a correctness rule rather than tidiness (CAP-6).**
+    #:
+    #: One shared set was a demotion wearing another name. Belief ids and loop
+    #: slugs live in one id space; expunging a belief whose id collided with a
+    #: loop's slug left the loop *standing* — which every firewall test
+    #: asserted — while the transition case's ``in state.expunged`` guard
+    #: silently dropped every later transition on it. The wanting could then
+    #: never advance, never be achieved, never move again, and nothing raised.
+    #: Standing still is not standing.
+    #:
+    #: It poisoned the other direction too: erasing a loop suppressed a belief
+    #: that happened to share the slug, from then on.
+    expunged_loops: set[str] = field(default_factory=set)
     #: The main's global license ceiling, as the log last set it (AD-28), or
     #: ``None`` when none has ever been set. A raw string: what rung it names is
     #: the ladder's question, and the fold answers no governance questions.
@@ -72,6 +101,7 @@ class State:
                 "tensions": self.tensions,
                 "loops": self.loops,
                 "expunged": sorted(self.expunged),
+                "expunged_loops": sorted(self.expunged_loops),
                 "ceiling": self.ceiling,
                 "crisis": self.crisis,
                 "aftercare": self.aftercare,
@@ -88,7 +118,13 @@ def fold(records: Iterable[Record]) -> State:
 
     for record in records:
         if record.data.get("tombstone") is True:
-            state.expunged.add(record.id)
+            if record.op is not Op.LOOP_TRANSITION:
+                # A transition's id is the *append's*, not the loop's, so
+                # remembering it here says nothing about any object and
+                # pollutes the belief namespace with it — which then suppresses
+                # a later belief that happens to share the id. The loop's own
+                # erasure is recorded in ``expunged_loops`` by the expunge op.
+                state.expunged.add(record.id)
             state.beliefs.pop(record.id, None)
             state.tensions.pop(record.id, None)
             # **The refutation firewall, part one (CAP-6).** No loop is removed
@@ -137,21 +173,29 @@ def fold(records: Iterable[Record]) -> State:
                 state.beliefs.pop(target, None)
 
             case Op.EXPUNGE:
+                # **The firewall's one door (CAP-6).** A loop is removed only by
+                # an expunge that names it in ``loop`` — ``target`` alone
+                # reaches beliefs and tensions, and it takes this second,
+                # explicit field to reach a wanting. So an expunge aimed at a
+                # belief cannot take a loop with it whatever its identifier
+                # happens to be, while the main's own *"erase this loop"* still
+                # works and is still recorded (``Store.expunge``).
+                loop_target = record.data.get(LOOP)
+                if isinstance(loop_target, str) and loop_target:
+                    state.expunged_loops.add(loop_target)
+                    state.loops.pop(loop_target, None)
+                # ``target`` is optional on a record that names a loop, and
+                # that is the second half of keeping the namespaces apart. A
+                # loop-only erasure writing its slug into ``expunged`` would
+                # suppress every later *belief* that happened to share the
+                # name — the same collision the split set exists to prevent,
+                # arriving from the other side.
+                if loop_target and record.data.get("target") is None:
+                    continue
                 target = _require_target(record)
                 state.expunged.add(target)
                 state.beliefs.pop(target, None)
                 state.tensions.pop(target, None)
-                # **The firewall's one door (CAP-6).** A loop is removed only by
-                # an expunge that names it *as a loop* — ``target`` alone
-                # reaches beliefs and tensions, and it takes this second,
-                # explicit field to reach a wanting. So an expunge aimed at a
-                # belief cannot take a loop with it whatever its identifier
-                # happens to be, while the main's own *"erase this loop"*
-                # still works and is still recorded (``ledger.expunged``).
-                loop_target = record.data.get("loop")
-                if isinstance(loop_target, str) and loop_target:
-                    state.expunged.add(loop_target)
-                    state.loops.pop(loop_target, None)
 
             case Op.TENSION:
                 if record.id not in state.expunged:
@@ -170,16 +214,19 @@ def fold(records: Iterable[Record]) -> State:
                 # a log written by a later build — through the Ask-First path
                 # that adds a state — took a main's whole fold down rather than
                 # costing one loop its ranking weight (AD-24).
-                loop_id = record.data.get("loop")
+                loop_id = record.data.get(LOOP)
                 if not isinstance(loop_id, str) or not loop_id:
                     raise CorruptLogError(
-                        f"{record.op} record {record.id!r} has no 'loop'",
+                        f"{record.op} record {record.id!r} has no {LOOP!r}",
                         path="<fold>", line=0,
                     )
-                if loop_id in state.expunged:
+                # ``expunged_loops``, never ``expunged``. A belief's erasure
+                # must not be able to freeze a wanting it happens to share an
+                # identifier with — see ``State.expunged_loops``.
+                if loop_id in state.expunged_loops:
                     continue
-                entry = state.loops.setdefault(loop_id, {"loop": loop_id})
-                for key in ("state", "timescale", "last_movement"):
+                entry = state.loops.setdefault(loop_id, {LOOP: loop_id})
+                for key in _TRANSITION_FIELDS:
                     if key in record.data:
                         entry[key] = record.data[key]
 

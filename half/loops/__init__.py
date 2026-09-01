@@ -12,12 +12,18 @@ Three modules, and the split is deliberate:
 * ``ledger`` — opening, moving and reading loops, the abandonment candidate,
   and the fields an append carries.
 
-**This package deliberately re-exports nothing.** ``half.store.records`` has to
-validate a loop's state and timescale before the append, so it imports
-``half.loops.states`` and ``half.loops.timescale`` — and an ``__init__`` that
-imported ``ledger`` here would drag ``half.governance`` into that import, whose
-own ``__init__`` reaches back into ``half.store.records`` and closes the cycle.
-Every consumer names the module it wants. The cost is one dotted path; the
-alternative is an import error that appears the first time somebody imports the
-store before the ledger.
+**Nothing here imports ``half.store``, and that is load-bearing rather than
+tidy.** ``half.store.records`` validates a loop's state, timescale and movement
+date before the append, and ``half.store.store`` builds the erase record through
+``ledger.expunged`` — so the store depends on this package and the arrow must
+not run back. The three modules below reach only ``half.errors`` and
+``half.civil``, neither of which reaches anything.
+
+**This package deliberately re-exports nothing**, for the same reason: an
+``__init__`` that imported all three would make ``import half.loops.states``
+from inside the store pull in the whole package, and the next module added here
+would only have to import ``half.governance`` — whose own ``__init__`` reaches
+back into ``half.store.records`` — to close a cycle that appears the first time
+somebody imports the store before the ledger. Every consumer names the module it
+wants. The cost is one dotted path.
 """
