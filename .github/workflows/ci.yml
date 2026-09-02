@@ -866,13 +866,17 @@ jobs:
         #   that a declined candidate cannot catch a later yes — also a mutation
         #   finding, and the failure it prevents is Half deleting something in
         #   answer to a question the main already refused two turns ago;
+        #   that a `behave` claim reaches the wire on a correction turn and on
+        #   **no other** — the one route this story opens through AD-18, bounded
+        #   in both directions on one fixture, because AD-18 governs what enters
+        #   a constructed context and nothing here constructs one;
         #   that nothing at all is recorded on a crisis turn, asserted on what
         #   the log *gains* rather than on what it fails to remove: the
         #   no-correction assertion alone survived a gate that called the turn
         #   path anyway, because crisis also disables retrieval, so the
         #   correction aimed at nothing;
         #
-        # **Margin zero: 172 selected, 172 required.** Sized against the subset
+        # **Margin zero: 173 selected, 173 required.** Sized against the subset
         # it protects rather than against a total, and every case here is the
         # only one asserting its rule.
         #
@@ -892,7 +896,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap11 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-11 correction cases collected: $collected"
-          if [ "$collected" -lt 172 ]; then
+          if [ "$collected" -lt 173 ]; then
             echo "::error::the CAP-11 gate collected $collected cases; a main may not be able to tell Half it is wrong"
             exit 1
           fi

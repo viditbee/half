@@ -226,15 +226,19 @@ def a_turn(
     corrections=None,
     engine=False,
     at=NOON,
+    tag="m",
 ):
     """Real inbound turns, through the real runtime and the real crisis gate.
 
     ``texts`` is a sequence because half the matrix is about what the *second*
     message does — a confirmation, a decline, a follow-up that settles a cause.
-    Each gets its own external id, so the redelivery check never suppresses one.
+    Each gets its own external id, so the redelivery check never suppresses one
+    — and ``tag`` distinguishes two *calls*, because at-least-once delivery
+    makes a repeated external id a redelivery and the second turn would be
+    dropped rather than answered.
     """
     transport = FakeTransport([
-        msg(text=text, message_id=f"m{index}", chat_id="123",
+        msg(text=text, message_id=f"{tag}{index}", chat_id="123",
             date=int(at + index))
         for index, text in enumerate(texts)
     ])
@@ -657,7 +661,7 @@ def test_the_widening_is_not_consulted_while_a_candidate_is_standing(
     consulted = wide.tally.consulted
 
     a_turn(registry, texts=("what is the weather like",), corrections=wide,
-           at=NOON + 100)
+           at=NOON + 100, tag="w")
 
     assert wide.tally.consulted == consulted
 
@@ -921,6 +925,39 @@ def test_what_half_shows_is_the_claim_as_recorded_and_not_a_paraphrase(
     transport = a_turn(registry, texts=("thats wrong",))
 
     assert f"{Op.RETRACT.value}[{BELIEF}]: {odd}" in sent(transport)
+
+
+def test_a_behave_claim_reaches_the_wire_on_a_correction_turn_and_no_other(
+    registry, tmp_path
+):
+    """**The bound on the one route this story opens through AD-18.**
+
+    ``seed`` writes no license field, so the claim below is `behave` — the rung
+    under test, not an accident of the fixture — and story 4's rule is that a
+    `behave` claim's text never reaches a main. CAP-11 requires the opposite of
+    exactly one turn: *"Half shows what it removed"*, and it has to be the claim
+    rather than a description, because a correction is aimed by ranking and
+    seeing the words is what lets the main catch a mis-aimed one.
+
+    That is not AD-18 loosened, and the difference is what this case pins.
+    AD-18 governs what enters a **constructed context** — the material a model
+    is handed and may quote from — and nothing on the correction path
+    constructs one. So the exception is bounded to the turn that removes
+    something, and both halves are asserted here: the claim is on the wire on a
+    correction turn, and the *same claim* on the *same fixture* is absent from
+    an ordinary turn that retrieved it.
+    """
+    seed(tmp_path)
+
+    ordinary = a_turn(registry, texts=("farmland again please",))
+    assert CLAIM not in sent(ordinary)
+    for word in CLAIM.split():
+        if len(word) > 5:
+            assert word not in sent(ordinary), word
+
+    corrected = a_turn(registry, texts=("thats wrong",), at=NOON + 100,
+                       tag="c")
+    assert CLAIM in sent(corrected)
 
 
 def test_a_correction_and_its_attribution_survive_a_rebuild(tmp_path):
