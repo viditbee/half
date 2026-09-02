@@ -11,7 +11,7 @@ from half.store import db
 from half.store.fold import fold
 from half.store.ops import Op
 from half.store.store import Store
-from half.trust.balance import balance
+from half.trust.balance import Balance, balance
 
 
 def test_deleting_the_database_and_replaying_reproduces_identical_state(tier_change_log):
@@ -73,7 +73,12 @@ def test_the_trust_balance_matches_after_a_rebuild(tier_change_log):
     """
     store = tier_change_log
     before = balance(store.log)
-    assert before.earned and before.spent, "fixture must carry both halves"
+    # Exact, not truthy. The fixture is deliberately **overdrawn** — one
+    # delivered favour, two spends, which an erasure can produce and
+    # ``note_ask`` cannot — and asserting ``earned and spent`` would have passed
+    # on any two non-zero counts while saying nothing about either.
+    assert before == Balance(earned=1, spent=2)
+    assert before.unspent == 0 and before.overdrawn is True
 
     store.close()
     store.db_path.unlink()

@@ -41,13 +41,31 @@ narrowed doors, so it sits above them and nothing in the domain imports it.
 # half.trust.balance`` handed back a module, and which one a reader got would
 # depend on import order. Callers take them from their own modules; only the
 # types and the vocabulary are re-exported.
-from half.trust.balance import Balance, delivered, spent
-from half.trust.stakes import INTERRUPTION_DAYS, Stakes
+from half.trust.balance import Balance, delivered, spent, tombstoned
+from half.trust.stakes import (
+    BELOW_THE_BAR,
+    FINISHED,
+    INTERRUPTION_DAYS,
+    NO_PERIOD,
+    NO_SUBJECT,
+    NO_WANTING,
+    Stakes,
+)
 from half.trust.unasked import (
     ASK_CRISIS,
+    ASK_NOT_PERMITTED,
     ASK_OUTCOMES,
     ASK_RECORDED,
+    ASK_REFUSED,
     ASK_UNAFFORDABLE,
+    ASKS_AT,
+    HELD,
+    NO_FAVOUR,
+    NOT_PERMITTED,
+    ON_TOPIC_FLOOR,
+    REASONS,
+    TOPIC_UNRAISED,
+    VISIBLE,
     Ask,
     TrustLedger,
     TrustView,
@@ -56,28 +74,55 @@ from half.trust.unasked import (
     Verdict,
     asks_at,
     considered,
+    may_be_raised,
     narrowed_for_trust,
+    on_topic,
     queue,
+    verdicts,
 )
 
+#: **Every name a caller reads a verdict or an outcome against.** The reason
+#: constants are here rather than left in their own modules because
+#: ``Verdict.reason`` and the spend outcomes are documented as closed sets, and
+#: a closed set whose members are not importable beside the type is one every
+#: consumer re-spells.
 __all__ = [
+    "ASKS_AT",
     "ASK_CRISIS",
+    "ASK_NOT_PERMITTED",
     "ASK_OUTCOMES",
     "ASK_RECORDED",
+    "ASK_REFUSED",
     "ASK_UNAFFORDABLE",
     "Ask",
+    "BELOW_THE_BAR",
     "Balance",
+    "FINISHED",
+    "HELD",
     "INTERRUPTION_DAYS",
+    "NOT_PERMITTED",
+    "NO_FAVOUR",
+    "NO_PERIOD",
+    "NO_SUBJECT",
+    "NO_WANTING",
+    "ON_TOPIC_FLOOR",
+    "REASONS",
     "Stakes",
+    "TOPIC_UNRAISED",
     "TrustLedger",
     "TrustView",
     "Unasked",
     "UnaskedQueue",
+    "VISIBLE",
     "Verdict",
     "asks_at",
     "considered",
     "delivered",
+    "may_be_raised",
     "narrowed_for_trust",
+    "on_topic",
     "queue",
     "spent",
+    "tombstoned",
+    "verdicts",
 ]

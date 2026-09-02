@@ -68,6 +68,7 @@ from typing import Any, Final
 from half.errors import CorruptLogError
 from half.store.ops import AFTERCARE_STATES, CRISIS_STATES, Op
 from half.store.records import (
+    ABOUT,
     LAST_MOVEMENT,
     LOCAL_DAY,
     LOOP,
@@ -604,12 +605,21 @@ def fold(records: Iterable[Record]) -> State:
                 # before it is durable, and refusing it again here would mean a
                 # log written by a later build took a main's whole store down
                 # over a field.
-                question = record.data.get(QUESTION)
-                if not isinstance(question, str) or not question:
-                    raise CorruptLogError(
-                        f"{record.op} record {record.id!r} has no {QUESTION!r}",
-                        path="<fold>", line=0,
-                    )
+                # **Both required fields, symmetrically.** The append gate
+                # calls ``question`` and ``about`` equally required, and an
+                # earlier version of this branch was fatal on the first only —
+                # so a record naming a question and no subject folded cleanly
+                # and counted as a spend, which is a favour consumed with no
+                # trace of what it was consumed for. A gate that is strict on
+                # the way in and lenient on the way out is a gate the log can
+                # get past by being written by anything other than this build.
+                for name in (QUESTION, ABOUT):
+                    value = record.data.get(name)
+                    if not isinstance(value, str) or not value:
+                        raise CorruptLogError(
+                            f"{record.op} record {record.id!r} has no {name!r}",
+                            path="<fold>", line=0,
+                        )
 
             case _:  # pragma: no cover - guarded by the closed vocabulary
                 # A new Op added to the enum must not fold to nothing. Silently

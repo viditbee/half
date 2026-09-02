@@ -113,20 +113,28 @@ jobs:
         # still passing comfortably. 51 selected, 45 required: prune a
         # redundant case, do not gut the gate.
         #
-        # **The floor moves with the count, and that is not bookkeeping.** Story
-        # 5b added five cases here — the unasked queue is a new surface, and a
-        # new surface that resolves a license is exactly what this gate exists
-        # to catch — so the floor moves from 45 to 51 to keep the margin at six.
-        # Leaving it at 45 would have widened the margin by the size of the new
-        # cases, which is how a gate quietly acquires room to lose the ones it
-        # was written for.
-        # 57 selected, 51 required.
+        # **The floor moves with the count so the margin does not grow.** The
+        # gate stood at 51 selected / 45 required — a margin of six. Story 5b
+        # added seven cases (the unasked queue is a new surface, and a new
+        # surface that resolves a license is exactly what this gate exists to
+        # catch), so the floor moves to 58 − 6 = 52. Leaving it at 45 would
+        # have widened the margin to thirteen, which is how a gate quietly
+        # acquires room to lose the cases it was written for.
+        #
+        # **A margin of six still cannot protect any six specific cases**, and
+        # review was right to say so: this floor does not, on its own, stop
+        # story 5b's ceiling cases being deleted. Nothing about a superset floor
+        # ever could. They are protected by ``cap4_gates``, whose margin is
+        # zero — which is the pattern this file already uses for
+        # ``cap6_structure`` and ``cap12_aftercare_property``.
+        #
+        # 58 selected, 52 required.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m ad28 -q --collect-only \
             | grep -c '::' || true)
           echo "AD-28 cases collected: $collected"
-          if [ "$collected" -lt 51 ]; then
+          if [ "$collected" -lt 52 ]; then
             echo "::error::the AD-28 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -158,10 +166,16 @@ jobs:
         #
         # Story 5b added three: the mode suspends the trust currency, so a main
         # in it is asked nothing, and a main who enters it between the choice of
-        # a question and the spend that pays for it is not asked either. The
-        # floor moves with them, for the reason the AD-28 floor does — a gate
-        # whose margin grows by the size of every new story's cases is a gate
-        # quietly acquiring room to lose the ones it was written for.
+        # a question and the spend that pays for it is not asked either.
+        #
+        # **The floor is not what protects them, and an earlier revision of this
+        # comment claimed it was.** This gate collects 1304 against a floor of
+        # 1240 — a margin of sixty-one before and after — so all three could be
+        # deleted with every step here green, and moving the floor by three
+        # would have changed nothing. Arithmetic, not protection. They are gated
+        # by ``cap4_gates`` instead, whose margin is zero, which is the same
+        # answer ``cap12_durable`` and ``cap12_handoff`` gave for their own
+        # subsets. The floor below stays where story 6d put it.
         #
         # The floor moved from 950 to 1240 across story 6d and its first
         # review round. It is deliberately above the count that would remain if
@@ -172,7 +186,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap12 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-12 cases collected: $collected"
-          if [ "$collected" -lt 1243 ]; then
+          if [ "$collected" -lt 1240 ]; then
             echo "::error::the CAP-12 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -894,21 +908,19 @@ jobs:
         # CAP-6, CAP-7, CAP-8 and CAP-12 steps are: it must not go green because
         # another step happened to run one of the same files.
         #
-        # **The floor is sized against the subsets, not against the total**,
-        # which is the correction story 10's review round 2 forced on CAP-8 and
-        # which is applied here from the start. 142 selected, 132 required. The
-        # margin is 10, and it is deliberately smaller than every protected
-        # subset: the favour rule (18), the stakes bar (29), the structural
-        # rules (17), and the 78 cases this gate alone guards. Deleting any one
-        # of them drops this gate beneath its floor **and** fails whichever
-        # sub-gate names it. The three subsets are disjoint, so the arithmetic
-        # is a partition rather than an estimate.
+        # **A floor on a superset protects nothing small**, which is why there
+        # are four sub-gates below rather than a comfortable margin here. This
+        # step's own margin is sized against the sub-gates: 177 selected, 167
+        # required, so the margin is 10 — smaller than the smallest chunk any
+        # sub-gate exclusively owns (the favour rule's 22 unshared cases) and
+        # far smaller than the 50 this gate holds alone. Deleting a sub-gate's
+        # content drops this step beneath its floor *and* fails that sub-gate.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap4 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-4 cases collected: $collected"
-          if [ "$collected" -lt 132 ]; then
+          if [ "$collected" -lt 167 ]; then
             echo "::error::the CAP-4 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -924,11 +936,14 @@ jobs:
         # — which is the case the tempting counter would still pass, because a
         # stored counter replays perfectly and is only ever *wrong*, never
         # *inconsistent*; that one delivered favour makes exactly one of two
-        # good questions askable and two favours make two; that a spend happens
-        # on the ask and on no other path, so reading the queue and refusing
-        # every question in it leaves the log untouched; that a spend which
-        # cannot be paid for is refused rather than recorded, so the rule holds
-        # of the log and not only of the caller's intentions.
+        # good questions askable, that two favours make two, and that a question
+        # which lost the budget comes back **held on the favour** rather than
+        # vanishing between the two lists; that the budget is the *unspent*
+        # balance and not what was ever earned; that a spend happens on the ask
+        # and on no other path; that a spend which cannot be paid for is refused
+        # rather than recorded; that a forged ``Ask`` is refused at both layers;
+        # that two spends in one second do not share a record id; and that a
+        # spend which landed is reported as landed even when the rebuild fails.
         #
         # **And the two orderings a single-threaded suite does not produce.** Two
         # turns handed to ``asyncio.gather`` do not interleave unless one awaits,
@@ -940,17 +955,61 @@ jobs:
         # other is a main who enters crisis between the choice and the spend.
         # Both were verified against the mutation they exist for.
         #
-        # 18 selected, 16 required.
+        # **The margin is deliberately zero: 27 selected, 27 required.** Review
+        # found the previous margin was *exactly* the two concurrency cases the
+        # gate exists for — delete them and the floor still passed, and
+        # ``note_ask`` could then regress to read-under-one-acquire and
+        # append-under-another with every gate green. Every case here is the
+        # only one asserting its rule, so there is nothing to prune: changing
+        # this set is a deliberate edit to this number.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap4_favour -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-4 favour cases collected: $collected"
-          if [ "$collected" -lt 16 ]; then
+          if [ "$collected" -lt 27 ]; then
             echo "::error::the CAP-4 favour gate collected $collected cases; the currency is unguarded"
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap4_favour
+
+      - name: 'CAP-4: every gate on a question, alone and in combination'
+        # A third gate, and it exists because review showed the alternative does
+        # not work: the five AD-28 cases this story added and the three CAP-12
+        # crisis cases were deletable with every other step green, because a
+        # margin of six on AD-28 and sixty-one on CAP-12 cannot protect five and
+        # three specific cases. They are gated here instead, where the margin is
+        # zero.
+        #
+        # What it covers: each of the six refusals firing alone and reporting
+        # its *own* reason, so a gate that stopped firing surfaces as another
+        # gate's answer rather than as a pass; every pair of them together, both
+        # ways round, still refusing with a reason inside the closed set; the
+        # topic axis crossed with every other gate; a main capped at `behave`
+        # asked nothing at every rung on the ladder, with no branch anywhere for
+        # aftercare; a quarantined subject refused, at the queue and again at the
+        # spend; a cap that drops between the choice and the spend; and the mode
+        # that suspends all of it.
+        #
+        # It also carries the topic floor. That number was the one thing in this
+        # story inherited rather than derived — ``> 0.0`` takes its effective
+        # boundary from ``Strands``' housekeeping epsilon, so a topic mentioned
+        # once stayed "already raised" for roughly eight further turns — and both
+        # sides of the replacement are pinned.
+        #
+        # 46 selected, 46 required. Zero margin, for the reason the favour gate
+        # has none: a floor with room in it is a floor that lost the case it was
+        # written for.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap4_gates -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-4 gate cases collected: $collected"
+          if [ "$collected" -lt 46 ]; then
+            echo "::error::the CAP-4 gate sweep collected $collected cases; a gate has lost its case"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap4_gates
 
       - name: 'CAP-4: stakes buy the clarifying question, and the bar is derived'
         # The first of the two gates, gated beside the currency rather than
@@ -962,67 +1021,74 @@ jobs:
         # wanting's *own* period, swept over all four timescales against one
         # question so that a single global threshold — which is what every
         # earlier version of a rule like this has been — fails by name; that the
-        # interruption is read from ``PERIOD_DAYS`` rather than typed, so both
-        # sides of the comparison are one unit from one source; that both sides
-        # of the boundary are pinned, since story 8's review found a threshold
-        # anything between six and thirteen satisfied; that a wanting with no
-        # period, no state this build knows, or none at all is *below* the bar
-        # and never above it; and that a low-stakes question is unaskable at
-        # every balance, swept across the balance rather than asserted at one
-        # value — a single-balance case would pass with the gates reversed.
+        # interruption is read from ``PERIOD_DAYS`` rather than typed, asserted
+        # *structurally* as well as by value, because review set it to the
+        # literal ``1`` and the value check passed; that both sides of the
+        # boundary are pinned, since story 8's review found a threshold anything
+        # between six and thirteen satisfied; that a wanting with no period, no
+        # state this build knows, or none at all is *below* the bar and never
+        # above it; and that a low-stakes question is unaskable at every
+        # balance, swept across the balance rather than asserted at one value —
+        # a single-balance case would pass with the gates reversed.
         #
-        # 29 selected, 26 required.
+        # 30 selected, 28 required. The margin of two is the per-timescale
+        # sweep's own redundancy, and it is safe to have here because the
+        # guarantee underneath is pinned twice over: the derivation
+        # structurally, and every scale's answer individually.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap4_stakes -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-4 stakes cases collected: $collected"
-          if [ "$collected" -lt 26 ]; then
+          if [ "$collected" -lt 28 ]; then
             echo "::error::the CAP-4 stakes gate collected $collected cases; the bar is unguarded"
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap4_stakes
 
       - name: 'CAP-4: the structural rules the currency rests on'
-        # A third gate, small and separate, for the reason
-        # ``cap8_structure``, ``cap12_aftercare_property`` and ``cap6_structure``
-        # exist — and story 10's review had to demonstrate rather than argue it:
-        # a floor on a superset cannot protect a handful of single cases inside
-        # it, and every case here is the only one asserting its rule.
+        # A fifth gate, for the reason ``cap8_structure``,
+        # ``cap12_aftercare_property`` and ``cap6_structure`` exist — and story
+        # 10's review had to demonstrate rather than argue it: a floor on a
+        # superset cannot protect a handful of single cases inside it, and every
+        # case here is the only one asserting its rule.
         #
         # What it covers, and none of it is behavioural:
         #
         #   that ``State`` has **no field** to keep a balance in, which is the
         #   half of AD-30 a behavioural case cannot give — a stored counter
         #   replays perfectly, so no round-trip assertion would ever see it;
-        #   that the derived view holds no spend and no count, so nothing can be
-        #   behind the log after a crash between an append and its rebuild; that
+        #   that the derived view holds no spend and no count; that
         #   ``half/trust/balance.py`` cannot name SQLite, a store or the derived
         #   view *in code* — the scan reads the AST rather than the prose,
         #   because this module's own docstring explains the failure it is
         #   written against; that the stakes rule cannot import or name a
         #   balance, which is the order of the two gates made structural; that
-        #   the queue is handed a projection and not the fold, so
-        #   ``if state.aftercare is not None: return ()`` is an
-        #   ``AttributeError`` rather than a line a scan has to be clever enough
-        #   to see; that the package reaches a main's log only through a
-        #   three-method door, measured as *what it asks that object for* rather
-        #   than as a list of forbidden words; and that no channel and no model
-        #   is reachable from the package at all, because nothing here asks
-        #   anything.
+        #   the interruption is *subscripted out of* ``PERIOD_DAYS``; that the
+        #   queue is handed a projection built **from** ``VISIBLE``, so the
+        #   allowlist allows rather than documents; that the door reads a cap
+        #   the derived view has not seen yet, which is the AD-28 window the
+        #   fold exists to close; that the package reaches a main's log only
+        #   through a three-method door whose signatures are bound to the real
+        #   registry; that no import resolves under a store or the actor, and no
+        #   write-shaped call is made, on any spelling; and that the closed sets
+        #   a verdict is read against are importable beside the type.
         #
-        # Two of these carry their own bypass case, run against the mutation
-        # they forbid: the AST scan is shown to ignore prose and catch code, and
-        # the door predicate is shown to ignore ``list.append`` — which the word
-        # list it replaced reported as a log write.
+        # Four of these carry their own bypass case, each run against the
+        # mutation it forbids: the AST name scan ignores prose and catches code;
+        # the door predicate ignores ``list.append``; the import resolver
+        # catches ``from half.store import store as _second``, which is the
+        # second writer review actually wrote and which the previous four-string
+        # denylist did not see; and the write scan catches ``opened.record(...)``
+        # while ignoring a local list.
         #
-        # 17 selected, 16 required. A small gate on purpose.
+        # 30 selected, 30 required. Zero margin: every case is a rule.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap4_structure -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-4 structural cases collected: $collected"
-          if [ "$collected" -lt 16 ]; then
+          if [ "$collected" -lt 30 ]; then
             echo "::error::the CAP-4 structure gate collected $collected cases; a rule with one case has lost it"
             exit 1
           fi

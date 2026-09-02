@@ -78,11 +78,37 @@ from half.tensions.states import STATE as TENSION_STATE
 from half.trust.balance import balance as trust_balance
 from half.trust.unasked import (
     ASK_CRISIS,
+    ASK_NOT_PERMITTED,
     ASK_RECORDED,
     ASK_UNAFFORDABLE,
     TrustView,
+    may_be_raised,
     narrowed_for_trust,
 )
+
+def _free_ask_id(t: str, taken: set[str]) -> str:
+    """The first spend id at ``t`` that no record already holds (CAP-4).
+
+    ``qa_<t>``, then ``qa_<t>_1``, ``qa_<t>_2`` — the shape ``claim_day`` uses
+    for a batch of touches, and content-free for the reason a touch id is: a
+    tombstone keeps a record's id, so anything in it survives the erasure that
+    exists to remove it.
+
+    It exists because ``qa_<t>`` alone collides. Two questions can be affordable
+    in one second now that the queue can offer more than one, and ``Op.ASKED``
+    is append-keyed, so two records sharing an id are two bodies a single
+    ``expunge_bodies`` erases together.
+
+    Deterministic given the log: the caller computes ``taken`` under the main's
+    own mutex, so two turns cannot pick the same suffix.
+    """
+    ident = f"qa_{t}"
+    suffix = 0
+    while ident in taken:
+        suffix += 1
+        ident = f"qa_{t}_{suffix}"
+    return ident
+
 
 #: A main_id becomes a directory name, so it is validated before it can reach
 #: the filesystem. It arrives from configuration, which is operator input, and
@@ -925,20 +951,47 @@ class ActorRegistry:
         concurrency rather than through arithmetic. Nothing else in this class
         has that shape, because nothing else in this class spends a currency.
 
-        **The mode is re-asserted here**, not only where the question was
-        chosen. A main who enters crisis while their question is being composed
-        must not receive it, and this is the last point at which that is still
-        true — the currency is void in the mode (constitution).
+        **Three facts are re-asserted here, and they are the three that can
+        move between the choice and the spend.**
 
-        **The balance is re-read from the log**, for the reason ``claim_day``
+        *The mode*, because a main who enters crisis while their question is
+        being composed must not receive it, and this is the last point at which
+        that is still true — the currency is void in the mode (constitution).
+
+        *The balance*, re-read from the log for the reason ``claim_day``
         re-reads the day marker from the log: a derived view that lags a crash
         would report a favour as unspent.
+
+        *The ceiling and the belief's own rung* — through ``may_be_raised``,
+        which is the same predicate ``half.trust.unasked.considered`` asks when
+        the question is weighed. Review found this window open while the crisis
+        one was closed, on the identical argument: a main whose cap drops to
+        `behave` between the choice and the spend — aftercare stepping down, an
+        operator capping them, a quarantine landing on the subject — was still
+        asked, and ``trust_view``'s own docstring calls a stale cap *"the one
+        window AD-28 exists to close"*. One call answers the cap, the pin and
+        the rung together, and it is the queue's predicate rather than a
+        paraphrase of it.
 
         **Refused rather than recorded when it cannot be paid for.** The
         alternative — append anyway and let the balance go negative — would
         make *the favour buys the question* a thing the log merely reports on
         rather than a thing that is true. The caller's remedy is to ask
         nothing, which is a first-class outcome (AD-27).
+
+        **The record id cannot collide.** ``qa_{t}`` alone was not enough once
+        ``asks_at`` could return more than one ``Ask``: two affordable spends
+        inside one second shared an id, and ``Op.ASKED`` is append-keyed, so a
+        single ``expunge_bodies`` would erase both bodies. The suffix is the
+        first free one at that stamp, computed from the log under this mutex —
+        the same shape ``claim_day`` uses for a batch, and content-free.
+
+        **A durable spend is reported as one even when the rebuild fails.**
+        ``Store.append`` writes the line and *then* rebuilds, so a failure in
+        the rebuild leaves the record durable. Letting the exception out would
+        tell the caller nothing was recorded — so it would ask nothing, and the
+        main would lose a favour and get no question. The log is re-read before
+        a failure is believed, exactly as ``claim_day`` does.
         """
         if civil.instant(t) is None:
             # Refused before the append, on the same terms as a raise whose
@@ -950,20 +1003,44 @@ class ActorRegistry:
                 f"spend with no readable time cannot be placed against the "
                 f"favour that paid for it"
             )
+        # Checked before the mutex is taken, because a caller mistake should
+        # not queue behind a main's turn to be told about. The append gate
+        # refuses the same values one layer down, where they would become
+        # durable; this is the early, cheap half of the same rule.
         fields = {QUESTION: question, ABOUT: about}
-        stray = sorted(set(fields) - ASKED_FIELDS)
-        if stray:  # pragma: no cover - the dict above is built from the set
+        unnamed = sorted(
+            name for name in ASKED_FIELDS
+            if not isinstance(fields.get(name), str) or not fields[name].strip()
+        )
+        if unnamed:
             raise TrustError(
-                f"a spend carries the question's id and what it was about; "
-                f"refusing {stray}"
+                f"note_ask: a spend names the question it paid for and the "
+                f"belief it was about; {unnamed} " f"missing or blank"
             )
         async with self.acquire(main_id) as actor:
             records = list(actor.store.log)
-            if mode_is_open(fold_records(records).crisis):
+            state = fold_records(records)
+            if mode_is_open(state.crisis):
                 return ASK_CRISIS
+            if not may_be_raised(
+                state.beliefs.get(about.strip()), ceiling=Ceiling(state.ceiling)
+            ):
+                return ASK_NOT_PERMITTED
             if not trust_balance(records).spendable:
                 return ASK_UNAFFORDABLE
-            actor.store.record(Op.ASKED, f"qa_{t}", t, **fields)
+            ident = _free_ask_id(t, {record.id for record in records})
+            try:
+                actor.store.record(Op.ASKED, ident, t, **fields)
+            except Exception:
+                # Did it land anyway? A failure in the rebuild leaves a durable
+                # record and a stale view, and the log is what says so. Raising
+                # here would spend the favour and report that nothing was
+                # written — the main pays and is asked nothing.
+                if not any(
+                    record.id == ident and record.op is Op.ASKED
+                    for record in actor.store.log
+                ):
+                    raise
             return ASK_RECORDED
 
     async def suspend_for_crisis(

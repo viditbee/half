@@ -32,7 +32,8 @@ import pytest
 
 from half.actor.registry import ActorRegistry
 from half.errors import TrustError
-from half.governance.ladder import Ceiling, License
+from half.governance import ladder
+from half.governance.ladder import License
 from half.loops import ledger as loops
 from half.loops.ledger import Loop
 from half.loops.states import LIVE_STATES, LoopState
@@ -42,7 +43,13 @@ from half.store.records import ABOUT, ASKED_FIELDS, QUESTION, SENT, Record
 from half.store.store import Store
 from half.surface import touch as touch_module
 from half.surface.touch import Origin
-from half.trust.balance import Balance, balance, delivered, spent
+from half.trust.balance import (
+    Balance,
+    balance,
+    delivered,
+    spent,
+    tombstoned,
+)
 from half.trust.stakes import (
     BELOW_THE_BAR,
     FINISHED,
@@ -56,9 +63,12 @@ from half.trust.stakes import (
 )
 from half.trust.unasked import (
     ASK_CRISIS,
+    ASK_NOT_PERMITTED,
     ASK_OUTCOMES,
     ASK_RECORDED,
+    ASK_REFUSED,
     ASK_UNAFFORDABLE,
+    Unasked,
 )
 
 pytestmark = [pytest.mark.cap4]
@@ -69,6 +79,29 @@ ORIGIN = Origin(kind=TOUCH_TENSION, id="x_1")
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
+
+
+ASKABLE_LOOP = "buy-farmland"
+
+
+def an_askable_belief(store, *, ident="b_1", t="2026-08-01T00:00Z"):
+    """A belief a question about would pass the ladder gate at the spend.
+
+    Seeded through the ladder, like ``conftest.seed_belief``: `ask` is a rung a
+    belief *earns*, and a test that spells the field by hand is doing exactly
+    what story 5a forbids at test scale.
+    """
+    if ASKABLE_LOOP not in store.state().loops:
+        store.record(Op.LOOP_TRANSITION, f"l_{ident}", t,
+                     **loops.opened(ASKABLE_LOOP, state="stalled",
+                                    timescale="years",
+                                    last_movement="2026-01-04",
+                                    loops=store.state().loops))
+    store.record(Op.ASSERT, ident, t, claim="wants to buy farmland",
+                 loop=ASKABLE_LOOP, topics=["farmland"], **ladder.admitted())
+    record = store.state().beliefs[ident]
+    store.record(Op.ASSERT, ident, t,
+                 **ladder.promote(record, to=License.ASK, acknowledged=True))
 
 
 def a_favour(store, *, t, day, loops_touched=()):
@@ -169,6 +202,67 @@ def test_sent_is_read_strictly_and_only_true_earns(value):
         fields[SENT] = value
     record = Record(op=Op.TOUCH, id="tc_1", t="2026-09-01T03:00Z", data=fields)
     assert delivered(record) is False
+
+
+def test_a_touch_that_says_sent_but_marks_no_day_earns_nothing():
+    """Both halves of the predicate, not one.
+
+    ``delivered`` is ``marks_day(...) and sent is True``, and review found that
+    keeping the ``marks_day`` call while discarding its result passed the whole
+    suite — because every touch in the fixtures that says ``sent=True`` also
+    carries a day. This is the record that separates them.
+
+    It takes a hand-built ``Record`` because the append gate refuses ``sent``
+    without ``local_day`` (``validate_touch_fields``), which is the right place
+    for that rule. What this pins is that the *reader* does not depend on the
+    writer having been strict.
+    """
+    claiming = Record(
+        op=Op.TOUCH, id="tc_1", t="2026-09-01T03:00Z",
+        data={"t": "2026-09-01T03:00Z", "op": "touch", "id": "tc_1",
+              SENT: True, "origin_kind": TOUCH_TENSION, "origin_id": "x_1"},
+    )
+    assert delivered(claiming) is False
+
+
+def test_the_tombstone_predicate_is_asserted_on_its_own():
+    """``delivered`` refuses a tombstoned touch *twice over* — the body is
+    stripped, so ``marks_day`` also fails — which means deleting the tombstone
+    clause changes no behaviour any fixture can produce. Review deleted it and
+    the suite stayed green, so the predicate itself is pinned here.
+
+    ``spent`` deliberately does **not** consult it: a question that was asked
+    was asked, and reading an erasure as un-asked would hand back a favour Half
+    had already used.
+    """
+    body = {"t": "2026-09-01T03:00Z", "op": "touch", "id": "tc_1", "v": 8}
+    marker = {"local_day": "2026-09-01", SENT: True,
+              "origin_kind": TOUCH_TENSION, "origin_id": "x_1"}
+    live = Record(op=Op.TOUCH, id="tc_1", t="2026-09-01T03:00Z",
+                  data={**body, **marker})
+    stripped = Record(op=Op.TOUCH, id="tc_1", t="2026-09-01T03:00Z",
+                      data={**body, "tombstone": True})
+    assert tombstoned(live) is False and tombstoned(stripped) is True
+    assert delivered(live) is True and delivered(stripped) is False
+
+    # **The record the clause actually exists for**, and the reason the case
+    # above is not enough on its own: ``expunge_bodies`` strips the body, so a
+    # real tombstone fails ``marks_day`` anyway and deleting the tombstone
+    # clause changes nothing any fixture can produce — review deleted it and the
+    # suite stayed green. A tombstone is an erasure whatever else survives
+    # beside it, so the predicate is asserted against a record that still
+    # carries a readable day.
+    kept = Record(op=Op.TOUCH, id="tc_1", t="2026-09-01T03:00Z",
+                  data={**body, **marker, "tombstone": True})
+    assert tombstoned(kept) is True
+    assert delivered(kept) is False, (
+        "a tombstoned favour still earned; an erasure is an erasure"
+    )
+
+    asked = Record(op=Op.ASKED, id="qa_1", t="2026-09-01T10:00Z",
+                   data={"t": "2026-09-01T10:00Z", "op": "asked", "id": "qa_1",
+                         "v": 8, "tombstone": True})
+    assert tombstoned(asked) is True and spent(asked) is True
 
 
 def test_an_erased_favour_stops_earning_and_an_erased_spend_still_spends(store):
@@ -333,6 +427,41 @@ def test_an_overdrawn_log_is_visible_rather_than_clamped_away():
     assert deficit.overdrawn is True
 
 
+def test_a_count_of_events_cannot_be_negative():
+    """*Never negative* was a docstring beside two fields that could be.
+
+    ``balance`` cannot produce one, but the type is public: a hand-built
+    ``Balance(earned=-1)`` made ``unspent`` and ``overdrawn`` disagree about
+    the same log. Enforced now, rather than promised — which is the whole shape
+    of this review round.
+    """
+    assert Balance(earned=-3, spent=-1) == Balance(earned=0, spent=0)
+    assert Balance(earned=-1, spent=2).overdrawn is True
+    # A flag arriving where a count belongs is a caller error, not one favour.
+    assert Balance(earned=True, spent=None) == Balance(earned=0, spent=0)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [{"question": "", "about": "b_1"}, {"question": "q_1", "about": "  "},
+     {"question": None, "about": "b_1"}, {"question": "q_1", "about": 7}],
+    ids=["blank-question", "blank-about", "none-question", "int-about"],
+)
+def test_a_spend_that_names_nothing_is_refused_before_the_mutex(tmp_path, fields):
+    """A caller mistake should not queue behind a main's turn to be told about,
+    and the append gate one layer down would refuse the same values — this is
+    the early, cheap half of the same rule."""
+    registry = ActorRegistry(tmp_path)
+    try:
+        with pytest.raises(TrustError):
+            asyncio.run(registry.note_ask(
+                "vidit", t="2026-09-01T10:00Z", **fields))
+    finally:
+        registry.close()
+    with Store(tmp_path / "vidit") as store:
+        assert [r for r in store.log if r.op is Op.ASKED] == []
+
+
 def test_the_favour_rule_is_one_predicate_both_sides_read():
     """``spendable`` rather than a ``> 0`` written out in each place. Two
     spellings of one comparison agree until an overdrawn log arrives."""
@@ -353,6 +482,7 @@ def test_the_balance_falls_once_when_a_question_is_asked(tmp_path):
     registry = ActorRegistry(tmp_path)
     try:
         with Store(tmp_path / "vidit") as seeded:
+            an_askable_belief(seeded)
             a_favour(seeded, t="2026-09-01T03:00Z", day="2026-09-01")
             a_favour(seeded, t="2026-09-02T03:00Z", day="2026-09-02")
         before = asyncio.run(registry.trust_view("vidit")).balance
@@ -397,6 +527,8 @@ def test_a_spend_that_cannot_be_paid_for_is_refused_rather_than_recorded(tmp_pat
     holds."""
     registry = ActorRegistry(tmp_path)
     try:
+        with Store(tmp_path / "vidit") as seeded:
+            an_askable_belief(seeded)
         outcome = asyncio.run(registry.note_ask(
             "vidit", t="2026-09-01T10:00Z", question="q_1", about="b_1"))
         assert outcome == ASK_UNAFFORDABLE
@@ -404,7 +536,155 @@ def test_a_spend_that_cannot_be_paid_for_is_refused_rather_than_recorded(tmp_pat
     finally:
         registry.close()
     with Store(tmp_path / "vidit") as store:
-        assert [r.op for r in store.log] == []
+        assert [r for r in store.log if r.op is Op.ASKED] == []
+
+
+@pytest.mark.cap4_favour
+@pytest.mark.cap4_gates
+def test_a_forged_permission_is_refused_at_the_registry_and_burns_nothing(tmp_path):
+    """**The central defect review found, closed at the layer that holds the
+    mutex.**
+
+    A hand-built ``Ask`` for a question that passed no stakes gate, no ladder
+    gate and no topic gate reached ``spend`` and was recorded — a favour burned
+    on a question about a belief that does not exist. ``note_ask`` trusted its
+    arguments; it re-derives the permission now, from the fold, under the
+    mutex.
+
+    Refused as ``ASK_NOT_PERMITTED`` rather than ``ASK_UNAFFORDABLE``: the
+    ladder is asked before the balance on purpose, because *"you cannot afford
+    this"* invites a caller to earn a favour and retry a question Half may
+    never raise.
+    """
+    registry = ActorRegistry(tmp_path)
+    try:
+        with Store(tmp_path / "vidit") as seeded:
+            an_askable_belief(seeded)
+            a_favour(seeded, t="2026-09-01T03:00Z", day="2026-09-01")
+        assert asyncio.run(registry.trust_view("vidit")).balance.spendable
+        outcome = asyncio.run(registry.note_ask(
+            "vidit", t="2026-09-01T10:00Z", question="q_junk",
+            about="nonexistent"))
+        assert outcome == ASK_NOT_PERMITTED
+        assert asyncio.run(registry.trust_view("vidit")).balance.spent == 0
+    finally:
+        registry.close()
+    with Store(tmp_path / "vidit") as store:
+        assert [r for r in store.log if r.op is Op.ASKED] == []
+
+
+@pytest.mark.cap4_favour
+@pytest.mark.cap4_gates
+def test_a_cap_that_drops_between_the_choice_and_the_spend_refuses_it(tmp_path):
+    """**The AD-28 window that was closed for crisis and open for the ceiling.**
+
+    ``note_ask`` re-read the mode at the spend and did not re-read the cap, so a
+    main whose ceiling dropped to `behave` between choosing a question and
+    paying for it was still asked. ``trust_view``'s own docstring calls a stale
+    cap *"the one window AD-28 exists to close"*.
+
+    The cap is lowered by the ordinary governance path, so the case exercises
+    the rule rather than a hand-written record — and no branch in the queue or
+    the registry mentions aftercare, which is the whole of AD-28.
+    """
+    registry = ActorRegistry(tmp_path)
+    try:
+        with Store(tmp_path / "vidit") as seeded:
+            an_askable_belief(seeded)
+            a_favour(seeded, t="2026-09-01T03:00Z", day="2026-09-01")
+        assert asyncio.run(registry.trust_view("vidit")).balance.spendable
+
+        asyncio.run(registry.hold_ceiling(
+            "vidit", t="2026-09-01T09:00Z", to=License.BEHAVE,
+            because="aftercare (CAP-12)"))
+        outcome = asyncio.run(registry.note_ask(
+            "vidit", t="2026-09-01T10:00Z", question="q_1", about="b_1"))
+        assert outcome == ASK_NOT_PERMITTED
+        assert asyncio.run(registry.trust_view("vidit")).balance.spent == 0
+    finally:
+        registry.close()
+
+
+@pytest.mark.cap4_gates
+def test_a_quarantined_subject_is_refused_at_the_spend_too(tmp_path):
+    """Quarantine lands by the same route the ceiling does, and is refused at
+    the same point — one call to ``may_be_raised``, and no branch for either."""
+    registry = ActorRegistry(tmp_path)
+    try:
+        with Store(tmp_path / "vidit") as seeded:
+            an_askable_belief(seeded)
+            a_favour(seeded, t="2026-09-01T03:00Z", day="2026-09-01")
+            record = seeded.state().beliefs["b_1"]
+            candidate = ladder.quarantine_candidate(record, reason="a wound")
+            seeded.record(Op.ASSERT, "b_1", "2026-09-01T08:00Z",
+                          **ladder.quarantine(record, candidate=candidate,
+                                              answered=True))
+        assert asyncio.run(registry.note_ask(
+            "vidit", t="2026-09-01T10:00Z", question="q_1",
+            about="b_1")) == ASK_NOT_PERMITTED
+    finally:
+        registry.close()
+
+
+@pytest.mark.cap4_favour
+def test_two_spends_in_one_second_do_not_share_a_record_id(tmp_path):
+    """``qa_{t}`` alone collides, and ``Op.ASKED`` is append-keyed — so two
+    records sharing an id are two bodies a single ``expunge_bodies`` erases
+    together. Reachable now that the queue can offer more than one ``Ask``."""
+    registry = ActorRegistry(tmp_path)
+    try:
+        with Store(tmp_path / "vidit") as seeded:
+            an_askable_belief(seeded)
+            an_askable_belief(seeded, ident="b_2")
+            a_favour(seeded, t="2026-09-01T03:00Z", day="2026-09-01")
+            a_favour(seeded, t="2026-09-02T03:00Z", day="2026-09-02")
+        for question, about in (("q_1", "b_1"), ("q_2", "b_2")):
+            assert asyncio.run(registry.note_ask(
+                "vidit", t="2026-09-03T10:00Z", question=question,
+                about=about)) == ASK_RECORDED
+    finally:
+        registry.close()
+    with Store(tmp_path / "vidit") as store:
+        ids = [r.id for r in store.log if r.op is Op.ASKED]
+        assert len(ids) == len(set(ids)) == 2, ids
+        assert balance(store.log) == Balance(earned=2, spent=2)
+
+
+@pytest.mark.cap4_favour
+def test_a_spend_that_landed_is_reported_even_when_the_rebuild_fails(tmp_path):
+    """``Store.append`` writes the line and *then* rebuilds, so a failure in the
+    rebuild leaves the record durable.
+
+    Letting the exception out told the caller nothing was recorded — so it would
+    ask nothing, and the main would lose a favour and get no question. The log
+    is re-read before a failure is believed, exactly as ``claim_day`` does.
+    """
+    registry = ActorRegistry(tmp_path)
+    try:
+        with Store(tmp_path / "vidit") as seeded:
+            an_askable_belief(seeded)
+            a_favour(seeded, t="2026-09-01T03:00Z", day="2026-09-01")
+
+        async def spend_with_a_broken_rebuild():
+            async with registry.acquire("vidit") as actor:
+                store = actor.store
+                original = store.rebuild
+
+                def failing():
+                    raise RuntimeError("the derived view is unavailable")
+
+                store.rebuild = failing  # type: ignore[method-assign]
+            try:
+                return await registry.note_ask(
+                    "vidit", t="2026-09-01T10:00Z", question="q_1", about="b_1")
+            finally:
+                store.rebuild = original  # type: ignore[method-assign]
+
+        assert asyncio.run(spend_with_a_broken_rebuild()) == ASK_RECORDED
+    finally:
+        registry.close()
+    with Store(tmp_path / "vidit") as store:
+        assert len([r for r in store.log if r.op is Op.ASKED]) == 1
 
 
 @pytest.mark.cap4_favour
@@ -421,6 +701,8 @@ def test_one_favour_cannot_be_spent_twice_even_by_two_overlapping_turns(tmp_path
 
     async def race():
         with Store(tmp_path / "vidit") as seeded:
+            an_askable_belief(seeded)
+            an_askable_belief(seeded, ident="b_2")
             a_favour(seeded, t="2026-09-01T03:00Z", day="2026-09-01")
         return await asyncio.gather(
             registry.note_ask("vidit", t="2026-09-02T10:00Z",
@@ -459,6 +741,8 @@ def test_a_second_turn_that_read_first_still_cannot_spend_the_same_favour(tmp_pa
 
     async def race():
         with Store(tmp_path / "vidit") as seeded:
+            an_askable_belief(seeded)
+            an_askable_belief(seeded, ident="b_2")
             a_favour(seeded, t="2026-09-01T03:00Z", day="2026-09-01")
         second = None
         async with registry.acquire("vidit") as actor:
@@ -491,6 +775,8 @@ def test_a_favour_delivered_between_two_asks_pays_for_the_second(tmp_path):
     registry = ActorRegistry(tmp_path)
     try:
         with Store(tmp_path / "vidit") as seeded:
+            an_askable_belief(seeded)
+            an_askable_belief(seeded, ident="b_2")
             a_favour(seeded, t="2026-09-01T03:00Z", day="2026-09-01")
         assert asyncio.run(registry.note_ask(
             "vidit", t="2026-09-01T10:00Z", question="q_1",
@@ -554,6 +840,42 @@ def test_the_append_gate_refuses_a_spend_the_balance_could_not_count(store, fiel
     assert [r for r in store.log if r.op is Op.ASKED] == []
 
 
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {QUESTION: " q_1 ", ABOUT: "b_1"},
+        {QUESTION: "q_1", ABOUT: "b_1 "},
+        {QUESTION: "\tq_1", ABOUT: "b_1"},
+    ],
+    ids=["padded-question", "padded-about", "tabbed-question"],
+)
+def test_an_id_is_normalized_before_it_becomes_durable(store, fields):
+    """**The id that was weighed must be the id that is written.**
+
+    ``considered`` matched on ``about.strip()`` while ``spend`` passed the raw
+    string through, so an append-only record could permanently name a belief id
+    that no belief equals. ``Unasked`` strips both fields at construction, and
+    this is what makes that a property of the log rather than of one caller's
+    care — the same rule ``touch._loop_id`` applies to a loop slug.
+    """
+    with pytest.raises(TrustError):
+        store.record(Op.ASKED, "qa_1", "2026-09-01T10:00Z", **fields)
+    assert [r for r in store.log if r.op is Op.ASKED] == []
+
+
+def test_a_question_carries_the_id_it_was_given_stripped_once(store):
+    """The normalization is at ``Unasked``'s boundary, so the value that reaches
+    the log is already the value that was looked up."""
+    padded = Unasked(id="  q_1\n", about=" b_1 ")
+    assert (padded.id, padded.about) == ("q_1", "b_1")
+    assert Unasked(id="q_1", about="b_1") == padded
+    assert Unasked(id=None, about=7).nameable is False
+    store.record(Op.ASKED, "qa_1", "2026-09-01T10:00Z",
+                 question=padded.id, about=padded.about)
+    body = next(r.data for r in store.log if r.op is Op.ASKED)
+    assert body[QUESTION] == "q_1" and body[ABOUT] == "b_1"
+
+
 def test_a_spend_carries_exactly_the_allowed_fields(store):
     """And the registry builds its record from ``ASKED_FIELDS`` rather than from
     a second list, so the two cannot drift."""
@@ -564,7 +886,13 @@ def test_a_spend_carries_exactly_the_allowed_fields(store):
 
 
 def test_every_outcome_of_a_spend_is_one_of_the_closed_set():
-    assert ASK_OUTCOMES == {ASK_RECORDED, ASK_CRISIS, ASK_UNAFFORDABLE}
+    """Five outcomes across two layers. ``ASK_REFUSED`` is the queue's — the
+    question no longer passes the gates, which is also what a hand-built ``Ask``
+    gets — and the other three refusals are the registry's, decided under the
+    main's own mutex where they cannot be stale."""
+    assert ASK_OUTCOMES == {ASK_RECORDED, ASK_CRISIS, ASK_UNAFFORDABLE,
+                            ASK_NOT_PERMITTED, ASK_REFUSED}
+    assert len(ASK_OUTCOMES) == 5, "two outcomes share a spelling"
 
 
 def test_a_spend_record_id_carries_no_question_text(store):
@@ -585,17 +913,25 @@ def test_a_tombstoned_spend_does_not_poison_the_belief_namespace(store, seed):
     assert "b_1" in store.fold().beliefs, "a spend's erasure suppressed a belief"
 
 
-def test_a_spend_naming_no_question_is_fatal_to_the_fold_rather_than_skipped(store):
+@pytest.mark.parametrize("missing", [QUESTION, ABOUT], ids=[QUESTION, ABOUT])
+def test_a_spend_missing_either_required_field_is_fatal_to_the_fold(missing):
     """AD-29: a record this build cannot attribute is never folded to nothing.
-    Folding a spend to nothing is a question that was asked and never paid for.
+
+    **Both fields, symmetrically.** The append gate calls them equally required,
+    and this branch was fatal on ``question`` only — so a record naming a
+    question and no subject folded cleanly and counted as a spend, which is a
+    favour consumed with no trace of what it was consumed for. A gate strict on
+    the way in and lenient on the way out is one the log gets past by having
+    been written by anything other than this build.
     """
     from half.errors import CorruptLogError
-    from half.store.records import Record as R
+    from half.store.fold import fold
 
+    data = {"t": "2026-09-01T10:00Z", "op": "asked", "id": "qa_1", "v": 8,
+            QUESTION: "q_1", ABOUT: "b_1"}
+    del data[missing]
     with pytest.raises(CorruptLogError):
-        from half.store.fold import fold
-        fold([R(op=Op.ASKED, id="qa_1", t="2026-09-01T10:00Z",
-                data={"t": "2026-09-01T10:00Z", "op": "asked", "id": "qa_1"})])
+        fold([Record(op=Op.ASKED, id="qa_1", t="2026-09-01T10:00Z", data=data)])
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -637,6 +973,30 @@ def test_the_interruption_is_read_from_the_ledgers_own_table():
     """Not a literal. Both sides of the comparison are one unit from one source,
     which is what stops the two halves drifting into different scales."""
     assert INTERRUPTION_DAYS == PERIOD_DAYS[Timescale.DAYS]
+
+
+@pytest.mark.cap4_stakes
+@pytest.mark.cap4_structure
+def test_the_interruption_is_derived_in_the_code_and_not_only_in_the_comment():
+    """The value check above passes with ``INTERRUPTION_DAYS = 1`` typed as a
+    literal, because one *is* what the table holds — review verified that, with
+    the CI step's own comment naming the derivation.
+
+    So the derivation is asserted structurally: ``stakes.py`` must subscript
+    ``PERIOD_DAYS``. The same shape as the ``marks_day`` case below — assert
+    that the borrowed thing is actually reached, not merely that the numbers
+    agree today.
+    """
+    tree = ast.parse((ROOT / "half/trust/stakes.py").read_text(encoding="utf-8"))
+    subscripted = {
+        node.value.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name)
+    }
+    assert "PERIOD_DAYS" in subscripted, (
+        "the interruption is typed rather than read from the open-loop table; "
+        "both sides of the comparison must be one unit from one source"
+    )
 
 
 @pytest.mark.cap4_stakes
@@ -835,16 +1195,83 @@ def test_the_scan_that_says_so_catches_the_line_it_exists_for(tmp_path):
     assert code_names(bypass) & {"state", "Store", "sqlite3"} == {"state"}
 
 
+#: Methods that put something into a main's store. Matched as **calls**, never
+#: as names: ``balance.py`` has a parameter called ``record``, and a name scan
+#: reported reading one as writing one — which is the false positive that makes
+#: a guard get deleted rather than fixed.
+WRITES = frozenset({"record", "append", "expunge", "expunge_bodies", "rebuild",
+                    "execute", "executescript", "claim_day", "note_transition",
+                    "note_pass"})
+
+
+def writing_calls(path: Path) -> set[str]:
+    """Every write-shaped method ``path`` actually calls.
+
+    ``opened.record(...)`` is caught wherever ``opened`` came from, which is the
+    hole the substring ``store.record(`` left open — review reached a second
+    store through ``from half.store import store as _second`` and neither the
+    import list nor the substring saw it. ``list.append`` is excluded by name
+    because it is not a store write and reporting it is how the previous
+    version of this gate went wrong; a log append reaches
+    ``BeliefLog.append``, whose *import* is closed separately.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr == "append" and isinstance(node.func.value, ast.Name):
+            # ``unique.append(ask)`` and friends: a local list, not a log.
+            continue
+        if node.func.attr in WRITES:
+            found.add(node.func.attr)
+    return found
+
+
+@pytest.mark.cap4_structure
+def test_the_writing_scan_catches_a_store_reached_by_any_name(tmp_path):
+    """The bypass review wrote, and the local-list false positive that made the
+    earlier gate unusable — both run against the scan that replaced them."""
+    bypass = tmp_path / "shadow.py"
+    bypass.write_text(
+        "from half.store import store as _second\n"
+        "def shadow_spend(root, main_id, *, t, question, about):\n"
+        "    held = []\n"
+        "    held.append(question)\n"
+        "    with _second.Store(root / main_id) as opened:\n"
+        "        opened.record('asked', f'qa_{t}', t)\n",
+        encoding="utf-8",
+    )
+    assert writing_calls(bypass) == {"record"}
+
+
 @pytest.mark.cap4_structure
 def test_nothing_in_the_trust_package_writes_to_a_log_or_calls_a_model():
     """AD-3 and AD-19. The pure half returns values and the composition reaches
     the log through the registry's own narrow door, so a second writer is not
-    merely absent — there is no name for one in the package."""
+    merely absent — there is no name for one in the package.
+
+    **Read as resolved imports and as code names, never as file text.** The
+    substring version this replaces was walked twice over: ``opened.record(``
+    is not the substring ``store.record(``, and the modules' own docstrings
+    name the very failures they are written against, so a prose scan is a scan
+    that fires on explanations and misses code. ``resolved_imports`` and
+    ``code_names`` are the same predicates the door and balance scans use.
+    """
+    from tests.test_unasked import CLOSED, resolved_imports
+
     for path in sorted((ROOT / "half/trust").rglob("*.py")):
-        source = path.read_text(encoding="utf-8")
-        for forbidden in ("anthropic", "httpx", "socket", "store.record(",
-                          "log.append(", "sqlite3", "ModelProvider"):
-            assert forbidden not in source, f"{path.name} reaches {forbidden}"
+        reached = resolved_imports(path)
+        offending = sorted(
+            name for name in reached
+            if any(name == root or name.startswith(f"{root}.")
+                   for root in (*CLOSED, "anthropic", "httpx", "socket",
+                                "sqlite3", "half.model"))
+        )
+        assert not offending, f"{path.name} imports {offending}"
+        assert not writing_calls(path), (
+            f"{path.name} writes: {sorted(writing_calls(path))}"
+        )
 
 
 @pytest.mark.cap4_structure

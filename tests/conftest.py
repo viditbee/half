@@ -259,8 +259,17 @@ def tier_change_log(tmp_path):
         # ``tests/test_replay.py``. A counter on ``State`` would round-trip
         # perfectly and still be wrong; nothing here can hold one.
         #
-        # Two spends and two delivered favours, so the arithmetic in the replay
-        # assertion is not zero on both sides.
+        # **Two spends against one delivered favour, which is deliberately
+        # overdrawn.** ``ActorRegistry.note_ask`` refuses a spend it cannot pay
+        # for, so this shape is not reachable through the product's own path —
+        # it is reachable through an *erasure*, which is the case
+        # ``tests/test_trust.py`` exercises directly: erasing the loop a day
+        # marker named tombstones that marker, so a favour stops earning
+        # underneath a question that was already asked. A log in that state has
+        # to fold and replay like any other, and the canonical fixture is where
+        # that is proved. ``tests/test_replay.py`` asserts the exact numbers,
+        # because an earlier version asserted truthiness and would have passed
+        # on any two non-zero counts.
         s.record(Op.ASKED, "qa_2026-08-16T09:00Z", "2026-08-16T09:00Z",
                  question="q_farmland_intent", about="b_2")
         s.record(Op.ASKED, "qa_2026-08-19T09:00Z", "2026-08-19T09:00Z",

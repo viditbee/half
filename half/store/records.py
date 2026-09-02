@@ -900,6 +900,20 @@ def validate_asked_fields(fields: Mapping[str, Any]) -> None:
             f"permission consumed with no trace of what it was consumed for is "
             f"a spend nobody can audit, and the log is append-only"
         )
+    padded = sorted(name for name in (QUESTION, ABOUT) if fields[name].strip() != fields[name])
+    if padded:
+        # **Normalized before it is durable**, the same rule
+        # ``touch._loop_id`` applies to a loop slug. ``half.trust.unasked``
+        # strips both ids at ``Unasked``'s boundary, and this is what makes
+        # that a property of the log rather than of one caller's care: review
+        # found the queue matching on ``about.strip()`` while the spend passed
+        # the raw string, so an append-only record could permanently name a
+        # belief id that no belief equals.
+        raise TrustError(
+            f"an {Op.ASKED.value} record carries {padded} with surrounding "
+            f"whitespace; the id that was weighed must be the id that is "
+            f"written, and the log is append-only"
+        )
 
 
 def _type_names(expected: type | tuple[type, ...]) -> str:

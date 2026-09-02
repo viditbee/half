@@ -186,8 +186,13 @@ class TrustError(HalfError, ValueError):
     """A spend of the trust balance the append gate refuses (CAP-4, story 5b).
 
     Raised by ``records.validate_asked_fields`` for an ``asked`` record naming
-    no question or no subject, and by ``ActorRegistry.note_ask`` for a spend
-    whose stamp nothing can read.
+    no question, naming no subject, carrying either id with surrounding
+    whitespace — the id that was weighed must be the id that is written — or
+    carrying any field outside ``ASKED_FIELDS``, ``tombstone`` included, which
+    is refused for the finding story 10's review made: listing it let a caller
+    write one onto a live record, durable and skipped by the fold. And by
+    ``ActorRegistry.note_ask`` for a spend whose stamp nothing can read, or
+    which names no question or no subject before the mutex is taken.
 
     Loud on purpose, on the same terms as ``TouchError`` and for a sharper
     version of the same reason. The balance is **computed from the log**, not

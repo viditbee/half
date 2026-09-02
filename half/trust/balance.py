@@ -75,10 +75,20 @@ class Balance:
     on a read.
     """
 
-    #: Unprompted messages that reached the main. Never negative.
+    #: Unprompted messages that reached the main.
     earned: int = 0
-    #: Clarifying questions Half has asked. Never negative.
+    #: Clarifying questions Half has asked.
     spent: int = 0
+
+    def __post_init__(self) -> None:
+        # **Never negative, enforced rather than promised.** Both fields are
+        # counts of events, and ``balance`` cannot produce a negative one — but
+        # the type is public and a hand-built ``Balance(earned=-1)`` would make
+        # ``unspent`` and ``overdrawn`` disagree about the same log. A docstring
+        # that says *never negative* beside a field that can be is the shape of
+        # guarantee this review round was about.
+        object.__setattr__(self, "earned", max(0, _count(self.earned)))
+        object.__setattr__(self, "spent", max(0, _count(self.spent)))
 
     @property
     def unspent(self) -> int:
@@ -116,6 +126,18 @@ class Balance:
         for.
         """
         return self.spent > self.earned
+
+
+def _count(value: object) -> int:
+    """``value`` as a whole number of events, or zero. Never raises.
+
+    ``bool`` is excluded deliberately: ``True`` is an ``int`` in Python, and a
+    flag arriving where a count belongs is a caller error rather than one
+    favour.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return value
 
 
 def tombstoned(record: Record) -> bool:

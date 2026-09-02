@@ -101,6 +101,7 @@ PURE_MODULES = (
     # gates is a function of time at all, which is the sharpest form of this
     # rule: a verdict here changes when the log or the conversation changes and
     # at no other moment.
+    "half/trust/__init__.py",
     "half/trust/balance.py",
     "half/trust/stakes.py",
     "half/trust/unasked.py",
