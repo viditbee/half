@@ -62,6 +62,10 @@ from half.actor.registry import Actor, ActorRegistry
 from half.channel.port import Channel, Inbound
 from half.context.build import build as build_context
 from half.context.channels import Context, render_line
+from half.correction import apply as correction
+from half.correction import signals as correction_signals
+from half.correction.apply import Removal, Source
+from half.correction.candidate import Widening
 from half.crisis.aftercare import Schedule
 from half.crisis.classifier import SecondOpinion
 from half.crisis.gate import CrisisGate
@@ -212,6 +216,12 @@ class Runtime:
     #: send anyway; it is never a message of its own, which is what keeps
     #: *"never ping to ask"* true of the path as well as of the gate.
     questions: QuestionEngine | None = None
+    #: Who widens correction recognition past the offline table (CAP-11, story
+    #: 12). ``None`` is a runtime whose recognition is the table alone —
+    #: offline, high-confidence, and exactly what a deployment with no key gets.
+    #: It is never a runtime that *cannot* correct: an explicit correction is
+    #: recognised and acted on with no model anywhere on the path.
+    corrections: Widening | None = None
     _gate: CrisisGate = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -379,7 +389,58 @@ class Runtime:
         invalidates this argument, and the fix would be to move the spend back
         inside a single serialized operation rather than to widen this one. Say
         so here rather than discovering it from a balance that went negative.
+
+        **The correction path is inside the lock, on purpose** (CAP-11, story
+        12). It is an append to this main's log, so it happens under the acquire
+        this method already holds — one lock acquisition, not two, which is what
+        keeps the three facts above about the *gap* true rather than merely
+        still written down. Nothing about a correction spends a favour or takes
+        a second acquire, so *"nothing else spends"* is unchanged by this story.
+
+        What runs **before** the lock is recognition: the offline table, which
+        is pure, and the widening, which is a bounded network call. Neither may
+        hold a main's mutex — a classifier hanging for its whole bound with the
+        lock held would block eviction and every other operation on that main
+        for two seconds per turn (AD-33).
+
+        **A correction turn attaches no question, and that is a decision rather
+        than an omission.** Three reasons, each sufficient:
+
+        * ``ranked`` is computed *before* the removal, so a question offered
+          after it could be about the belief this turn just removed — Half
+          asking a clarifying question about a claim the main has, ten lines
+          earlier, told it was wrong.
+        * A correction clarifier and a bought question in one reply is two
+          questions in one message, which is the rule the crisis gate already
+          applies to aftercare (``quiet``): the main's next answer would land on
+          whichever of them the code looked at first.
+        * The clarifier spends no favour and passes through none of 5b's gates
+          (the story's Never list). Putting it beside a bought question on one
+          wire makes the free one indistinguishable from the paid one, in both
+          directions.
         """
+        # Recognition, outside the lock. ``meaning`` is the offline table's
+        # answer and is never a model's; ``standing`` is a candidate this main
+        # has not answered yet.
+        meaning = correction_signals.recognize(inbound.text)
+        standing = (
+            self.corrections.standing(inbound.main_id)
+            if self.corrections is not None else None
+        )
+        # An explicit correction outranks a standing candidate: the main moved
+        # on, and answering Half's old question with their new correction would
+        # remove the wrong belief.
+        confirmed = (
+            standing is not None
+            and meaning is None
+            and correction_signals.is_confirmation(inbound.text)
+        )
+        inferred = (
+            meaning is None
+            and standing is None
+            and await self._widened(inbound)
+        )
+
         belief_id = f"b_{inbound.external_id}"
         async with self.registry.acquire(inbound.main_id) as actor:
             if belief_id in actor.store.state().beliefs:
@@ -398,6 +459,18 @@ class Runtime:
             # conversation. Copied, so nothing downstream can move a main's
             # attention by writing into what it was handed (AD-26).
             live = actor.strands.copy()
+
+            # The correction, under the same lock and **before** the main's own
+            # message is recorded. A redelivery after a correction landed but
+            # before the message did re-runs it against a fold the belief has
+            # already left, which the plan reads as *already corrected* and
+            # answers with nothing — the matrix row, arriving from the direction
+            # that actually produces it.
+            said, acted = self._correct(
+                actor, inbound, ranked,
+                meaning=meaning, standing=standing, confirmed=confirmed,
+                inferred=inferred,
+            )
 
             # Recorded last, and this ordering is load-bearing. Recording first
             # meant that anything failing afterwards — retrieval raising because
@@ -425,6 +498,14 @@ class Runtime:
         # every step of attaching a question is fail-open.
         if reply is None:
             return None
+        if acted:
+            # A correction acted, or Half put one to the main, or a standing
+            # candidate was answered. No question — see this method's docstring
+            # for the three reasons, and note that the answer is the same for
+            # all three outcomes: the turn is about the correction either way.
+            # A decline says nothing and still counts, which is why this branch
+            # turns on ``acted`` and not on there being a line.
+            return f"{reply}\n{said}" if said else reply
         return await self._attach_question(
             inbound, ranked, ceiling=ceiling, live=live, reply=reply
         )
@@ -512,6 +593,202 @@ class Runtime:
                 "out without one", inbound.main_id, type(exc).__name__,
             )
             return reply
+
+    async def _widened(self, inbound: Inbound) -> bool:
+        """Whether a model reads this turn as a correction. Never raises.
+
+        Consulted **only when the table found nothing and no candidate is
+        standing**, which is what makes *one classification per turn at most*
+        true by construction rather than by counting: the caller returns before
+        this is reached in every other case.
+
+        A ``True`` here is a **candidate and never an append**. What it can
+        produce is a line asking the main; ``half.correction.apply.plan``
+        refuses to build a removal from it without their answer, so a second
+        inference route added later meets the same refusal.
+        """
+        if self.corrections is None:
+            return False
+        try:
+            verdict = await self.corrections.consult(
+                inbound.text, main_id=inbound.main_id
+            )
+        except Exception as exc:  # noqa: BLE001 - the widening, never the reply
+            # ``consult`` answers with a verdict rather than raising, so this is
+            # unreachable through it. Broad for the reason the question path's
+            # handler is broad: a bug in recognition must cost the recognition
+            # and never the main's answer. The class only, never the exception's
+            # own text — a provider quotes the request it rejected (AD-22).
+            logger.warning(
+                "the correction widening could not be taken for main=%s (%s); "
+                "the table's answer stands", inbound.main_id, type(exc).__name__,
+            )
+            return False
+        return verdict.asks
+
+    def _correct(
+        self,
+        actor: Actor,
+        inbound: Inbound,
+        ranked: Ranked,
+        *,
+        meaning: correction_signals.Meaning | None,
+        standing: Removal | None,
+        confirmed: bool,
+        inferred: bool,
+    ) -> tuple[str, bool]:
+        """Act on this turn's correction, if there is one (CAP-11).
+
+        Returns the line to append to the reply and whether the correction path
+        did anything at all. The two are different: a **declined** candidate
+        says nothing and still owns the turn, because the main was answering
+        Half's question rather than starting a new topic.
+
+        **Never raises.** Every step is inside one broad ``except``, for the
+        reason ``CrisisGate._suspend`` is: the main asked something and is owed
+        an answer, and a full disk or a refactored signature must cost the
+        correction rather than the reply. A failed append is loud and content-
+        free; the next delivery of the same message retries it, because a
+        redelivery is routine and the removal is idempotent.
+
+        **The target is this turn's top-ranked belief**, and that is the only
+        instrument the tree has: v1 has no reply-quoting, so *"which belief did
+        they mean"* is answered by what the conversation is about — which is
+        exactly what ``_retrieve`` has just scored, with the strands already
+        moved against this message. It can be wrong, and the answer to its being
+        wrong is the story's own: Half **shows the claim it removed**, so a
+        mis-aimed correction is visible on the same turn and the main can
+        correct the correction, which appends and leaves both in the log.
+        """
+        try:
+            return self._removal(
+                actor, inbound, ranked,
+                meaning=meaning, standing=standing, confirmed=confirmed,
+                inferred=inferred,
+            )
+        except Exception as exc:  # noqa: BLE001 - the correction, never the reply
+            # The class and nothing else (AD-22): an exception message routinely
+            # quotes the value that caused it, and here that is a claim out of a
+            # main's own ledger.
+            logger.error(
+                "a correction did not land for main=%s (%s); the reply goes "
+                "out without it", inbound.main_id, type(exc).__name__,
+            )
+            return "", False
+
+    def _removal(
+        self,
+        actor: Actor,
+        inbound: Inbound,
+        ranked: Ranked,
+        *,
+        meaning: correction_signals.Meaning | None,
+        standing: Removal | None,
+        confirmed: bool,
+        inferred: bool,
+    ) -> tuple[str, bool]:
+        """The four outcomes, in the order they can happen on one message.
+
+        An explicit correction acts. A standing candidate the main confirmed
+        acts. A standing candidate they did not confirm is over and removes
+        nothing. A turn only the classifier read as a correction is put to the
+        main and appends nothing.
+        """
+        if meaning is not None:
+            if standing is not None and self.corrections is not None:
+                # The main corrected something explicitly instead of answering.
+                # The old candidate is over — re-offering it later would be Half
+                # asking twice about a topic the main has moved past.
+                self.corrections.answered(inbound.main_id, confirmed=False)
+            return self._act(actor, inbound, meaning, self._aimed(ranked))
+
+        if standing is not None and self.corrections is not None:
+            self.corrections.answered(inbound.main_id, confirmed=confirmed)
+            if not confirmed:
+                # Declined. Nothing removed, nothing appended beyond the
+                # exchange — and *anything that is not a clear yes* is a
+                # decline, because silence is not consent and neither is
+                # *maybe*.
+                return "", True
+            return self._act(
+                actor, inbound, correction_signals.Meaning.WRONG, standing.target,
+                source=Source.INFERRED, confirmed=True,
+            )
+
+        if not inferred or self.corrections is None:
+            return "", False
+        target = self._aimed(ranked)
+        offered = correction.proposal(target, self._held(actor, target))
+        if offered is None:
+            # A model read a correction and there is nothing Half holds for it
+            # to be about. Nothing is asked and nothing is recorded: a question
+            # naming no belief is a question with no answer.
+            return "", False
+        self.corrections.propose(inbound.main_id, offered)
+        return correction.proposed(offered), True
+
+    def _act(
+        self,
+        actor: Actor,
+        inbound: Inbound,
+        meaning: correction_signals.Meaning,
+        target: str,
+        *,
+        source: Source = Source.TABLE,
+        confirmed: bool = False,
+    ) -> tuple[str, bool]:
+        """Append the correction and return what Half shows.
+
+        ``plan`` answers ``None`` for a correction naming nothing Half holds and
+        for one whose belief has already left the fold — two matrix rows, one
+        branch, and neither is an error the main is shown.
+        """
+        removal = correction.plan(
+            meaning,
+            target=target,
+            belief=self._held(actor, target),
+            source=source,
+            confirmed=confirmed,
+        )
+        if removal is None:
+            return "", False
+        if removal.erases:
+            # The store's own validate-then-erase: the op *and* the tombstoning
+            # of the bodies, which a bare append would not do. An erasure that
+            # left the text on disk is not an erasure.
+            actor.store.expunge(removal.target, t=inbound.t)
+        else:
+            actor.store.record(
+                removal.op,
+                correction.record_id(removal, t=inbound.t),
+                inbound.t,
+                **correction.fields(removal, t=inbound.t),
+            )
+        return correction.shown(removal), True
+
+    @staticmethod
+    def _aimed(ranked: Ranked) -> str:
+        """Which belief this turn's correction is about, or ``""``.
+
+        The top of the ranked set — see ``_correct`` for why that is the whole
+        instrument, and what makes being wrong about it recoverable.
+        """
+        ids = ranked.ids if ranked is not None else ()
+        return ids[0] if ids else ""
+
+    @staticmethod
+    def _held(actor: Actor, target: str) -> dict | None:
+        """The folded belief ``target`` names, or ``None``.
+
+        Read from the fold rather than off the ranked candidate, so that *"the
+        claim as recorded"* is the record and not a copy of it that ranking
+        happened to carry — and so that a belief which left the fold between
+        ranking and here is absent, which is what makes the correction
+        idempotent.
+        """
+        if not target:
+            return None
+        return actor.store.state().beliefs.get(target)
 
     def _retrieve(self, actor: Actor, inbound: Inbound) -> Ranked:
         """Rank this main's beliefs against the turn, or rank nothing.

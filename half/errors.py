@@ -214,6 +214,38 @@ class TrustError(HalfError, ValueError):
     """
 
 
+class CorrectionError(HalfError, ValueError):
+    """A correction the append gate refuses (CAP-11, story 12).
+
+    Raised by ``records.validate_correction_fields`` for a correction whose
+    **attribution** the record could never be read back from: a stamp this
+    build cannot parse, both stamps at once, or a stamp on an op that
+    contradicts it.
+
+    Loud on purpose, and for a reason none of the gates above it has. The two
+    stamps are the whole of the three-state attribution — ``expired_at`` says
+    *Half was wrong*, ``invalid_at`` says *the main changed*, and neither says
+    *not yet known* (graphiti's split, ``graphiti_core/edges.py:271-280``). The
+    log is append-only, so a record carrying both says two contradictory things
+    about one belief for ever, and one carrying an unreadable stamp says
+    nothing while looking as though it says something. Either is a falsehood
+    written into the one ledger whose entire purpose is to be honest, and no
+    later append takes a field off a record.
+
+    Also raised by ``half.correction.apply.plan`` for the story's central rule:
+    a correction that reached this path only through the classifier may not be
+    applied without the main's answer. That refusal is a value error about an
+    unrepresentable state rather than a check somebody has to remember — see
+    ``Source`` and ``plan``.
+
+    A ``ValueError`` as well, for the reason ``LoopError``, ``ScheduleError``,
+    ``TensionError``, ``TouchError`` and ``TrustError`` are: the conventions say
+    no public store operation raises a non-``HalfError``, while
+    ``validate_fields`` has raised a bare ``ValueError`` for every malformed
+    field since story 1, and one refusal must answer to both names.
+    """
+
+
 class RetrievalError(HalfError):
     """A fault in the retrieval layer (CAP-9)."""
 

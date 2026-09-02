@@ -19,6 +19,7 @@ from typing import Any, Final
 
 from half.civil import instant
 from half.errors import (
+    CorrectionError,
     CorruptLogError,
     LoopError,
     SchemaVersionError,
@@ -330,6 +331,58 @@ ASKED_FIELDS: Final[frozenset[str]] = frozenset({QUESTION, ABOUT})
 LEDGER: Final[str] = "ledger"
 STATED: Final[str] = "stated"
 
+#: What a correction says about **why** the belief left (CAP-11, story 12), and
+#: the field the correction names.
+#:
+#: Named here for the reason ``QUESTION`` and ``LEDGER`` are: the layer that
+#: owns record shapes owns the spelling, and ``half.correction`` — which sits
+#: above the store — imports them rather than declaring a second copy. A second
+#: spelling of ``expired_at`` is an apology Half owes and cannot find.
+#:
+#: **Two stamps, three states, and no op is consulted** (graphiti,
+#: ``graphiti_core/edges.py:271-280``). That model separates *the edge stopped
+#: being true* (``invalid_at``) from *the system had it wrong*
+#: (``expired_at``), and that is exactly CAP-11's distinction between *the main
+#: changed* and *Half was wrong about you*. Carrying it as two optional stamps
+#: rather than as a value is what buys the third state for nothing: a
+#: correction with neither stamp says the cause is **not yet known**, which is
+#: the only honest thing to write when the utterance did not settle it.
+#:
+#: ``created_at`` and ``valid_at``, graphiti's other two, are deliberately not
+#: taken — see ``half/correction/attribute.py``.
+#:
+#: Both are validated at the append for the reason every field above is: the
+#: log is append-only, so a correction carrying both stamps is a record that
+#: says two contradictory things about one belief for ever, and one carrying a
+#: stamp nothing can parse is an attribution that reads as present and answers
+#: nothing.
+EXPIRED_AT: Final[str] = "expired_at"
+INVALID_AT: Final[str] = "invalid_at"
+
+#: What a correction corrects. A constant rather than a fourth literal: the
+#: fold, the store façade and ``half.correction`` all name this field, and a
+#: rename that reached three of the four is a correction that removes nothing
+#: while every replay reproduces the record faithfully.
+TARGET: Final[str] = "target"
+
+#: The three ops that take a belief out of the current fold. Named beside the
+#: stamps because the gate below has to know which op a stamp may sit on, and
+#: because ``half.correction`` reads the set rather than restating it.
+CORRECTIONS: Final[frozenset[Op]] = frozenset({Op.RETRACT, Op.REVISE, Op.EXPUNGE})
+
+#: Which stamp each op may carry, and it is at most one. The mapping is the
+#: whole of *"the op and the attribution may never disagree"*: a ``revise``
+#: means Half was wrong, so ``invalid_at`` on one would be a record asserting
+#: both causes at once; a ``retract`` carrying ``expired_at`` would be an
+#: apology filed under *"you changed"*. An ``expunge`` may carry neither —
+#: an erasure is not an attribution, its body is tombstoned, and there is
+#: nothing left to be right or wrong about.
+STAMP_FOR_OP: Final[dict[Op, str | None]] = {
+    Op.REVISE: EXPIRED_AT,
+    Op.RETRACT: INVALID_AT,
+    Op.EXPUNGE: None,
+}
+
 
 def is_civil_day(value: object) -> bool:
     """Whether ``value`` is a day marker this build can read. Never raises.
@@ -573,6 +626,13 @@ _TYPED_FIELDS: Final[dict[str, type | tuple[type, ...]]] = {
     # ever.
     QUESTION: str,
     ABOUT: str,
+    # The three-state attribution (CAP-11, story 12). Validated at the append
+    # for the reason every field above is, and here the reason is the story's
+    # own Always: *the attribution is never guessed*. A stamp stored as a
+    # number is a cause no build can read back, permanently, on the one record
+    # whose whole job is to say which of two things happened.
+    EXPIRED_AT: str,
+    INVALID_AT: str,
     # The tension ledger (CAP-7). ``between`` names the two entries that
     # disagree, validated at the append for the reason every field above is:
     # the log is append-only, so a ``between`` stored as a bare string is a
@@ -937,6 +997,81 @@ def validate_asked_fields(fields: Mapping[str, Any]) -> None:
         )
 
 
+def validate_correction_fields(fields: Mapping[str, Any], *, op: Op) -> None:
+    """Reject an attribution the record could never be read back from (CAP-11).
+
+    **Write strict, read tolerant**, on the same terms as a touch, a spend, a
+    loop transition, a schedule record and a tension — and here the strictness
+    protects the one rule the whole story rests on: *the attribution is never
+    guessed*. Three states, two stamps, and the log is append-only:
+
+    * **at most one stamp.** A record carrying both says the belief stopped
+      being true *and* was never true, about one belief, for ever. That is not
+      a completeness — it is the guess this story exists to refuse, written
+      twice so that whichever reader looks first is satisfied.
+    * **the stamp must match the op.** ``expired_at`` belongs on a ``revise``
+      and ``invalid_at`` on a ``retract``, because those two ops already carry
+      the same distinction in what Half owes the main (glossary: an apology, or
+      none). A record where they disagree is one whose two halves attribute the
+      removal to different causes, and nothing downstream could choose between
+      them without inventing a precedence rule — which is a guess.
+    * **an expunge attributes nothing.** Erasure is not correction: the body is
+      tombstoned, so there is no claim left to have been wrong about, and a
+      cause recorded against an erased belief is a sentence about text that no
+      longer exists.
+    * **a stamp must be readable.** ``half.civil.instant`` or nothing. An
+      attribution that reads as present and answers nothing is worse than an
+      absent one, because *not yet known* is a real state with a real
+      consequence — Half may ask — and an unparseable stamp silently takes it.
+
+    There is deliberately **no branch here that supplies a missing stamp**, and
+    none that infers one from the op. A bare ``retract`` is the third state and
+    is exactly as valid as the other two.
+
+    The read direction is deliberately looser — see
+    ``half.correction.attribute`` — so a log written by a later build costs one
+    correction its cause rather than taking a main's whole store down.
+
+    Neither stamp's value is quoted back in a refusal. A correction is about a
+    claim concerning a main's own life, and an exception message reaches a log
+    line through every handler that formats one (AD-22); the field name and the
+    op are enough to fix the caller.
+    """
+    allowed = STAMP_FOR_OP.get(op)
+    carried = sorted(
+        name for name in (EXPIRED_AT, INVALID_AT) if fields.get(name) is not None
+    )
+    if len(carried) > 1:
+        raise CorrectionError(
+            f"a {op.value} record may not carry both {EXPIRED_AT!r} and "
+            f"{INVALID_AT!r}: they are the two halves of one question — whether "
+            f"Half was wrong or the main changed — and a record answering both "
+            f"answers neither. The log is append-only, so it would answer both "
+            f"for ever"
+        )
+    if not carried:
+        return
+    stamp = carried[0]
+    if stamp != allowed:
+        raise CorrectionError(
+            f"a {op.value} record may not carry {stamp!r}"
+            + (
+                f"; that op records its cause in {allowed!r}"
+                if allowed is not None
+                else ": an erasure attributes nothing, because the body it "
+                "would attribute is tombstoned"
+            )
+        )
+    if instant(fields[stamp]) is None:
+        raise CorrectionError(
+            f"field {stamp!r} must be a UTC stamp this build can read "
+            f"(YYYY-MM-DD or YYYY-MM-DDThh:mm[:ss]Z), got "
+            f"{type(fields[stamp]).__name__}; an attribution nothing can parse "
+            f"reads as present and says nothing, which silently takes the "
+            f"not-yet-known state away from a main who is owed it"
+        )
+
+
 def _type_names(expected: type | tuple[type, ...]) -> str:
     if isinstance(expected, tuple):
         return " or ".join(t.__name__ for t in expected)
@@ -1052,6 +1187,14 @@ def validate_fields(fields: dict[str, Any], *, op: Op | None = None) -> None:
         # names no question must refuse as a ``TrustError`` rather than as the
         # generic type check's bare ``ValueError``.
         validate_asked_fields(fields)
+    if op in CORRECTIONS:
+        # First, for the reason the five gates above are first: a correction
+        # attributing itself to two causes at once must refuse as a
+        # ``CorrectionError`` rather than as the generic type check's bare
+        # ``ValueError``, so a caller wrapping the write path in ``except
+        # CorrectionError`` catches every refusal this gate makes — including
+        # "that is not a stamp".
+        validate_correction_fields(fields, op=op)
     for name, expected in _TYPED_FIELDS.items():
         if name not in fields or fields[name] is None:
             continue

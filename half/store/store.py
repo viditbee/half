@@ -31,7 +31,14 @@ from half.store import db
 from half.store.fold import State, fold
 from half.store.log import BeliefLog
 from half.store.ops import Op
-from half.store.records import BETWEEN, RESERVED, Record, make, validate_fields
+from half.store.records import (
+    BETWEEN,
+    RESERVED,
+    TARGET,
+    Record,
+    make,
+    validate_fields,
+)
 
 BELIEFS_DIR = "beliefs"
 DB_NAME = "half.db"
@@ -192,7 +199,7 @@ class Store:
         if loops:
             fields.update(ledger.expunged(target))
         if also_an_object or not loops:
-            fields["target"] = target
+            fields[TARGET] = target
         self.log.append(make(Op.EXPUNGE, f"x_{target}_{t}", t, **fields))
         self.rebuild()
 

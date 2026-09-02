@@ -75,6 +75,7 @@ from half.store.records import (
     NEXT_PASS_AT,
     QUESTION,
     STATE,
+    TARGET,
     TIMESCALE,
     Record,
     carried_forward,
@@ -364,7 +365,7 @@ def fold(records: Iterable[Record]) -> State:
                 # suppress every later *belief* that happened to share the
                 # name — the same collision the split set exists to prevent,
                 # arriving from the other side.
-                if loop_target and record.data.get("target") is None:
+                if loop_target and record.data.get(TARGET) is None:
                     continue
                 target = _require_target(record)
                 state.expunged.add(target)
@@ -679,9 +680,10 @@ def _require_target(record: Record) -> str:
     no-op, leaving the belief in place — the same silent-omission failure
     unknown ops are made fatal to avoid.
     """
-    target = record.data.get("target")
+    target = record.data.get(TARGET)
     if not isinstance(target, str) or not target:
         raise CorruptLogError(
-            f"{record.op} record {record.id!r} has no 'target'", path="<fold>", line=0
+            f"{record.op} record {record.id!r} has no {TARGET!r}",
+            path="<fold>", line=0,
         )
     return target
