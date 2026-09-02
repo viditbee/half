@@ -309,6 +309,27 @@ ABOUT: Final[str] = "about"
 #: appends the line itself, without passing through this gate.
 ASKED_FIELDS: Final[frozenset[str]] = frozenset({QUESTION, ABOUT})
 
+#: Which of the two ledgers a belief came from (glossary), and the value that
+#: names the one the main **told** Half.
+#:
+#: Named here for the reason ``QUESTION`` and ``ABOUT`` are: the layer that owns
+#: record shapes owns the spelling. This one was a bare ``"stated"`` string in
+#: three unrelated files before story 11 — ``half.actor.runtime`` writing it,
+#: ``half.channel.window`` reading it to rebuild the platform's send window, and
+#: ``half.questions.answered`` about to read it to tell an ignored question from
+#: an answered one. Three literals is three chances for a rename to make one of
+#: them silently stop matching, and each failure is invisible: a send window
+#: that reports every main as never-contacted, or a question that is re-asked
+#: for ever because no reply was ever recognised.
+#:
+#: **This is the only mark an inbound message leaves that says it was inbound.**
+#: ``half.actor.runtime`` writes every message the main sends as an
+#: ``Op.ASSERT`` on the stated ledger, so *"the main said something after Half
+#: asked"* is a fact the log already carries, with a timestamp, and no new op is
+#: needed to record responsiveness (story 11).
+LEDGER: Final[str] = "ledger"
+STATED: Final[str] = "stated"
+
 
 def is_civil_day(value: object) -> bool:
     """Whether ``value`` is a day marker this build can read. Never raises.

@@ -26,6 +26,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from half.channel.port import Reachability
+# The record shape, from the module that owns it (a domain type, which is the
+# one thing an adapter may depend on). This file already depended on the
+# spelling of both names by reading them out of a record — it simply did so as
+# two string literals, which is a dependency nothing could see and a rename
+# would have silently turned into *"every main was never contacted"*.
+from half.store.records import LEDGER, STATED
 
 #: WhatsApp Cloud API's customer service window.
 WHATSAPP_WINDOW_SECONDS = 24 * 60 * 60
@@ -93,7 +99,7 @@ class ReachabilityTracker:
         latest: float | None = None
         for record in records:
             stamp = record.data.get("t")
-            if record.data.get("ledger") != "stated" or not isinstance(stamp, str):
+            if record.data.get(LEDGER) != STATED or not isinstance(stamp, str):
                 continue
             epoch = _epoch_from_iso(stamp)
             if epoch is not None and (latest is None or epoch > latest):

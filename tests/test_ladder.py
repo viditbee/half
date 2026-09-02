@@ -195,9 +195,14 @@ def test_a_refused_assert_may_still_be_asked():
     unsupported = belief(license="assert", loop="fly-again", **KNOWN)
     assert resolve(unsupported, ceiling=None) is License.ASK
 
-    context = build(Ranked(beliefs=(cand(unsupported),)), now=NOW, ceiling=None)
+    # ``bought`` because a question is a purchase and not a rung since story
+    # 11: the demotion's *consequence* — that the claim may still be raised —
+    # is only observable on a belief a favour paid for. Without it this case
+    # would assert nothing about the ladder at all.
+    context = build(Ranked(beliefs=(cand(unsupported),)), now=NOW, ceiling=None,
+                    bought="b_1")
     assert context.quotable() == ()
-    assert [q.id for q in context.questions] == ["b_1"]
+    assert context.question.id == "b_1"
     assert SAID not in context.render()
 
 
@@ -671,9 +676,9 @@ def test_a_ceiling_at_ask_caps_an_assert_belief_to_ask():
     assert resolve(record, ceiling=Ceiling(License.ASK)) is License.ASK
 
     context = build(Ranked(beliefs=(cand(record),)), now=NOW,
-                    ceiling=Ceiling(License.ASK))
+                    ceiling=Ceiling(License.ASK), bought="b_1")
     assert context.quotable() == ()
-    assert [q.id for q in context.questions] == ["b_1"]
+    assert context.question.id == "b_1"
 
 
 @pytest.mark.ad28
@@ -729,9 +734,16 @@ def test_one_ceiling_caps_every_belief_regardless_of_its_own_value():
         beliefs=tuple(cand(r, claim=c) for r, c in zip(records, claims))
     )
 
-    context = build(ranked, now=NOW, ceiling=Ceiling(License.BEHAVE))
+    # The favour is spent on the `ask` belief, so the cap is the only thing
+    # left that can refuse it. Before story 11 this line read `not
+    # context.questions` against a builder nobody had paid, which would now
+    # pass for a build that had stopped applying the ceiling entirely.
+    context = build(ranked, now=NOW, ceiling=Ceiling(License.BEHAVE),
+                    bought="b_b")
     assert context.quotable() == ()
-    assert not context.questions, "a capped `ask` may not still become a question"
+    assert context.question is None, (
+        "a capped `ask` may not become a question, even bought"
+    )
     assert [d.id for d in context.directives] == ["b_a", "b_b", "b_c"]
 
 

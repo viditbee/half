@@ -36,6 +36,7 @@ from half.model.anthropic_transport import SDKTransport
 from half.model.budget import Budget
 from half.model.port import Classifier
 from half.model.tier import Tiers
+from half.questions.engine import QuestionEngine
 from half.schedule.tick import Scheduler
 from half.surface.morning import MorningPass, Mornings, MorningSurface
 from half.secrets import FileSecretStore
@@ -136,7 +137,17 @@ def build(config: Config, token: str) -> Wiring:
         work=MorningPass(
             consolidate=TensionPass(ledger=registry),
             surface=MorningSurface(
-                ledger=registry, channel=channel, mornings=mornings
+                ledger=registry, channel=channel, mornings=mornings,
+                # Who buys the question (CAP-4, story 11). Wired **by value**
+                # for the reason the ledger and the channel are: *"the favour
+                # buys the question, in the shipped product"* has to be
+                # assertable by identity rather than by finding a keyword in the
+                # source, which is how story 6d's identical claim passed with
+                # the value set to ``None``. Without this the surface never
+                # asks — which is the fail-closed default, and a default that
+                # would have made story 5b's gates uncalled for a second story
+                # running.
+                questions=QuestionEngine(ledger=registry),
             ),
         ),
     )

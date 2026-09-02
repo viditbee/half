@@ -53,6 +53,7 @@ markers = [
     "cap4_favour: the favour rule's own guarantees — the balance is folded and never counted, one favour buys one question, and a spend happens on the ask and nowhere else",
     "cap4_gates: every gate on a question, alone and in combination — stakes, the ladder under the ceiling, quarantine, the topic, the favour, and the mode that suspends all of them",
     "cap4_stakes: stakes buy the clarifying question — the bar derived from each wanting's own period against one interruption, and both sides of it",
+    "cap4_bought: the questions channel is bought — a question reaches a context only by being handed in, one per send by construction, and never a second time inside its wanting's own period",
     "cap4_structure: the single-case structural rules the currency rests on — no field to store a balance in, a stakes rule that cannot see one, a narrow door and a projection",
     "cap6: the open-loop ledger — the closed vocabulary, a loop's own timescale, computed silence",
     "cap6_firewall: a wanting is not a fact — nothing on the correction path may demote or freeze a loop",

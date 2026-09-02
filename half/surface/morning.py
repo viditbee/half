@@ -51,6 +51,22 @@ it may be said. The text is the context builder's own rendering of the channels
 a surface may speak from — deterministic, byte-identical for one log and one
 ``now``, and carrying nothing the ladder did not admit.
 
+**A question is bought, never merely licensed** (CAP-4, story 11). An `ask`-rung
+belief does not become a question here or in the context builder: a favour has to
+be spent on it first, through the gates ``half.trust`` established and the engine
+``half.questions`` composes, and the belief that was paid for is *handed* to the
+builder rather than picked out by it. The consequence is worth stating because it
+is a change to what this module speaks from: a main with `ask`-rung material and
+no unspent favour now gets silence where story 10 gave them a question line. That
+is CAP-4's central rule — *"no question is asked that was not preceded by a
+delivered favor"* — reaching the wire for the first time.
+
+**The spend sits between the claim and the send**, which is the one ordering this
+story adds. The day is claimed (story 10), the favour is spent (5b), the message
+goes. A refused spend costs the question and not the morning; a failed send after
+a landed spend costs both, which is the asymmetry story 10 accepted deliberately
+and this module does not repair.
+
 **The day is claimed before the send, in one serialized operation.** A surface
 whose *"already said something today"* marker could not be written has not
 earned the right to send — the same asymmetry ``Scheduler._advance`` makes for
@@ -75,7 +91,9 @@ from half.consolidate.pass_ import PassResult, completed
 from half.context.build import build as build_context
 from half.context.channels import Context, Item
 from half.governance.ladder import License, height
+from half.questions.engine import QuestionEngine
 from half.retrieval.port import Candidate as RankedBelief
+from half.trust.unasked import Ask
 from half.schedule.clock import Now
 from half.schedule.due import local_day, zone_of
 from half.surface import touch as touch_module
@@ -263,9 +281,16 @@ class Mornings:
 #: does it read"*, and the two must not be able to drift apart: the sweep in
 #: ``tests/test_surface.py`` runs every rung on the ladder through the real
 #: builder and asserts this table is what the builder actually does.
+#: **A question is in the ``question`` channel only when a favour bought it**
+#: (CAP-4, story 11), which is why this table is *not* a statement that an
+#: `ask`-rung belief lands there. The builder is handed the belief the spend paid
+#: for and emits a question for that one; an unbought `ask` belief becomes a
+#: directive, so it still shapes what is said and is never said. The sweep in
+#: ``tests/test_surface.py`` runs every rung through the real builder both ways
+#: — bought and unbought — so neither half can drift.
 _CHANNELS: Final[tuple[tuple[str, License], ...]] = (
     ("content", License.ASSERT),
-    ("questions", License.ASK),
+    ("question", License.ASK),
     ("directives", License.BEHAVE),
 )
 
@@ -291,11 +316,22 @@ def speech(context: Context) -> tuple[Item, ...]:
     Asking the *context* rather than re-resolving licenses is deliberate: the
     builder already resolved every rung once, under the ceiling, and a second
     resolution here would be a second opinion about one question.
+
+    **A question channel that is empty because nothing was bought is silence**,
+    and that is the CAP-4 rule arriving here rather than a new gate: a main whose
+    only material is `ask`-rung and who has earned no favour has nothing said to
+    them, because the one thing Half could have done with that material — raise
+    it — is what the favour pays for. Content still speaks; only the question is
+    bought.
+
+    ``Context.channel`` is asked for each name rather than ``getattr``, because
+    the question channel holds at most one question and is therefore not a tuple
+    — see ``half.context.channels.Context.question``.
     """
     if not isinstance(context, Context):
         return ()
     return tuple(
-        item for name in SPOKEN_CHANNELS for item in getattr(context, name, ())
+        item for name in SPOKEN_CHANNELS for item in context.channel(name)
     )
 
 
@@ -348,6 +384,16 @@ class MorningSurface:
     #: without one, and constructed by default so the shipped path always has
     #: somewhere to put them.
     mornings: Mornings = field(default_factory=Mornings)
+    #: Who buys the question (CAP-4, story 11). ``None`` is a surface that never
+    #: asks anything — every existing caller, and the fail-closed default, for
+    #: the reason ``build``'s ``bought`` defaults to nothing: forgetting it costs
+    #: a question, which is a first-class outcome (AD-27), where forgetting a
+    #: ceiling would cost the cap.
+    #:
+    #: **The engine is held rather than its parts.** It owns the door onto the
+    #: live conversation, so the volatile strands the topic gate reads never
+    #: reach this class — the same discipline ``SurfaceView`` exists for.
+    questions: QuestionEngine | None = None
 
     async def surface(
         self, main_id: str, *, now: Now, candidates: Sequence[Candidate]
@@ -441,21 +487,35 @@ class MorningSurface:
                 len(choice.degraded),
             )
 
-        # 5. What may be said, and how. The ladder resolves each record's rung
+        # 5. The question, offered but not yet paid for. Every gate 5b
+        #    established runs here, through 5b's own door; nothing is written,
+        #    and the answer is a proposal that is re-checked at the spend.
+        offer = await self._offer(main_id, choice=choice, now=now)
+
+        # 6. What may be said, and how. The ladder resolves each record's rung
         #    under this main's ceiling and the context builder splits content
         #    from directives; this reads the answer and never re-decides it.
-        text = self._speech(view, choice=choice, now=now)
+        #    Built twice, deliberately: once as the morning would read *with*
+        #    the offered question and once without, so that a spend refused at
+        #    the last moment costs the question and not the morning. Both are
+        #    pure functions of the same view (AD-30), so this is arithmetic
+        #    rather than a second decision.
+        unbought = self._speech(view, choice=choice, now=now)
+        text = self._speech(
+            view, choice=choice, now=now,
+            bought=offer.question.about if offer is not None else None,
+        )
         if not text:
             return Silence(NOTHING_MAY_BE_SAID)
 
-        # 6. Reachability is asked, never assumed (AD-7) — and asked here, once
+        # 7. Reachability is asked, never assumed (AD-7) — and asked here, once
         #    there is actually something to send, so a morning the bound
         #    silenced is not reported as an unreachable one.
         reach = self.channel.capability_query(main_id)
         if not reach.may_send_freeform:
             return Silence(str(reach))
 
-        # 7. The day is claimed, then the message is sent. Claiming is one
+        # 8. The day is claimed, then the message is sent. Claiming is one
         #    serialized operation: it re-asserts the mode, re-reads the marker
         #    and appends, all inside one acquire.
         claim = await self._claim(main_id, now=now, day=today, choice=choice)
@@ -465,6 +525,23 @@ class MorningSurface:
             return Silence(ALREADY_TODAY)
         if claim != CLAIMED:
             return Silence(UNRECORDED)
+
+        # 9. The favour is spent — **after the day is claimed and immediately
+        #    before the send**, which is 5b's spend contract and story 10's
+        #    claim-then-send order in one line. A spend that is refused (the
+        #    mode opened, the cap dropped, the balance moved) leaves the morning
+        #    standing and takes the question out of it; a spend that lands and a
+        #    send that then fails costs the main the favour, which is story 10's
+        #    accepted asymmetry and is deliberately not repaired here.
+        if offer is not None:
+            purchase = await self.questions.buy(main_id, t=now.stamp, ask=offer)
+            if not purchase.spent:
+                text = unbought
+        if not text:
+            # Only reachable when the whole morning was the question: the day is
+            # already spent, and nothing is retried. Counted as *nothing may be
+            # said*, which is what happened.
+            return Silence(NOTHING_MAY_BE_SAID)
 
         try:
             result = await self.channel.send(main_id, text)
@@ -567,7 +644,47 @@ class MorningSurface:
             )
             return UNRECORDED
 
-    def _speech(self, view: SurfaceView, *, choice: Choice, now: Now) -> str:
+    async def _offer(
+        self, main_id: str, *, choice: Choice, now: Now
+    ) -> Ask | None:
+        """The one question a favour could buy this morning, or ``None``.
+
+        ``None`` whenever there is no engine — every caller that predates story
+        11, and the fail-closed default — and whenever every gate 5b established
+        refuses. Nothing is written here; the spend happens after the day is
+        claimed.
+
+        **Offered over the choice's own entries and nothing wider.** A question
+        about a belief this morning is not built from could not reach a channel
+        anyway, because the context is built from ``choice.entries`` — so
+        offering one would be a favour spent on something the main never sees.
+
+        Never raises. A question is worth less than a morning, so a failure in
+        the engine costs the question: the surface goes on and says what it was
+        going to say.
+        """
+        if self.questions is None:
+            return None
+        try:
+            return await self.questions.offer(
+                main_id, beliefs=choice.entries, now=now.stamp
+            )
+        except Exception as exc:  # noqa: BLE001 - the question, not the morning
+            # The *type* and nothing else (AD-22).
+            logger.warning(
+                "could not weigh a question for main=%s (%s); the morning goes "
+                "out without one", main_id, type(exc).__name__,
+            )
+            return None
+
+    def _speech(
+        self,
+        view: SurfaceView,
+        *,
+        choice: Choice,
+        now: Now,
+        bought: str | None = None,
+    ) -> str:
         """The text this choice licenses, or the empty string.
 
         The material is the belief records the choice names — **all** of them,
@@ -597,7 +714,13 @@ class MorningSurface:
             )
             for ident in choice.entries
         )
-        context = build_context(material, now=now.stamp, ceiling=view.ceiling)
+        # ``bought`` is the belief a favour was — or is about to be — spent on
+        # (CAP-4). The builder emits a question for that belief and for no
+        # other, and for none at all when nothing was bought: the channel is
+        # bought by what the builder is *handed*, never by what it filters.
+        context = build_context(
+            material, now=now.stamp, ceiling=view.ceiling, bought=bought
+        )
         if not speech(context):
             return ""
         return replace(context, directives=()).render()

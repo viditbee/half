@@ -11,6 +11,18 @@ withheld exactly as `behave` text is. The split is the enforcement: material
 that may not be quoted is never assembled into a quotable field in the first
 place, so there is nothing downstream to filter and no classifier to trust.
 
+**The question channel holds one question or none, and that is CAP-4 written
+into the type** (story 11). *"No question is asked that was not preceded by a
+delivered favor; no onboarding interview or questionnaire exists in the
+product"* — and a questionnaire is exactly what a `tuple[Question, ...]` invites
+next quarter, one `plus` call at a time. The field is therefore a
+``Question | None``: **a second question has nowhere to go.** That is the
+difference between a rule a test counts a fixture against — which passes for
+whatever the fixture happens to contain — and one the structure cannot express.
+``Context.plus`` keeps the first and refuses the second rather than overwriting,
+because the failure it guards against is a *second* question, and the safe half
+of a pair is the one already scanned.
+
 **One rendering, and its completeness is asserted.** `render` is the single
 serialization of a context, and the byte-wise guard runs over its output rather
 than over each field — a per-field check passes while claim text sits in a
@@ -58,6 +70,7 @@ from half.retrieval.port import RerankSource
 #: unaffected — this is the same object under both names, so an ``is``
 #: comparison across the two spellings still holds.
 __all__ = [
+    "CHANNELS",
     "Content",
     "Context",
     "Directive",
@@ -177,6 +190,14 @@ _QUESTION: Final[str] = "question"
 
 Item = Content | Directive | Question
 
+#: The three channel field names, spelled once. Read by ``Context.channel`` so
+#: that a name which is not a channel cannot reach ``getattr`` and pull back
+#: ``now`` or ``rerank``, and read by ``half.surface.morning`` — which turns
+#: *"which rung may a surface speak from"* into *"which channels does it read"*
+#: — so the two cannot drift to different spellings of one field.
+CHANNELS: Final[tuple[str, ...]] = ("content", "directives", "question")
+_CHANNEL_NAMES: Final[frozenset[str]] = frozenset(CHANNELS)
+
 
 def render_line(item: Item) -> str:
     """The one line ``item`` contributes to a rendering.
@@ -209,7 +230,13 @@ class Context:
     now: str
     content: tuple[Content, ...] = ()
     directives: tuple[Directive, ...] = ()
-    questions: tuple[Question, ...] = ()
+    #: The one question this send may carry, or none (CAP-4). **Singular by
+    #: type**, so *"never more than one question in a single send"* is a
+    #: property of the structure rather than of whoever fills it — see the
+    #: module docstring. It arrives only because a favour bought it: the builder
+    #: is *handed* the belief the spend paid for and cannot decide for itself
+    #: which belief deserves a question (``half.context.build.build``).
+    question: Question | None = None
     #: True when the ranked set this was built from had beliefs dropped before
     #: scoring, or when the caller asked for none. Carried from ``Ranked``
     #: rather than discarded at this boundary: without it an empty context from
@@ -231,7 +258,7 @@ class Context:
         Callers that need to tell those apart read ``truncated`` and ``rerank``
         rather than inferring from emptiness.
         """
-        return not (self.content or self.directives or self.questions)
+        return not (self.content or self.directives or self.question)
 
     @property
     def degraded(self) -> bool:
@@ -248,17 +275,41 @@ class Context:
         return tuple(item.claim for item in self.content)
 
     def plus(self, item: Item) -> "Context":
-        """A new context with ``item`` appended to the channel it belongs to.
+        """A new context with ``item`` added to the channel it belongs to.
 
         Append rather than insert, so rank order survives; a new object rather
         than a mutation, so a context that has been scanned stays the context
         that was scanned.
+
+        **A second ``Question`` is refused, not appended and not substituted**
+        (CAP-4). The favour buys one question, so a second one reaching here at
+        all means a caller handed the builder something it should not have —
+        a ranked set naming the bought belief twice is the ordinary way — and
+        the correct answer is the context unchanged. Keeping the *first* rather
+        than the last is deliberate: it is the one already admitted by the
+        builder's own guard, and rank order says it is the better of the two.
         """
         if isinstance(item, Content):
             return replace(self, content=(*self.content, item))
         if isinstance(item, Directive):
             return replace(self, directives=(*self.directives, item))
-        return replace(self, questions=(*self.questions, item))
+        if self.question is not None:
+            return self
+        return replace(self, question=item)
+
+    def channel(self, name: str) -> tuple[Item, ...]:
+        """The items in the channel called ``name``, whatever shape it has.
+
+        One reader for three fields of two different shapes, so that a caller
+        naming a channel — ``half.surface.morning.speech`` is the one — does not
+        have to know that the question channel holds at most one. A name that is
+        not a channel yields nothing rather than raising: the caller is on a
+        turn's own path.
+        """
+        found = getattr(self, name, None) if name in _CHANNEL_NAMES else None
+        if isinstance(found, tuple):
+            return found
+        return (found,) if isinstance(found, (Content, Directive, Question)) else ()
 
     def render(self) -> str:
         """The single serialization of this context. Deterministic.
@@ -276,7 +327,8 @@ class Context:
     def __iter__(self) -> Iterator[Item]:
         yield from self.content
         yield from self.directives
-        yield from self.questions
+        if self.question is not None:
+            yield self.question
 
     def __len__(self) -> int:
-        return len(self.content) + len(self.directives) + len(self.questions)
+        return sum(1 for _ in self)

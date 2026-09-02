@@ -58,6 +58,7 @@ from half.retrieval.port import Ranked, Reranker
 from half.retrieval.rank import Retriever
 from half.retrieval.strands import known_strands
 from half.store.ops import Op
+from half.store.records import LEDGER, STATED
 
 logger = logging.getLogger(__name__)
 
@@ -341,7 +342,7 @@ class Runtime:
                 inbound.t,
                 subject="self",
                 claim=inbound.text,
-                ledger="stated",
+                **{LEDGER: STATED},
                 # The rung comes from the ladder, never from a literal here.
                 # A belief is admitted at the weakest rung and can reach any
                 # other only through a promotion, which is an event involving

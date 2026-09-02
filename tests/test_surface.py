@@ -976,9 +976,22 @@ def test_a_surface_speaks_exactly_when_the_capped_rung_reaches_speaks_at(
 ):
     """The whole ladder against the whole ceiling, stated as an equality.
 
-    What a surface does is decided by ``permitted(record, ceiling)`` against
-    ``SPEAKS_AT`` and by nothing else, at every ``(own, cap)`` pair — so there
-    is no rung at which the cap is applied and none at which it is skipped.
+    What a surface does is decided by ``permitted(record, ceiling)`` and by
+    nothing else, at every ``(own, cap)`` pair — so there is no rung at which
+    the cap is applied and none at which it is skipped.
+
+    **The comparison is strictly above ``SPEAKS_AT``, and story 11 is why.** A
+    surface speaks from two channels: content, which a rung alone opens, and the
+    question, which a *favour* opens on top of the rung (CAP-4). This surface is
+    built with no question engine — the fail-closed default and every caller
+    that predates story 11 — so nothing is ever bought and the only rung that
+    reaches the wire on its own is the one above `ask`. Written as
+    ``> SPEAKS_AT`` rather than ``is ASSERT`` so it stays derived from the
+    ladder: a fourth rung above `ask` is swept the day it exists.
+
+    The **bought** half of the same equality — that `ask` material speaks
+    exactly when a favour paid for it — is
+    ``tests/test_bought.py::test_a_surface_speaks_at_ask_exactly_when_a_favour_bought_it``.
     """
     with Store(tmp_path / "vidit") as store:
         seed_loop(store)
@@ -992,16 +1005,26 @@ def test_a_surface_speaks_exactly_when_the_capped_rung_reaches_speaks_at(
     view = view_of(registry)
     expected = any(
         height(permitted(view.beliefs[ident], ceiling=view.ceiling))
-        >= height(SPEAKS_AT)
+        > height(SPEAKS_AT)
         for ident in ("b_1", "b_2")
     )
     assert isinstance(outcome, Surfaced) is expected
     assert bool(channel.sent) is expected
 
 
-def test_the_channels_a_surface_speaks_from_are_the_ones_the_builder_fills():
+@pytest.mark.parametrize("bought", [None, "b_1"], ids=["unbought", "bought"])
+def test_the_channels_a_surface_speaks_from_are_the_ones_the_builder_fills(bought):
     """``SPEAKS_AT`` and ``speech`` must agree with what ``build`` actually
-    does, swept over every rung through the *real* builder."""
+    does, swept over every rung through the *real* builder — **and over both
+    sides of the purchase**, because since story 11 the rung alone no longer
+    decides what fills the question channel.
+
+    Two parameters, two different equalities, and running only one of them
+    would leave half the rule unasserted: unbought, a surface speaks strictly
+    above `ask`, because content is the only channel a rung opens by itself;
+    bought, it speaks at `ask` too. A builder that went back to reading the rung
+    would pass the second and fail the first.
+    """
     for rung in RUNGS:
         belief = {"id": "b_1", "claim": "a claim", "loop": "swim-weekly",
                   "license": str(rung), "support": ["s_1"],
@@ -1009,13 +1032,18 @@ def test_the_channels_a_surface_speaks_from_are_the_ones_the_builder_fills():
         context = build_context(
             [RankedBelief(id="b_1", claim="a claim", prefix="", bm25=None,
                           belief=belief)],
-            now=NOW.stamp, ceiling=None,
+            now=NOW.stamp, ceiling=None, bought=bought,
         )
-        assert bool(speech(context)) is (
-            height(permitted(belief, ceiling=None)) >= height(SPEAKS_AT)
-        ), f"speech() and SPEAKS_AT disagree at {rung}"
+        reached = height(permitted(belief, ceiling=None))
+        expected = (
+            reached >= height(SPEAKS_AT) if bought
+            else reached > height(SPEAKS_AT)
+        )
+        assert bool(speech(context)) is expected, (
+            f"speech() and SPEAKS_AT disagree at {rung} (bought={bought!r})"
+        )
 
-    assert SPOKEN_CHANNELS == ("content", "questions")
+    assert SPOKEN_CHANNELS == ("content", "question")
     assert SPEAKS_AT is License.ASK
 
 

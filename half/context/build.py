@@ -12,6 +12,16 @@ directive costs subtlety, leaking one costs trust. Which rung a belief lands on
 is the ladder's answer; what this module adds is that a directive whose only
 available topic echoes the claim is dropped rather than degraded.
 
+**A question is not a rung, it is a purchase** (CAP-4, story 11). Every other
+channel is decided by what a belief's license resolves to; the question channel
+needs that *and* a favour already spent, and this module is told which belief
+was paid for rather than working it out. That is deliberate and it is story
+10's lesson repeated: a subsystem that decides for itself which beliefs deserve
+a question can be made to decide wrongly, whereas one that can only emit what it
+was handed cannot. An `ask`-rung belief nobody bought becomes a *directive* —
+Half may act on it silently and may not raise it — so nothing is filtered away
+and AD-18's second failure stays closed.
+
 **The rung rules are the ladder's, and the ceiling is applied here** (AD-28).
 ``resolve`` is the single place a license becomes a decision, which is exactly
 why the actor's global ceiling belongs inside it and not beside whatever
@@ -146,8 +156,40 @@ def build(
     *,
     now: str,
     ceiling: Ceiling | None,
+    bought: str | None = None,
 ) -> Context:
     """Split ``ranked`` into the three channels, as of ``now``.
+
+    ``bought`` is **the belief id a favour has already been spent on**, and it
+    is the only way a question reaches a context (CAP-4, story 11).
+
+    *The channel is bought by what this function is handed, never by what it
+    filters.* A builder that read the rung and decided for itself which beliefs
+    deserve a question can always be made to decide wrongly — and was: before
+    story 11 every `ask`-rung belief became a ``Question`` and the morning
+    surface put that line on the wire with no favour spent, which is CAP-4's
+    central rule enforced in a package with no production caller. A builder that
+    can only emit what it was handed cannot make that mistake, which is story
+    10's AD-28 lesson (narrow the input, do not filter the output) applied to a
+    second subsystem.
+
+    **Singular, not a collection.** *"Never more than one question in a single
+    send"* is asserted by the parameter's own type: there is no way to hand two
+    in. See ``half.context.channels.Context.question``.
+
+    **Defaulted, and empty is fail-closed** — which is why a default is
+    permitted here at all, where ``resolve``'s ``ceiling`` is not. Forgetting
+    ``ceiling`` would resolve a belief as though no cap existed, so its absence
+    must be a ``TypeError``; forgetting ``bought`` asks nothing, which is a
+    first-class outcome (AD-27). Every caller that existed before this story
+    therefore emits no question at all, and a caller that wants one opts in.
+
+    ``bought`` names a *belief*, not a question: what reaches a context is the
+    belief's own topics, and the question's opaque id lives in the log
+    (``half.questions.mint`` derives one from the other). A ``bought`` naming a
+    belief that is not in ``ranked``, or one whose rung does not resolve to
+    `ask` under this ceiling, emits no question — the ladder still decides what
+    may be raised, and being paid for is not a permission.
 
     ``ceiling`` is this main's global cap (AD-28), handed down to every
     ``resolve`` in one place. Keyword-only and undefaulted, like ``resolve``'s:
@@ -192,8 +234,9 @@ def build(
         truncated=bool(getattr(ranked, "truncated", False)),
         rerank=getattr(ranked, "rerank", RerankSource.ABSENT),
     )
+    paid = bought.strip() if isinstance(bought, str) else ""
     for candidate, license_ in licensed:
-        item = _item(candidate, license_)
+        item = _item(candidate, license_, bought=paid)
         if item is None:
             continue
         trial = context.plus(item)
@@ -203,8 +246,25 @@ def build(
     return context
 
 
-def _item(candidate: Candidate, license_: License) -> Item | None:
-    """The one channel item this candidate contributes, or nothing."""
+def _item(candidate: Candidate, license_: License, *, bought: str) -> Item | None:
+    """The one channel item this candidate contributes, or nothing.
+
+    **The question channel needs two facts and this function holds neither of
+    them alone.** The rung is the ladder's answer, resolved under the ceiling
+    one frame up; whether a favour was spent is the trust package's, decided
+    before this call and handed in as ``bought``. Both are required, and neither
+    is inferred here: a belief the ladder does not raise to `ask` is never a
+    question however much was paid for it, and an `ask`-rung belief nobody paid
+    for is never a question however clearly it looks like one.
+
+    **An `ask`-rung belief nobody bought becomes a directive**, rather than
+    disappearing. AD-18 names two failures and the second is the quiet one:
+    filtering the material out entirely leaves Half blunt, unable to be gentle
+    about what it may not name. Half may not *raise* an unbought claim; it may
+    still act on it, which is what `behave` means and what a directive says.
+    Its wording is withheld either way — an `ask` belief is not ``_QUOTABLE``,
+    so its fragments are already in the withheld set.
+    """
     if license_ is _QUOTABLE:
         return _content(candidate)
     topics = _topics(candidate)
@@ -212,7 +272,7 @@ def _item(candidate: Candidate, license_: License) -> Item | None:
         return None  # no structured topic, or one that echoes the claim
     # The rungs differ in what Half may do with the topic, never in how much of
     # the belief it was allowed to see — so they share every line above this.
-    if license_ is License.ASK:
+    if license_ is License.ASK and bought and candidate.id == bought:
         return Question(id=candidate.id, topics=topics)
     return Directive(id=candidate.id, topics=topics)
 

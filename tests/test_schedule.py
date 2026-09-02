@@ -1946,10 +1946,17 @@ def test_the_scheduler_is_wired_into_the_shipped_composition(tmp_path):
         # somebody else's registry, to somebody else's channel, or to neither.
         from half.surface.morning import MorningPass, MorningSurface
 
+        # Story 11: the surface also holds *this* wiring's question engine,
+        # compared by value for the reason everything else here is — a surface
+        # wired with ``questions=None`` never asks anything, which is exactly
+        # the state story 5b shipped in and which this equality now forbids.
+        from half.questions.engine import QuestionEngine
+
         assert wiring.scheduler.work == MorningPass(
             consolidate=TensionPass(ledger=wiring.registry),
             surface=MorningSurface(
-                ledger=wiring.registry, channel=wiring.channel
+                ledger=wiring.registry, channel=wiring.channel,
+                questions=QuestionEngine(ledger=wiring.registry),
             ),
         )
         assert isinstance(wiring.scheduler.clock, SystemClock)

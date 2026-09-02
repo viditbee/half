@@ -173,7 +173,7 @@ def test_an_assert_belief_becomes_quotable_content():
 
     assert context.quotable() == (SAID,)
     assert SAID in context.render()
-    assert not context.directives and not context.questions
+    assert not context.directives and context.question is None
 
 
 @pytest.mark.ad18
@@ -196,16 +196,48 @@ def test_a_behave_belief_becomes_a_directive_and_its_claim_appears_nowhere():
 
 
 @pytest.mark.ad18
-def test_an_ask_belief_becomes_a_question_candidate_and_is_never_quoted():
-    """Matrix: `ask` belief -> a question candidate; claim treated as `behave`."""
+@pytest.mark.cap4
+@pytest.mark.cap4_bought
+def test_a_bought_ask_belief_becomes_a_question_and_is_never_quoted():
+    """Matrix: `ask` belief a favour paid for -> a question; claim withheld.
+
+    **This case used to need no ``bought`` argument, and that was the defect
+    story 11 exists to fix** — every `ask`-rung belief became a question and the
+    morning surface put that line on the wire with no favour spent, so CAP-4's
+    central rule was enforced in a package with no production caller.
+    """
+    context = build(
+        ranked(cand("b_1", ASKED, license="ask", topics=["land"])), now=NOW,
+        ceiling=None, bought="b_1",
+    )
+
+    assert context.quotable() == ()
+    assert not context.directives
+    assert [t.name for t in context.question.topics] == ["land"]
+    assert_absent(context.render(), ASKED)
+
+
+@pytest.mark.ad18
+@pytest.mark.cap4
+@pytest.mark.cap4_bought
+def test_an_unbought_ask_belief_becomes_a_directive_and_is_never_quoted():
+    """Matrix: *the channel with nothing bought* -> no ``Question`` at all.
+
+    The other half of the rule, and the one that has to fail when the builder
+    goes back to reading the rung: an `ask`-rung belief nobody paid for reaches
+    no question channel. It is **not** filtered away either — AD-18's second
+    named failure is the material vanishing, leaving Half blunt about what it
+    may not name — so it lands in the directive channel, where Half may act on
+    it silently and may never say it.
+    """
     context = build(
         ranked(cand("b_1", ASKED, license="ask", topics=["land"])), now=NOW,
         ceiling=None,
     )
 
+    assert context.question is None
     assert context.quotable() == ()
-    assert not context.directives
-    assert [t.name for t in context.questions[0].topics] == ["land"]
+    assert [t.name for t in context.directives[0].topics] == ["land"]
     assert_absent(context.render(), ASKED)
 
 
@@ -231,10 +263,19 @@ def test_an_uncertain_license_resolves_to_behave_and_never_to_assert(belief):
     `assert` — the weakest rung is the default *and* the failure mode."""
     assert resolve(belief, ceiling=None) is License.BEHAVE
 
-    context = build(ranked(cand("b_1", HELD, loop="mend-things", **belief)), now=NOW, ceiling=None)
+    # **Bought, deliberately.** Since story 11 a question needs two facts — the
+    # rung and a spent favour — and testing an uncertain rung with nothing
+    # bought would pass for a builder that had stopped reading the rung at all.
+    # Handing the favour over is what keeps this case about the *ladder*.
+    context = build(
+        ranked(cand("b_1", HELD, loop="mend-things", **belief)), now=NOW,
+        ceiling=None, bought="b_1",
+    )
     assert context.quotable() == ()
     assert context.directives, "the belief must still inform behaviour"
-    assert not context.questions, "an uncertain rung may not become a question"
+    assert context.question is None, (
+        "an uncertain rung may not become a question, whatever was paid for it"
+    )
     assert_absent(context.render(), HELD)
 
 
@@ -531,7 +572,7 @@ def test_every_string_a_channel_item_carries_appears_in_the_rendering():
         now="NOWSTAMP",
         content=(sample(Content, "c"),),
         directives=(sample(Directive, "d"),),
-        questions=(sample(Question, "q"),),
+        question=sample(Question, "q"),
     )
     rendering = context.render()
 
@@ -558,7 +599,7 @@ def test_the_rendering_actually_emits_a_line_for_every_channel():
             cand("b_hold", HELD, license="behave", loop="mend-things"),
             cand("b_ask", ASKED, license="ask", topics=["land"]),
         ),
-        now=NOW, ceiling=None,
+        now=NOW, ceiling=None, bought="b_ask",
     )
     lines = context.render().split("\n")
 
@@ -618,12 +659,12 @@ def test_a_mixed_set_lands_each_belief_in_exactly_one_channel():
             cand("b_hold", HELD, license="behave", loop="mend-things"),
             cand("b_ask", ASKED, license="ask", topics=["land"]),
         ),
-        now=NOW, ceiling=None,
+        now=NOW, ceiling=None, bought="b_ask",
     )
 
     assert [c.id for c in context.content] == ["b_say"]
     assert [d.id for d in context.directives] == ["b_hold"]
-    assert [q.id for q in context.questions] == ["b_ask"]
+    assert context.question.id == "b_ask"
     assert len(context) == 3
     assert_absent(context.render(), HELD, ASKED)
     assert SAID in context.render()
@@ -906,13 +947,19 @@ def run_turn(root, text, *, registry=None, mains=None, reranker=None):
     return transport, reg
 
 
-def context_of(root, query="xyzzy plugh", *, main="vidit"):
-    """The context a turn would build, straight off the live retrieval path."""
+def context_of(root, query="xyzzy plugh", *, main="vidit", bought=None):
+    """The context a turn would build, straight off the live retrieval path.
+
+    ``bought`` defaults to nothing, which is what the *turn* path actually
+    passes: ``half.actor.runtime`` buys no question, so a conversation reply
+    carries none. Handing one in is how the two cases below exercise both sides
+    of the rule against one live store.
+    """
     from half.retrieval.rank import Retriever
 
     with Store(root / main, prefix=build_prefix) as s:
         ranked_set = Retriever(store=s).retrieve(query, now=NOW)
-        return build(ranked_set, now=NOW, ceiling=None)
+        return build(ranked_set, now=NOW, ceiling=None, bought=bought)
 
 
 @pytest.mark.ad18
@@ -924,21 +971,40 @@ def test_a_retracted_or_expunged_belief_reaches_no_channel(tmp_path):
         s.record(Op.RETRACT, "r_1", "2026-08-01T00:00:00Z", target="b_say")
         s.expunge("b_hold", t="2026-08-02T00:00:00Z")
 
-    context = context_of(root)
+    context = context_of(root, bought="b_ask")
     assert [c.id for c in context.content] == []
     assert [d.id for d in context.directives] == []
-    assert [q.id for q in context.questions] == ["b_ask"]
+    assert context.question.id == "b_ask"
     assert_absent(context.render(), SAID, HELD, ASKED)
 
 
 @pytest.mark.ad18
 def test_a_licensed_context_off_the_live_store_splits_by_rung(tmp_path):
     root = seeded(tmp_path / "mains")
-    context = context_of(root)
+    context = context_of(root, bought="b_ask")
 
     assert context.quotable() == (SAID,)
     assert [d.id for d in context.directives] == ["b_hold"]
-    assert [q.id for q in context.questions] == ["b_ask"]
+    assert context.question.id == "b_ask"
+    assert_absent(context.render(), HELD, ASKED)
+
+
+@pytest.mark.ad18
+@pytest.mark.cap4
+@pytest.mark.cap4_bought
+def test_the_turn_path_buys_no_question_so_the_live_store_yields_none(tmp_path):
+    """The same live store, read the way a *conversation* reads it.
+
+    ``half.actor.runtime`` hands ``build`` no bought belief, so an `ask`-rung
+    belief that would have been a question line before story 11 is a directive
+    now — enforcement by what the builder is handed, on the real retrieval path
+    rather than on a hand-built ranked set.
+    """
+    root = seeded(tmp_path / "mains")
+    context = context_of(root)
+
+    assert context.question is None
+    assert sorted(d.id for d in context.directives) == ["b_ask", "b_hold"]
     assert_absent(context.render(), HELD, ASKED)
 
 
