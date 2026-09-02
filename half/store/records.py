@@ -1201,6 +1201,22 @@ def validate_fields(fields: dict[str, Any], *, op: Op | None = None) -> None:
         # names no question must refuse as a ``TrustError`` rather than as the
         # generic type check's bare ``ValueError``.
         validate_asked_fields(fields)
+    if op is not None and op not in CORRECTIONS:
+        # **A stamp only means something on a correction.** Review found that
+        # ``expired_at`` on an ``assert`` passed every gate — a record durably
+        # carrying an attribution nothing had checked, on an op that removes
+        # nothing. The log is append-only, so it would say it for ever, and
+        # ``attribution_for`` skips it, which makes it a field that reads as an
+        # answer and is consulted by nothing.
+        stray = sorted(
+            name for name in (EXPIRED_AT, INVALID_AT) if fields.get(name) is not None
+        )
+        if stray:
+            raise CorrectionError(
+                f"a {op.value} record may not carry {stray}: those two fields "
+                f"are the whole of why a belief *left*, and an op that removes "
+                f"nothing has no cause to record"
+            )
     if op in CORRECTIONS:
         # First, for the reason the five gates above are first: a correction
         # attributing itself to two causes at once must refuse as a

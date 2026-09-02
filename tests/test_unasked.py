@@ -87,7 +87,6 @@ from half.trust.unasked import (
 
 from tests.conftest import (
     CLOSED,
-    LIFTED,
     UNREACHABLE,
     door_of,
     outward,

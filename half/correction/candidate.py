@@ -513,15 +513,32 @@ class Widening:
         ):
             self.flush(alarming=True)
 
+    @property
+    def quiet(self) -> bool:
+        """Whether nothing has happened worth writing out.
+
+        A deployment with no key and no candidate is not an event, and a line of
+        zeros at every shutdown is the noise that trains an operator to ignore
+        the one line that matters. ``proposed`` is in here as well as
+        ``consulted`` because the **table** proposes an erasure with no model
+        anywhere on the path, so a widening that consulted nothing can still
+        have offered something.
+        """
+        return not (
+            self._tally.consulted or self._tally.proposed or self._tally.skipped
+        )
+
     def flush(self, *, alarming: bool = False) -> None:
         """Write the counts out now — periodically, above the alarm rate, and
-        once at shutdown.
+        once at shutdown, unless nothing has happened at all.
 
         The two calls are spelled out rather than routed through a shared format
         string, because the guard that proves no log line here can carry content
         reads the *arguments of a logging call*: a message in a variable is
         invisible to it, and an invisible log call is how content gets logged.
         """
+        if self.quiet:
+            return
         if alarming:
             logger.error(
                 "correction widening: %d consulted, %d answered, %d fell back "

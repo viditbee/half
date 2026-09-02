@@ -54,7 +54,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
-from half.errors import TokenGrowthLimitError
+from half.errors import CorrectionError, TokenGrowthLimitError
 from half.text import is_unspaced, normalize, terms, words
 
 
@@ -494,6 +494,48 @@ def _fires(clauses: tuple[tuple[str, ...], ...], table: "_Table") -> bool:
                 if _matched(clause, phrase, run=run):
                     return True
     return False
+
+
+def _check_tables() -> None:
+    """Import-time invariants, as raises rather than bare ``assert``.
+
+    A guarantee ``python -O`` removes is not a guarantee. Two failures this
+    catches, both silent in a different way:
+
+    * a table added to ``VOCABULARY`` and not to ``MEANING_FOR_TABLE`` never
+      fires, and reads in review as coverage that exists;
+    * a table named in one place and renamed in the other raises ``KeyError``
+      **on the turn path**, which is a main losing their reply to a dictionary
+      key.
+    """
+    named = {name for name, _ in MEANING_FOR_TABLE}
+    if len(named) != len(MEANING_FOR_TABLE):
+        raise CorrectionError(f"a table is ordered twice: {MEANING_FOR_TABLE}")
+    missing = named - set(VOCABULARY)
+    if missing:
+        raise CorrectionError(
+            f"{sorted(missing)} are ordered and defined nowhere; the turn path "
+            f"would raise on the first message"
+        )
+    silent = set(VOCABULARY) - named - {CONFIRM}
+    if silent:
+        raise CorrectionError(
+            f"{sorted(silent)} are defined and never consulted. A table nothing "
+            f"reads is a vocabulary that reads as coverage and fires on nothing"
+        )
+    if CONFIRM not in VOCABULARY:
+        raise CorrectionError(
+            f"{CONFIRM!r} names the confirmation table and is not one of "
+            f"{sorted(VOCABULARY)}; a candidate could never be answered"
+        )
+    for name, source in VOCABULARY.items():
+        if not source:
+            raise CorrectionError(f"table {name!r} is empty")
+        if len(set(source)) != len(source):
+            raise CorrectionError(f"table {name!r} repeats a row")
+
+
+_check_tables()
 
 
 def recognize(text: object) -> Meaning | None:

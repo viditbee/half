@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import logging
 import unicodedata
 from pathlib import Path
 
@@ -50,6 +51,8 @@ from half.correction.apply import Removal, Source
 from half.correction.attribute import Attribution, attribution_for
 from half.correction.candidate import (
     ACTION_FOR_LABEL,
+    BREAK_AFTER,
+    BREAK_FOR,
     ALLOWED_METHODS,
     BOUND_SECONDS,
     CORRECTION,
@@ -1250,20 +1253,84 @@ def test_a_correction_in_a_language_no_row_covers_is_still_reachable(
     assert f"{Op.RETRACT.value}?[{BELIEF}]" in last(transport)
 
 
-@pytest.mark.parametrize(
-    "text",
-    ["hi", "i finally booked the flights", "please remember this",
-     "farmland again please", "i went running today", "how are you",
-     "can you remind me tomorrow", "that plot of the novel was good",
-     "the weather is not great today", "i am not going to the shop"],
-    ids=lambda t: t.replace(" ", "-")[:24],
+#: Ordinary messages, in every script the tables carry. **None of them may fire
+#: on any table**, and the sweep's own coverage is asserted below, so a row
+#: cannot be added in a script the negatives do not reach.
+#:
+#: The English-only version of this sweep was the hole. It had ten Latin
+#: fixtures, so it could not see that ``"the article says delete that button
+#: from the form"`` erased a belief, and adding ``ですか`` — the ordinary
+#: Japanese question particle — to the *wrong* table would have left it green
+#: while every Japanese question in the world removed a belief.
+#:
+#: Several of these are exactly the sentence a row was narrowed for, and they
+#: are here so the narrowing cannot be undone quietly: ``不对称`` and ``不对劲``
+#: are ordinary words, ``サイズが違います`` is a size complaint, ``ราคาไม่ถูก``
+#: is *"the price isn't cheap"*, and ``그거 삭제해도 돼요`` is asking permission.
+ORDINARY: Final[tuple[str, ...]] = (
+    # Latin — English, and the three sentences containment used to break on
+    "hi", "i finally booked the flights", "please remember this",
+    "farmland again please", "i went running today", "how are you",
+    "can you remind me tomorrow", "that plot of the novel was good",
+    "the weather is not great today", "i am not going to the shop",
+    "the article says delete that button from the form",
+    "he told me thats wrong but i disagreed",
+    "that is not any more expensive than the other one",
+    "i used to live there and i still do",
+    # Latin — Romance, Germanic, Nordic, Dutch, Turkish, Indonesian, Vietnamese
+    "el precio no está mal para lo que es", "o preço não é ruim",
+    "ce livre est vraiment bien écrit", "das Wetter ist heute nicht gut",
+    "det stämmer bra med planen", "dat klopt met de afspraak",
+    "bu yanlışlıkla oldu galiba", "harga itu salah satu yang bagus",
+    "giá không đúng lắm", "habari ya asubuhi", "magandang umaga po",
+    # Cyrillic, Greek, Hebrew
+    "это неправдоподобно длинная история", "to nie jest takie proste",
+    "αυτό είναι λάθος βιβλίο για μένα", "זה ספר טוב",
+    # Arabic, Persian
+    "هذا خطأ مطبعي بسيط", "این کتاب خوب است",
+    # South Asia
+    "यह गलत रास्ता है क्या", "এটা ভুল রাস্তা", "இது தவறான வழி",
+    "ਇਹ ਚੰਗੀ ਕਿਤਾਬ ਹੈ", "ఇది మంచి పుస్తకం", "ಇದು ಒಳ್ಳೆಯ ಪುಸ್ತಕ",
+    "ഇത് നല്ല പുസ്തകമാണ്",
+    # Han
+    "我觉得这不对称", "价格不对劲", "我从来没说过谎", "事情不是这样简单",
+    "这是错的答案吗",
+    # Kana
+    "サイズが違います", "元気ですか", "それは違う色です", "それは間違いない",
+    # Hangul
+    "그건 틀린 색이야", "그거 삭제해도 돼요",
+    # Thai
+    "ราคาไม่ถูก",
 )
+
+
+@pytest.mark.parametrize("text", ORDINARY, ids=lambda t: t.replace(" ", "-")[:28])
 def test_the_table_fires_on_no_ordinary_message(text):
-    """The other half of a phrase table's honesty. Every row here is *acted on*
-    with no confirmation, so a table that fired on an ordinary sentence would
-    remove a belief the main never questioned — including two negations that
-    are about something other than Half."""
+    """The other half of a phrase table's honesty, in every script it carries.
+
+    Every row is *acted on* with no confirmation, so a table that fired on an
+    ordinary sentence removes a belief the main never questioned — and a table
+    whose negatives are all English cannot see that it does so in the scripts
+    this product exists to reach.
+    """
     assert recognize(text) is None
+
+
+def test_the_negative_sweep_reaches_every_script_the_tables_carry():
+    """**A row cannot be added in a script the negatives do not reach.**
+
+    Without this the sweep is a list somebody remembered to extend. With it,
+    adding the first row in a new script fails here until an ordinary sentence
+    in that script is added beside it — which is the only way the sweep can
+    catch what that row breaks.
+    """
+    carried: set[str] = set()
+    for name, _ in MEANING_FOR_TABLE:
+        for row in VOCABULARY[name]:
+            carried |= _scripts(row)
+    reached = set().union(*(_scripts(text) for text in ORDINARY))
+    assert carried <= reached, sorted(carried - reached)
+    assert len(carried) >= 8, sorted(carried)
 
 
 @pytest.mark.parametrize(
@@ -1333,6 +1400,253 @@ def test_the_two_tokenizers_agree_on_the_scripts_they_both_cut(tmp_path):
         "i want to\nkill myself", "don't do that",
     ):
         assert correction_tokens(text) == crisis_tokens(text), text
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# the branches that only run when something is wrong
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def test_a_correction_that_raises_costs_the_correction_and_not_the_reply(
+    registry, tmp_path, monkeypatch
+):
+    """**The fail-open handler, run against the fault it exists for.**
+
+    A branch nobody has ever run is a branch nobody knows is open. Without the
+    handler the exception leaves the turn path, the per-message isolation
+    swallows it, and the main gets **nothing** — and their message is never
+    recorded either, because the ``assert`` happens after the correction, so the
+    redelivery is not suppressed but the reply is already lost.
+
+    With it: the reply goes out, the message is recorded, and nothing is
+    removed.
+    """
+    seed(tmp_path)
+    monkeypatch.setattr(
+        Runtime, "_removal",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    transport = corrects(registry, "thats wrong")
+
+    assert last(transport).strip() == "noted."
+    assert corrections_in(tmp_path) == []
+    assert BELIEF in beliefs_of(tmp_path)
+    # The main's own message is recorded, which is what says the turn completed.
+    assert any(
+        r.op is Op.ASSERT and r.data.get("claim") == "thats wrong"
+        for r in log_of(tmp_path)
+    )
+
+
+def test_a_run_of_failures_stands_the_widening_down(registry, tmp_path):
+    """**The breaker, and the cost it exists to stop.**
+
+    During an outage every turn would otherwise pay the whole bound and issue
+    another doomed request. After ``BREAK_AFTER`` consecutive fallbacks this
+    main's widening goes quiet for ``BREAK_FOR`` turns.
+
+    Asserted on **calls the holder actually received**, not on a counter: the
+    failure this prevents is latency and spend, and both are a function of the
+    call happening.
+    """
+    calls: list[Classify] = []
+
+    class Counting:
+        async def classify(self, work: Classify):
+            calls.append(work)
+            return Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED)
+
+    wide = Widening({MAIN: Counting()}, bound_seconds=0.2)
+    for _ in range(BREAK_AFTER + 7):
+        asyncio.run(wide.consult("hm, is that me these days", main_id=MAIN))
+
+    assert len(calls) == BREAK_AFTER, len(calls)
+    assert wide.tally.skipped == 7
+    assert wide.tally.fell_back == BREAK_AFTER
+    # The breaker's silence is outside every rate: counting it as failure would
+    # double-count one outage.
+    assert wide.tally.consulted == BREAK_AFTER
+
+
+def test_the_breaker_is_per_main(registry, tmp_path):
+    """One main's provider being down says nothing about another's."""
+    calls: list[str] = []
+
+    class Counting:
+        async def classify(self, work: Classify):
+            calls.append(work.prompt.main_id)
+            return Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED)
+
+    wide = Widening({MAIN: Counting(), "other": Counting()}, bound_seconds=0.2)
+    for _ in range(BREAK_AFTER + 2):
+        asyncio.run(wide.consult("hm, is that me", main_id=MAIN))
+    asyncio.run(wide.consult("hm, is that me", main_id="other"))
+
+    assert calls.count(MAIN) == BREAK_AFTER
+    assert calls.count("other") == 1
+
+
+def test_a_good_answer_clears_the_run(registry, tmp_path):
+    """The other half of the breaker: four failures and a success do not trip
+    it, so a flaky provider is not treated as an outage."""
+    answers = [Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED)] * (
+        BREAK_AFTER - 1
+    ) + [labelled(NO_CORRECTION)] + [
+        Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED)
+    ] * (BREAK_AFTER - 1)
+    calls: list[object] = []
+
+    class Scripted:
+        async def classify(self, work: Classify):
+            calls.append(work)
+            return answers[len(calls) - 1]
+
+    wide = Widening({MAIN: Scripted()}, bound_seconds=0.2)
+    for _ in range(len(answers)):
+        asyncio.run(wide.consult("hm, is that me", main_id=MAIN))
+
+    assert len(calls) == len(answers), "the run was cleared by the good answer"
+    assert wide.tally.skipped == 0
+
+
+def test_what_was_proposed_and_what_was_confirmed_are_counted(
+    registry, tmp_path
+):
+    """**The pair an operator watches, and since the proposal path is now the
+    gate on `behave` text egress it is the only instrument there is.**
+
+    A widening that proposes on every turn and is confirmed on none is a
+    classifier reading corrections into ordinary conversation. Counts only —
+    no message, no claim, no id (AD-22).
+    """
+    seed(tmp_path)
+    wide = widening(labelled(CORRECTION))
+
+    corrects(registry, "hm, i dont think that is me these days", "yes",
+             corrections=wide)
+
+    assert wide.tally.proposed == 1
+    assert wide.tally.confirmed == 1
+
+
+def test_a_confirmation_of_a_belief_already_gone_is_not_counted_as_a_deletion(
+    registry, tmp_path
+):
+    """The idempotent row, arriving through the candidate path.
+
+    If the belief left the fold between the proposal and the answer there is
+    nothing to remove. Booking that as a confirmed deletion would tell an
+    operator the main deleted something they did not — and the number is the
+    one thing standing between a mis-reading classifier and nobody noticing.
+    """
+    seed(tmp_path)
+    wide = widening(labelled(CORRECTION))
+    transport = corrects(registry, "hm, i dont think that is me these days",
+                         corrections=wide)
+    assert wide.standing(MAIN) is not None
+
+    with Store(tmp_path / MAIN) as store:
+        store.record(Op.RETRACT, "co_out_of_band", "2026-09-01T13:00:00Z",
+                     target=BELIEF)
+
+    a_turn(registry, texts=("yes",), corrections=wide, at=NOON + 50, tag="z")
+
+    assert wide.tally.proposed == 1
+    assert wide.tally.confirmed == 0
+
+
+def test_the_counts_are_written_out_and_carry_no_content(caplog):
+    """A wholly failing widening must not be silent for as long as it takes to
+    reach a round number, so the counts are flushed at shutdown as well.
+
+    Counts and nothing else: the assertion is that the line carries numbers and
+    that no claim, message or id could be in it (AD-22).
+    """
+    wide = widening(labelled(CORRECTION))
+    wide.tally.consulted = 7
+    wide.tally.proposed = 3
+    with caplog.at_level(logging.INFO, logger="half.correction.candidate"):
+        wide.flush()
+    written = [r.getMessage() for r in caplog.records]
+    assert written and "7 consulted" in written[0]
+    assert "3 proposed" in written[0]
+    assert CLAIM not in written[0] and BELIEF not in written[0]
+
+
+def test_serve_writes_the_counts_out_on_the_way_out(tmp_path, monkeypatch, caplog):
+    """A process that ran for a week proposing a deletion on every turn and
+    having none confirmed would otherwise end with nothing anywhere saying so.
+
+    Asserted through ``serve`` rather than by finding a call in the source,
+    because that is how story 6d's identical claim passed with the value set to
+    ``None``.
+    """
+    import half.__main__ as entrypoint
+    from half.config import MAINS_ENV, ROOT_ENV, load
+
+    class Recording:
+        def __init__(self, **kw):
+            pass
+
+        async def run(self):
+            return None
+
+    real_build = entrypoint.build
+
+    def build_and_count(config, token):
+        wiring = real_build(config, token)
+        wiring.corrections.tally.proposed = 4
+        return wiring
+
+    monkeypatch.setattr(entrypoint, "build", build_and_count)
+    monkeypatch.setattr(entrypoint, "Runtime", Recording)
+    config = load({ROOT_ENV: str(tmp_path), MAINS_ENV: f"123:{MAIN}"})
+    with caplog.at_level(logging.INFO, logger="half.correction.candidate"):
+        asyncio.run(entrypoint.serve(config, "123:fake"))
+
+    assert any("4 proposed" in r.getMessage() for r in caplog.records)
+
+
+def test_a_widening_that_did_nothing_at_all_writes_no_line(caplog):
+    """The other half: a deployment with no classifier and no candidate is not
+    an event, and a line of zeros every shutdown is noise that trains an
+    operator to ignore the one that matters."""
+    wide = Widening()
+    with caplog.at_level(logging.INFO, logger="half.correction.candidate"):
+        wide.flush()
+    assert not caplog.records
+
+
+def test_holds_says_whether_this_main_has_a_model_at_all():
+    """Read on the turn path before a consultation is built, so a main with no
+    key costs nothing rather than costing a ``Verdict``."""
+    wide = widening(labelled(CORRECTION))
+    assert wide.holds(MAIN)
+    assert not wide.holds("somebody-else")
+    assert not Widening().holds(MAIN)
+
+
+def test_a_main_with_no_key_is_left_unequipped_and_the_boot_survives(
+    tmp_path, monkeypatch
+):
+    """``widening()``'s own promise, and it is the one the crisis wiring had to
+    learn twice: a boot must not die here.
+
+    A main with no credential file raises inside the provider construction, and
+    the loop catches it, logs the class, and leaves that main to the offline
+    table — which for correction costs almost nothing, because the table acts
+    alone and only the widening needs a key.
+    """
+    from half import __main__ as entrypoint
+    from half.config import MAINS_ENV, ROOT_ENV, load
+    from half.secrets import FileSecretStore
+
+    config = load({ROOT_ENV: str(tmp_path), MAINS_ENV: f"123:{MAIN}"})
+    wide = entrypoint.widening(config, FileSecretStore.beside(config.root))
+
+    assert isinstance(wide, Widening)
+    assert not wide.holds(MAIN)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1537,8 +1851,15 @@ def test_only_the_widening_may_name_a_model_inside_the_package():
     root and made stricter in exchange — exactly one module may name it, and the
     rest of ``UNREACHABLE`` still stands over the whole package.
     """
-    from tests.conftest import UNREACHABLE
+    from tests.conftest import LIFTED, UNREACHABLE
 
+    # **The exemption table is pinned to its one documented entry**, beside the
+    # rule it exempts. Adding a line — ``"half/questions": ("half.model",)`` —
+    # plus a model import in that package left the whole suite green, which
+    # means the rule story 11 fixed could be undone by a one-line edit in a test
+    # helper. The lift is also recomputed here rather than read from the table,
+    # so this case says what it means with or without it.
+    assert LIFTED == {"half/correction": ("half.model",)}, LIFTED
     rest = tuple(root for root in UNREACHABLE if root != "half.model")
     for path in sorted((ROOT / "half/correction").rglob("*.py")):
         assert not reaches(path, rest), f"{path.name} reaches outward"

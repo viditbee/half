@@ -37,6 +37,22 @@ A stamp this build cannot parse is refused before it is durable; here, on the
 reading side, it is simply not an attribution — one correction loses its cause
 rather than a main losing their store.
 
+**The read side has no production caller yet, and that is deferred rather than
+missed.** CAP-11's *"and in what Half says"* is satisfied today by the op: a
+``revise`` and a ``retract`` render as different lines
+(``half.correction.apply.shown``), so the distinction does reach the main. What
+is *not* built is the sentence that says it — *"I had that wrong, sorry"*
+against *"noted, that's changed"* — because Half composes no prose anywhere yet:
+the model port has no generator wired, and every surface in the tree renders
+deterministic markers. This module is the record shape and the reader that
+sentence will use, and it lands with the story that composes text, alongside the
+same gap for the content and question channels (the manifest's voice-gate row).
+
+Until then nothing under ``half/`` calls ``attribution_of`` or
+``attribution_for``; the tests do. Saying so here is the point — a reader
+described as running on a turn path that does not call it is a docstring that
+will be believed.
+
 Pure. No clock, no store, no model, no network. ``attribution_for`` folds a
 sequence of record *mappings* handed in by whoever read the log; there is no
 door here onto a main's directory and no import that could open one.
@@ -143,7 +159,15 @@ def attribution_of(record: Mapping[str, Any] | Any) -> Attribution:
 
     A stamp this build cannot parse is not an attribution. The append gate
     refuses one before it is durable; a log written by another build costs that
-    one correction its cause rather than taking a main's store down.
+    one correction its cause rather than taking a main's store down. It never
+    raises for that reason — and because the caller this is written for is the
+    one that will compose an apology, which must not fail on a field.
+
+    **Every correction written before story 12 is bare**, and reads here as *not
+    yet known*. That is the correct answer and not a regression: those records
+    were written by a build with no way to say which it was, so their cause
+    genuinely is not known. ``half.store.fold`` says the same thing from the
+    other side.
 
     Both stamps at once — also refused at the append — reads as *not yet known*
     rather than as either cause. A record that answers both questions has

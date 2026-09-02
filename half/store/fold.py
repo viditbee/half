@@ -300,10 +300,28 @@ def fold(records: Iterable[Record]) -> State:
 
             case Op.RETRACT | Op.REVISE:
                 # Both remove the belief from the current view. They differ in
-                # what Half owes the main, not in what the fold does: RETRACT
-                # means "you changed" (no apology), REVISE means "Half was
-                # wrong" (apology, and show what was removed). The distinction
-                # is preserved in the log for whoever composes that message.
+                # what Half *owes* the main, not in what the fold does: a
+                # RETRACT owes no apology and a REVISE owes one. The
+                # distinction is preserved in the log for whoever composes that
+                # message.
+                #
+                # **The op is not the cause, and since story 12 that is a rule
+                # rather than a shorthand.** The cause — *the main changed*
+                # against *Half was wrong* — lives on two optional stamps
+                # (``expired_at``/``invalid_at``, see ``half.store.records``),
+                # because a correction may settle neither and the honest record
+                # of that is a third state. ``half.correction.attribute`` reads
+                # those stamps and never this op, so a bare RETRACT is *not yet
+                # known* and not *you changed*.
+                #
+                # **What that means for a log written before story 12**: every
+                # correction in it is bare, so every one of them reads as *not
+                # yet known*. That is the correct answer rather than a
+                # regression — those records were written by a build that had no
+                # way to say which it was, so their cause genuinely is not
+                # known, and the alternative is a fold that reports a cause
+                # nobody recorded. A later message can still settle one, because
+                # corrections are appends.
                 #
                 # **The refutation firewall, part two (CAP-6).** These two lines
                 # are the whole correction path, and neither of them can reach

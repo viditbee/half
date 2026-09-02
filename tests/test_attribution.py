@@ -353,11 +353,17 @@ def test_the_other_two_graphiti_timestamps_are_not_fields_of_any_record():
     supplies, and a field that would be empty on every record is a field that
     invites being filled with a guess.
 
-    Asserted over the tree rather than argued in the manifest alone, so adding
-    one is a deliberate edit with a failing test on it.
+    Asserted over the two packages that **define record shapes** — the store
+    and the correction path — rather than over the whole tree. A tree-wide ban
+    on two ordinary strings has no exemption route, and the first provider SDK
+    or transport response carrying a ``created_at`` key would trip it, which is
+    a guard that fails for a reason that has nothing to do with its rule.
     """
     for name in ("created_at", "valid_at"):
-        for path in sorted((ROOT / "half").rglob("*.py")):
+        for path in sorted(
+            [*(ROOT / "half/store").rglob("*.py"),
+             *(ROOT / "half/correction").rglob("*.py")]
+        ):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             found = [
                 node.value for node in ast.walk(tree)
