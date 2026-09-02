@@ -388,8 +388,8 @@ def reaches(path: Path, roots: tuple[str, ...]) -> list[str]:
     )
 
 
-def ledger_calls(path: Path) -> set[str]:
-    """Every method this module calls on ``self.ledger``.
+def ledger_reach(path: Path) -> set[str]:
+    """Every name this module takes off ``self.ledger``.
 
     A **predicate over the door**, not a list of forbidden words. The rule is
     that a package reaches a main's log through its injected ledger and through
@@ -398,13 +398,19 @@ def ledger_calls(path: Path) -> set[str]:
     denylist this codebase has shipped was walked around. It also has to
     tolerate ``list.append``, which is not a log append and which an earlier
     spelling of this gate reported as one.
+
+    **Every attribute, not only the ones called in place.** This read calls
+    alone until a mutation walked past it: ``_door = self.ledger.acquire``
+    followed by ``async with _door(main_id)`` is a call on a *local*, so a scan
+    that matched ``ast.Call`` saw nothing at all. Taking the name is the reach;
+    what happens to it afterwards is not something an AST scan can follow.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     found: set[str] = set()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        if not isinstance(node, ast.Attribute):
             continue
-        target = node.func.value
+        target = node.value
         if isinstance(target, ast.Await):
             target = target.value
         if (
@@ -413,7 +419,7 @@ def ledger_calls(path: Path) -> set[str]:
             and isinstance(target.value, ast.Name)
             and target.value.id == "self"
         ):
-            found.add(node.func.attr)
+            found.add(node.attr)
     return found
 
 

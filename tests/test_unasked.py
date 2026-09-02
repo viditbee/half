@@ -89,7 +89,7 @@ from tests.conftest import (
     CLOSED,
     UNREACHABLE,
     door_of,
-    ledger_calls,
+    ledger_reach,
     reaches,
     resolved_imports,
 )
@@ -1347,7 +1347,7 @@ def test_the_package_reaches_a_log_only_through_the_narrow_door(package, protoco
         assert not offending, (
             f"{path.name} opens a store of its own: {offending}"
         )
-        asked = ledger_calls(path)
+        asked = ledger_reach(path)
         assert asked <= door, (
             f"{path.name} asks the ledger for {sorted(asked - door)}, which is "
             f"outside the narrow door"
@@ -1384,10 +1384,20 @@ def test_the_door_scan_catches_the_line_it_exists_for(tmp_path):
         "    async def go(self, main_id):\n"
         "        held = []\n"
         "        held.append(1)\n"
-        "        return await self.ledger.whole_fold(main_id)\n",
+        "        return await self.ledger.whole_fold(main_id)\n"
+        "\n"
+        "    async def sideways(self, main_id):\n"
+        "        door = self.ledger.acquire\n"
+        "        async with door(main_id) as actor:\n"
+        "            return actor.store.state()\n",
         encoding="utf-8",
     )
-    assert ledger_calls(reaching) == {"whole_fold"}
+    # ``whole_fold`` is the wider door somebody reached for. ``acquire`` is the
+    # **aliased** one, which a scan matching ``ast.Call`` could not see at all:
+    # the call is on a local, and only the attribute read names the ledger.
+    # ``list.append`` is neither, and reporting it as a log write is what the
+    # word list this replaced actually did.
+    assert ledger_reach(reaching) == {"whole_fold", "acquire"}
 
 
 @pytest.mark.cap4_structure

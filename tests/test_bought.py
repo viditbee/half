@@ -114,7 +114,15 @@ CLAIMS = {
 #: loop slug is in the FTS prefix (``half.retrieval.prefix``) and is what the
 #: strand key is built from, so one word does both.
 ON_TOPIC = "farmland again please"
-OFF_TOPIC = "the concert last night was good"
+
+#: A message that **retrieves the same belief and raises none of its strands**.
+#: The distinction is the whole point of the topic case: a message sharing a
+#: word with the *claim* is ranked against it by FTS, while a strand key is built
+#: from the loop slug and the topic fields, so *"plot"* reaches the belief and
+#: touches no topic. A message that simply mentioned nothing — the first
+#: version — was refused because the belief was never in the ranked set at all,
+#: so the case passed with the topic gate removed entirely.
+OFF_TOPIC = "that plot of the novel was good"
 
 
 # ── the harness ──────────────────────────────────────────────────────────────
@@ -453,6 +461,20 @@ def test_a_message_that_raises_no_topic_is_answered_without_a_question(
     assert transport.sent, "an off-topic message is still answered"
     assert "question[" not in sent(transport)
     assert spends(tmp_path) == []
+    # Non-vacuity: the belief **is** in the ranked set, so the refusal is the
+    # topic gate's and not retrieval's. Without this the case passes with the
+    # gate deleted, because an unretrieved belief is never offered at all.
+    assert "b_land" in _retrieved(tmp_path, OFF_TOPIC), (
+        "the off-topic message must still reach the belief"
+    )
+
+
+def _retrieved(root, text, main_id="vidit"):
+    """The belief ids a turn on ``text`` would rank, off the live store."""
+    from half.retrieval.rank import Retriever
+
+    with Store(root / main_id, prefix=build_prefix) as store:
+        return [c.id for c in Retriever(store=store).retrieve(text, now=NOW)]
 
 
 @pytest.mark.cap4
