@@ -356,6 +356,20 @@ STATED: Final[str] = "stated"
 #: says two contradictory things about one belief for ever, and one carrying a
 #: stamp nothing can parse is an attribution that reads as present and answers
 #: nothing.
+#:
+#: **``SCHEMA_VERSION`` is deliberately not bumped, and here is why** — because
+#: every one of the eight bumps before it looks like a precedent for bumping.
+#: Each of those added an **op**, and an older build meeting an unknown op
+#: raises ``UnknownOpError`` and refuses to fold, which is what makes AD-29's
+#: *"never a skipped line"* true. These add two optional fields to ops that
+#: already exist, and the failure a bump prevents does not arise: an older build
+#: decodes them, preserves them verbatim (this module's first rule), and folds
+#: the record to exactly what it always folded a correction to — the belief is
+#: gone. It cannot misread the cause, because it has no notion of one; it simply
+#: does not report one, which is its own behaviour before this story and is
+#: never wrong, only silent. A bump would take a main's whole store down on a
+#: rollback in exchange for that silence, which is the trade AD-29 makes for an
+#: op and refuses for a field.
 EXPIRED_AT: Final[str] = "expired_at"
 INVALID_AT: Final[str] = "invalid_at"
 
