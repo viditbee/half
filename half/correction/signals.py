@@ -49,11 +49,13 @@ store: recognising a message writes nothing anywhere.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
 from half.errors import TokenGrowthLimitError
-from half.text import normalize, terms, words
+from half.text import is_unspaced, normalize, terms, words
 
 
 class Meaning(StrEnum):
@@ -81,43 +83,135 @@ class Meaning(StrEnum):
 #: ``half.crisis.signals``.
 _APOSTROPHES: Final[dict[int, None]] = {ord(char): None for char in "'’‘ʼ´`"}
 
-#: Line breaks and tabs, turned into spaces before splitting. ``half.text``
+#: What ends a clause, in every script the tables carry.
+#:
+#: **The clause is the unit a correction has to stand in**, and that is the fix
+#: for this layer's worst failure. Matching a phrase anywhere inside a message
+#: meant *"the article says delete that button from the form"* expunged a belief
+#: and tombstoned its body — an erasure, on an ordinary sentence about a web
+#: form.
+#:
+#: Line breaks are here rather than folded into whitespace: ``half.text``
 #: *removes* invisible characters rather than treating them as boundaries —
-#: correct for the index, wrong here, where a correction typed across two lines
-#: would otherwise match nothing.
-_BREAKS: Final[dict[int, str]] = {
-    ord(char): " " for char in "\n\r\t\v\f  "
-}
+#: correct for the index — and a correction typed on its own line is a clause of
+#: its own rather than a continuation of the sentence above it.
+#:
+#: Punctuation only. Nothing here knows about conjunctions or grammar in any
+#: language, because a rule that did would be a grammar for the languages
+#: somebody thought of.
+#:
+#: **Apostrophes are deliberately absent** and are stripped instead
+#: (``_APOSTROPHES``), because ``don't`` has to fold to one token so every row
+#: can be written once. The cost is that a quoted correction keeps no boundary —
+#: which the clause rule handles anyway, since the quoted words are then part of
+#: the surrounding clause and that clause is no longer the phrase.
+_BOUNDARIES: Final[frozenset[str]] = frozenset(
+    "\n\r\t\v\f\u2028\u2029\u0085"
+    ".,;:!?"
+    "()[]{}<>"
+    '"\u00ab\u00bb\u201c\u201d\u201e'
+    "\u2014\u2013|/"
+    "\u3001\u3002\uff01\uff1f\uff1b\uff1a\uff08\uff09"
+    "\u300c\u300d\u300e\u300f\u30fb"
+    "\u060c\u061b\u061f"
+    "\u0964\u0965"
+)
 
 
-def _tokens(text: object) -> tuple[str, ...]:
-    """``text`` as folded comparison tokens, in order.
+def _split_on_boundaries(text: str) -> list[str]:
+    """``text`` cut at every boundary character, empty runs dropped."""
+    runs: list[str] = []
+    current: list[str] = []
+    for char in text:
+        if char in _BOUNDARIES:
+            if current:
+                runs.append("".join(current))
+                current = []
+            continue
+        current.append(char)
+    if current:
+        runs.append("".join(current))
+    return runs
+
+
+def _clauses(text: object) -> tuple[tuple[str, ...], ...]:
+    """``text`` cut into clauses, each as folded comparison tokens, in order.
 
     ``terms`` rather than ``words``: a run of Chinese, Japanese, Thai, Lao,
     Khmer or Korean is cut into grapheme clusters, so a phrase written in one of
-    those scripts matches inside a sentence rather than only as the whole of
-    one. That is the difference between a table that covers those languages and
-    a table that lists them.
+    those scripts can be matched inside a sentence rather than only as the whole
+    of one. That is the difference between a table that covers those languages
+    and a table that lists them — and it is why the two script families need
+    two matchers rather than one (see ``_matched``).
 
     Never raises. ``terms`` enforces the index's growth ceilings, and a message
-    long enough to trip one must still be *recognised* — the ceilings exist to
+    long enough to trip one must still be *recognised*: the ceilings exist to
     bound an index, not to decide that a very long message cannot be a
     correction. Past them this falls back to whole words, which is the crisis
     table's behaviour and is worse only for unspaced scripts.
     """
     if not isinstance(text, str):
         return ()
-    stripped = text.translate(_BREAKS).translate(_APOSTROPHES)
-    try:
-        split = terms(stripped)
-    except TokenGrowthLimitError:
-        split = words(stripped)
-    return tuple(folded for token in split if (folded := normalize(token)))
+    stripped = text.translate(_APOSTROPHES)
+    found: list[tuple[str, ...]] = []
+    for run in _split_on_boundaries(stripped):
+        here: list[str] = []
+        for piece in run.split():
+            try:
+                split = terms(piece)
+            except TokenGrowthLimitError:
+                split = words(piece)
+            here.extend(
+                folded for token in split if (folded := normalize(token))
+            )
+        if here:
+            found.append(tuple(here))
+    return tuple(found)
 
 
-def _compile(source: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
-    """Phrase sources compiled to token tuples, through the same tokenizer."""
-    return tuple(_tokens(phrase) for phrase in source)
+def _tokens(text: object) -> tuple[str, ...]:
+    """``text`` as one flat run of folded tokens, clause boundaries removed.
+
+    Kept for the whole-message questions — ``is_confirmation`` asks whether the
+    *message* is a clear yes — and for the agreement pin against
+    ``half.crisis.signals``, which cuts every spaced script the same way.
+    """
+    return tuple(token for clause in _clauses(text) for token in clause)
+
+
+@dataclass(frozen=True, slots=True)
+class _Table:
+    """One vocabulary, compiled: its phrases, which matcher each takes, and the
+    first-token index the turn path prefilters on."""
+
+    phrases: tuple[tuple[tuple[str, ...], bool], ...]
+    by_head: Mapping[str, tuple[tuple[tuple[str, ...], bool], ...]]
+    heads: frozenset[str]
+
+
+def _compile(source: tuple[str, ...]) -> _Table:
+    """Phrase sources compiled to token tuples, through the same tokenizer.
+
+    Each phrase carries **which matcher it takes**, decided once here from the
+    phrase's own characters rather than per message: a phrase containing any
+    character from a scriptio-continua script is matched by containment, and
+    everything else has to stand as a whole clause. Deciding it from the phrase
+    is what makes the rule a property of the table — a row cannot change which
+    matcher it gets depending on what somebody sent.
+    """
+    compiled = tuple(
+        (_tokens(phrase), any(is_unspaced(char) for char in phrase))
+        for phrase in source
+    )
+    compiled = tuple(entry for entry in compiled if entry[0])
+    heads: dict[str, list[tuple[tuple[str, ...], bool]]] = {}
+    for phrase, run in compiled:
+        heads.setdefault(phrase[0], []).append((phrase, run))
+    return _Table(
+        phrases=compiled,
+        by_head={head: tuple(rows) for head, rows in heads.items()},
+        heads=frozenset(heads),
+    )
 
 
 # =============================================================================
@@ -140,7 +234,7 @@ def _compile(source: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
 NEVER_TRUE_SOURCE: Final[tuple[str, ...]] = (
     # English
     "that was never true", "that was never right", "that was never correct",
-    "it was never true", "this was never true", "never been true",
+    "it was never true", "this was never true",
     "i never said that", "i never said this", "i never told you that",
     "you were wrong", "you were wrong about that", "you got that wrong",
     "you misunderstood that", "you misunderstood me", "that was always wrong",
@@ -164,7 +258,7 @@ NEVER_TRUE_SOURCE: Final[tuple[str, ...]] = (
     "मैंने ऐसा कभी नहीं कहा", "यह कभी सच नहीं था", "ये कभी सच नहीं था",
     "আমি কখনো এটা বলিনি", "நான் அப்படி சொல்லவே இல்லை",
     # East and South-East Asia
-    "我从来没说过", "我從來沒說過", "这从来都不对",
+    "我从来没这么说过", "我從來沒這麼說過", "这从来都不对",
     "そんなことは言っていない", "それは最初から違う",
     "그런 말 한 적 없어", "그건 처음부터 틀렸어",
     "saya tidak pernah bilang begitu", "tôi chưa bao giờ nói vậy",
@@ -215,7 +309,7 @@ WRONG_SOURCE: Final[tuple[str, ...]] = (
     "that is not true", "thats not correct", "that is not correct",
     "thats false", "that is false", "youre wrong", "you are wrong",
     "you have that wrong", "thats not accurate", "no thats wrong",
-    "nope thats wrong", "thats not it", "wrong about that",
+    "nope thats wrong", "thats not it",
     # Romance
     "eso está mal", "eso no es cierto", "eso no es verdad", "no es así",
     "isso está errado", "isso não é verdade",
@@ -234,10 +328,10 @@ WRONG_SOURCE: Final[tuple[str, ...]] = (
     "यह गलत है", "ये गलत है", "यह सही नहीं है", "ਇਹ ਗਲਤ ਹੈ",
     "এটা ভুল", "இது தவறு", "ఇది తప్పు", "ಇದು ತಪ್ಪು", "ഇത് തെറ്റാണ്",
     # East and South-East Asia
-    "这不对", "這不對", "这是错的", "不是这样",
-    "それは違う", "それは間違いです", "違います",
+    "你说的不对", "你说得不对", "不是这样的", "這不是這樣的",
+    "それは間違いです", "それは間違っています", "間違っています",
     "그건 틀렸어", "그건 아니야", "틀렸어요",
-    "itu salah", "không đúng", "ไม่ถูก", "ไม่ใช่แบบนั้น",
+    "itu salah", "không đúng", "ไม่ถูกต้อง", "ไม่ใช่แบบนั้น",
     # Africa and the Philippines
     "hiyo si kweli", "hindi tama iyon",
 )
@@ -267,7 +361,7 @@ ERASE_SOURCE: Final[tuple[str, ...]] = (
     "इसे मिटा दो", "इसे हटा दो", "এটা মুছে দাও", "இதை நீக்கு",
     # East and South-East Asia
     "删掉这个", "刪掉這個", "把这个删掉",
-    "それを削除して", "これを消して", "그거 삭제해", "그거 지워",
+    "それを削除して", "これを消して", "그거 삭제해줘", "그거 지워줘",
     "hapus itu", "xóa cái đó", "ลบอันนั้น",
     # Africa
     "futa hiyo",
@@ -336,21 +430,70 @@ MEANING_FOR_TABLE: Final[tuple[tuple[str, Meaning], ...]] = (
     ("wrong", Meaning.WRONG),
 )
 
-_TABLES: Final[dict[str, tuple[tuple[str, ...], ...]]] = {
+_TABLES: Final[dict[str, _Table]] = {
     name: _compile(source) for name, source in VOCABULARY.items()
 }
 
+#: The name of the confirmation table, spelled once. A rename that reached
+#: ``VOCABULARY`` and not the lookup below raised ``KeyError`` **on the turn
+#: path**, which is a main losing their reply over a dictionary key.
+CONFIRM: Final[str] = "confirm"
 
-def _starts(tokens: tuple[str, ...], phrase: tuple[str, ...]) -> bool:
-    """Whether ``phrase`` appears contiguously inside ``tokens``."""
+
+def _contains(tokens: tuple[str, ...], phrase: tuple[str, ...]) -> bool:
+    """Whether ``phrase`` appears contiguously anywhere inside ``tokens``."""
     size = len(phrase)
     if not size or size > len(tokens):
         return False
     return any(tokens[i:i + size] == phrase for i in range(len(tokens) - size + 1))
 
 
-def _any(tokens: tuple[str, ...], table: tuple[tuple[str, ...], ...]) -> bool:
-    return any(_starts(tokens, phrase) for phrase in table)
+def _matched(clause: tuple[str, ...], phrase: tuple[str, ...], *, run: bool) -> bool:
+    """Whether ``phrase`` fires on ``clause``. **Two matchers, by script family.**
+
+    *Spaced scripts — the phrase must **be** the clause.* Containment there is
+    what produced this layer's worst failures: *"the article says delete that
+    button from the form"* erased a belief, *"he told me thats wrong but i
+    disagreed"* removed one on somebody else's opinion. A phrase that has to
+    stand as the whole clause cannot be a fragment of an ordinary sentence.
+
+    The cost is stated rather than discovered: *"actually that is wrong"* no
+    longer fires, because it is one clause and not the phrase. That is the
+    correct half of the trade — every row here is **acted on with no
+    confirmation**, so the table is the high-confidence path and everything
+    looser belongs to the classifier, which produces a candidate and asks.
+
+    *Unspaced runs — containment, because there is no other option.* A script
+    that puts no spaces where words end has no clause-internal boundary to
+    anchor on: ``それは違う`` inside ``それは違うと思うんだけど`` is how the
+    sentence is actually typed, and equality would recognise Japanese only when
+    the main wrote nothing else. So the discipline moves to the **rows**: a row
+    written in an unspaced script must be one that containment is safe for, and
+    the negative sweep in ``tests/test_correction.py`` is what enforces that. It
+    is why ``不对`` is not a row (``不对称``, ``不对劲`` are ordinary words),
+    why ``違います`` is not (``サイズが違います`` is a size complaint), and why
+    ``ไม่ถูก`` is not (it is also *"not cheap"*).
+    """
+    if run:
+        return _contains(clause, phrase)
+    return clause == phrase
+
+
+def _fires(clauses: tuple[tuple[str, ...], ...], table: "_Table") -> bool:
+    """Whether any phrase of ``table`` fires on any clause of ``clauses``.
+
+    The first-token index is a prefilter and nothing more: a phrase whose first
+    token is absent from the clause cannot match either matcher, so the walk is
+    over the handful of phrases that could rather than over all of them. This
+    runs on the turn path against roughly two hundred compiled phrases.
+    """
+    for clause in clauses:
+        present = frozenset(clause)
+        for head in present & table.heads:
+            for phrase, run in table.by_head[head]:
+                if _matched(clause, phrase, run=run):
+                    return True
+    return False
 
 
 def recognize(text: object) -> Meaning | None:
@@ -361,11 +504,11 @@ def recognize(text: object) -> Meaning | None:
     ``half.correction.candidate`` exists. Nothing downstream may read a ``None``
     here as evidence that the main did not correct anything.
     """
-    found = _tokens(text)
-    if not found:
+    clauses = _clauses(text)
+    if not clauses:
         return None
     for name, meaning in MEANING_FOR_TABLE:
-        if _any(found, _TABLES[name]):
+        if _fires(clauses, _TABLES[name]):
             return meaning
     return None
 
@@ -382,4 +525,4 @@ def is_confirmation(text: object) -> bool:
     found = _tokens(text)
     if not found:
         return False
-    return any(found == phrase for phrase in _TABLES["confirm"])
+    return any(found == phrase for phrase, _run in _TABLES[CONFIRM].phrases)

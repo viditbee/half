@@ -359,11 +359,17 @@ class Widening:
         self._tally = tally if tally is not None else Tally()
         self._consecutive: dict[str, int] = {}
         self._quiet: dict[str, int] = {}
-        #: main -> the removal Half has offered and is waiting on an answer to.
-        #: Volatile by AD-26, and correctly so: this is how the conversation is
-        #: *right now*, it expires by itself, and losing it costs a confirmation
-        #: rather than a record. Nothing is written anywhere when one is put.
-        self._standing: dict[str, Removal] = {}
+        #: main -> the removal Half has offered, and the turn it was offered
+        #: on. Volatile by AD-26, and correctly so: this is how the conversation
+        #: is *right now*, it expires by itself, and losing it costs a
+        #: confirmation rather than a record. Nothing is written anywhere when
+        #: one is put.
+        #:
+        #: **The turn id is what bounds its life.** A candidate answered by
+        #: whatever the main happened to say next — three turns later, after a
+        #: crisis reply that ends *"tell me, I am here for that too"* — is a
+        #: belief deleted by a "yes" that answered something else entirely.
+        self._standing: dict[str, tuple[Removal, str]] = {}
         self._sealed = True
 
     def __setattr__(self, name: str, value: object) -> None:
@@ -387,12 +393,24 @@ class Widening:
 
     def standing(self, main_id: str) -> Removal | None:
         """The candidate this main has not answered yet, or ``None``."""
-        return self._standing.get(main_id)
+        held = self._standing.get(main_id)
+        return held[0] if held is not None else None
 
-    def propose(self, main_id: str, removal: Removal) -> None:
-        """Remember what Half has just offered to remove."""
-        self._standing[main_id] = removal
+    def propose(self, main_id: str, removal: Removal, *, turn: str = "") -> None:
+        """Remember what Half has just offered to remove, and on which turn."""
+        self._standing[main_id] = (removal, turn)
         self._tally.proposed += 1
+
+    def stale(self, main_id: str, *, turn: str) -> bool:
+        """Whether a candidate is standing that ``turn`` did not put there.
+
+        Read by the one place every inbound message crosses
+        (``half.actor.runtime``'s ``_handle``), so a candidate cannot outlive
+        the turn after the one that offered it — including across the turns the
+        crisis gate answers itself and the turn path never sees.
+        """
+        held = self._standing.get(main_id)
+        return held is not None and held[1] != turn
 
     def answered(self, main_id: str, *, confirmed: bool) -> None:
         """Forget the candidate, whichever way the main answered.

@@ -223,6 +223,13 @@ class Runtime:
     #: recognised and acted on with no model anywhere on the path.
     corrections: Widening | None = None
     _gate: CrisisGate = field(init=False, repr=False)
+    #: The widening, or an empty one. **A candidate store is not a model
+    #: thing**: an erasure has to be confirmed whether or not a deployment has a
+    #: key, so the object that remembers what Half offered exists either way and
+    #: a runtime built without one still asks before it destroys a body. With no
+    #: holders it consults nothing, counts nothing, and proposes only what the
+    #: offline table asks it to.
+    _corrections: Widening = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         # An injected gate owns its own wiring; the default one is handed the
@@ -243,6 +250,7 @@ class Runtime:
         # on a schedule that does not exist. Wired here rather than left to a
         # test, because a surface reachable only from a test is a surface
         # nobody has run.
+        self._corrections = self.corrections or Widening()
         self._gate = self.gate or CrisisGate(
             pipeline=self._pipeline,
             store=self.registry,
@@ -322,10 +330,45 @@ class Runtime:
             )
 
     async def _handle(self, inbound: Inbound) -> None:
-        reply = await self._gate.handle(inbound)
+        """One turn, gate first (AD-10), then whatever it produced.
+
+        **Every inbound message crosses this method, and that is why the
+        correction candidate's lifetime is bound here** (CAP-11, story 12). The
+        turn path is not the only thing that answers a main: the crisis gate
+        answers a disclosure itself, answers its own standing question itself,
+        and surfaces a third-party resource itself — and none of those reach the
+        pipeline. A candidate left standing across one of them was answered by
+        the *next* thing the main said, which after a crisis reply that ends
+        *"tell me, I am here for that too"* is very often a bare "yes".
+
+        So: a candidate is answerable on the turn after it was put, and on no
+        other. The turn path clears it when the main answers; this clears it
+        when the turn path never ran. Both are the same rule, and this one
+        cannot be skipped because there is no route into Half that avoids it.
+        """
+        try:
+            reply = await self._gate.handle(inbound)
+        finally:
+            self._expire_candidate(inbound)
         if reply is None:
             return  # silence is an outcome, not a failure (AD-27)
         await self._send_with_retry(inbound, reply)
+
+    def _expire_candidate(self, inbound: Inbound) -> None:
+        """Drop a standing candidate this turn did not answer. Never raises.
+
+        A candidate proposed *on this very turn* is kept — that is the turn that
+        put it — and every other outcome ends it, including a redelivery of some
+        other message, a crisis turn, and a turn the gate answered itself.
+        """
+        try:
+            if self._corrections.stale(inbound.main_id, turn=inbound.external_id):
+                self._corrections.answered(inbound.main_id, confirmed=False)
+        except Exception as exc:  # noqa: BLE001 - never the reply
+            logger.warning(
+                "could not expire a correction candidate for main=%s (%s)",
+                inbound.main_id, type(exc).__name__,
+            )
 
     async def _send_with_retry(self, inbound: Inbound, reply: str) -> None:
         """Send, retrying only what the platform says is worth retrying.
@@ -432,10 +475,7 @@ class Runtime:
         # answer and is never a model's; ``standing`` is a candidate this main
         # has not answered yet.
         meaning = correction_signals.recognize(inbound.text)
-        standing = (
-            self.corrections.standing(inbound.main_id)
-            if self.corrections is not None else None
-        )
+        standing = self._corrections.standing(inbound.main_id)
         # An explicit correction outranks a standing candidate: the main moved
         # on, and answering Half's old question with their new correction would
         # remove the wrong belief.
@@ -476,7 +516,7 @@ class Runtime:
             # answers with nothing — the matrix row, arriving from the direction
             # that actually produces it.
             said, acted = self._correct(
-                actor, inbound, ranked,
+                actor, inbound, ranked, this_turn=belief_id,
                 meaning=meaning, standing=standing, confirmed=confirmed,
                 inferred=inferred,
             )
@@ -505,16 +545,21 @@ class Runtime:
         # The mutex is released. Nothing below this line can cost the main their
         # reply: it is already composed, their message is already recorded, and
         # every step of attaching a question is fail-open.
-        if reply is None:
-            return None
         if acted:
             # A correction acted, or Half put one to the main, or a standing
             # candidate was answered. No question — see this method's docstring
             # for the three reasons, and note that the answer is the same for
             # all three outcomes: the turn is about the correction either way.
-            # A decline says nothing and still counts, which is why this branch
-            # turns on ``acted`` and not on there being a line.
+            # **The line goes out even when the reply is empty**, which is the
+            # ordering review found inverted: returning early on ``reply is
+            # None`` left the belief gone durably, the candidate consumed, and
+            # CAP-11's own success criterion — *Half shows what it removed* —
+            # silently not happening.
+            if reply is None:
+                return said or None
             return f"{reply}\n{said}" if said else reply
+        if reply is None:
+            return None
         return await self._attach_question(
             inbound, ranked, ceiling=ceiling, live=live, reply=reply
         )
@@ -616,10 +661,12 @@ class Runtime:
         refuses to build a removal from it without their answer, so a second
         inference route added later meets the same refusal.
         """
-        if self.corrections is None:
+        if not self._corrections.holds(inbound.main_id):
+            # No model for this main. Not a fallback and not a failure: the
+            # offline table decides alone, which is a supported deployment.
             return False
         try:
-            verdict = await self.corrections.consult(
+            verdict = await self._corrections.consult(
                 inbound.text, main_id=inbound.main_id
             )
         except Exception as exc:  # noqa: BLE001 - the widening, never the reply
@@ -641,6 +688,7 @@ class Runtime:
         inbound: Inbound,
         ranked: Ranked,
         *,
+        this_turn: str,
         meaning: correction_signals.Meaning | None,
         standing: Removal | None,
         confirmed: bool,
@@ -671,7 +719,7 @@ class Runtime:
         """
         try:
             return self._removal(
-                actor, inbound, ranked,
+                actor, inbound, ranked, this_turn=this_turn,
                 meaning=meaning, standing=standing, confirmed=confirmed,
                 inferred=inferred,
             )
@@ -691,49 +739,91 @@ class Runtime:
         inbound: Inbound,
         ranked: Ranked,
         *,
+        this_turn: str,
         meaning: correction_signals.Meaning | None,
         standing: Removal | None,
         confirmed: bool,
         inferred: bool,
     ) -> tuple[str, bool]:
-        """The four outcomes, in the order they can happen on one message.
+        """The five outcomes, in the order they can happen on one message.
 
-        An explicit correction acts. A standing candidate the main confirmed
-        acts. A standing candidate they did not confirm is over and removes
-        nothing. A turn only the classifier read as a correction is put to the
-        main and appends nothing.
+        An explicit correction acts — **unless it is an erasure**, which is put
+        to the main like an inferred one, because an erasure destroys the body
+        and *"the main can correct the correction"* is not available for it. A
+        standing candidate the main confirmed acts, as whatever it was proposed
+        as. A standing candidate they did not confirm is over and removes
+        nothing — and does **not** own the turn, so the ordinary reply and its
+        bought question still happen: a proposal must not swallow the unrelated
+        question the main asked next. A turn only the classifier read as a
+        correction is put to the main and appends nothing.
         """
         if meaning is not None:
-            if standing is not None and self.corrections is not None:
+            if standing is not None:
                 # The main corrected something explicitly instead of answering.
                 # The old candidate is over — re-offering it later would be Half
                 # asking twice about a topic the main has moved past.
-                self.corrections.answered(inbound.main_id, confirmed=False)
-            return self._act(actor, inbound, meaning, self._aimed(ranked))
+                self._corrections.answered(inbound.main_id, confirmed=False)
+            target = self._aimed(ranked, this_turn=this_turn)
+            if meaning in correction.NEEDS_ANSWER:
+                return self._propose(actor, inbound, target, meaning=meaning,
+                                     source=Source.TABLE)
+            return self._act(actor, inbound, meaning, target)
 
-        if standing is not None and self.corrections is not None:
-            self.corrections.answered(inbound.main_id, confirmed=confirmed)
+        if standing is not None:
             if not confirmed:
                 # Declined. Nothing removed, nothing appended beyond the
                 # exchange — and *anything that is not a clear yes* is a
                 # decline, because silence is not consent and neither is
-                # *maybe*.
-                return "", True
-            return self._act(
-                actor, inbound, correction_signals.Meaning.WRONG, standing.target,
-                source=Source.INFERRED, confirmed=True,
+                # *maybe*. ``acted`` is False so the turn carries on as the
+                # ordinary turn it also is.
+                self._corrections.answered(inbound.main_id, confirmed=False)
+                return "", False
+            said, acted = self._act(
+                actor, inbound, standing.meaning, standing.target,
+                source=standing.source, confirmed=True,
             )
+            # **Counted on what happened, not on what was said.** If the belief
+            # left the fold between the proposal and the answer there is nothing
+            # to remove — the idempotent row — and booking that as a confirmed
+            # deletion would tell an operator the main deleted something they
+            # did not.
+            self._corrections.answered(inbound.main_id, confirmed=acted)
+            return said, True
 
-        if not inferred or self.corrections is None:
+        if not inferred:
             return "", False
-        target = self._aimed(ranked)
-        offered = correction.proposal(target, self._held(actor, target))
+        return self._propose(
+            actor, inbound, self._aimed(ranked, this_turn=this_turn),
+            meaning=correction_signals.Meaning.WRONG, source=Source.INFERRED,
+        )
+
+    def _propose(
+        self,
+        actor: Actor,
+        inbound: Inbound,
+        target: str,
+        *,
+        meaning: correction_signals.Meaning,
+        source: Source,
+    ) -> tuple[str, bool]:
+        """Show what would be removed and ask. Appends nothing.
+
+        Two routes arrive here and neither may act: a classifier reading, and an
+        erasure however it was recognised. The candidate is stamped with this
+        turn, so the answer is only read from the turn after it — see
+        ``_expire_candidate``.
+        """
+        offered = correction.proposal(
+            target, self._held(actor, target), meaning=meaning, source=source
+        )
         if offered is None:
-            # A model read a correction and there is nothing Half holds for it
-            # to be about. Nothing is asked and nothing is recorded: a question
-            # naming no belief is a question with no answer.
+            # There is nothing Half holds for the correction to be about.
+            # Nothing is asked and nothing is recorded: a question naming no
+            # belief is a question with no answer.
             return "", False
-        self.corrections.propose(inbound.main_id, offered)
+        self._corrections.propose(
+            inbound.main_id, offered, turn=inbound.external_id
+        )
         return correction.proposed(offered), True
 
     def _act(
@@ -776,14 +866,16 @@ class Runtime:
         return correction.shown(removal), True
 
     @staticmethod
-    def _aimed(ranked: Ranked) -> str:
+    def _aimed(ranked: Ranked, *, this_turn: str) -> str:
         """Which belief this turn's correction is about, or ``""``.
 
-        The top of the ranked set — see ``_correct`` for why that is the whole
-        instrument, and what makes being wrong about it recoverable.
+        The choosing is ``half.correction.apply.aim``'s, which is where the two
+        filters that make it safe live — a relevance floor read off the strand
+        weight retrieval already computed, and the exclusion of the message that
+        carried the correction. Here because the runtime knows this turn's own
+        belief id and nothing under ``half/correction`` does.
         """
-        ids = ranked.ids if ranked is not None else ()
-        return ids[0] if ids else ""
+        return correction.aim(ranked or (), exclude=(this_turn,))
 
     @staticmethod
     def _held(actor: Actor, target: str) -> dict | None:

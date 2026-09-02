@@ -107,6 +107,17 @@ CLAIM = "has not walked that plot since March"
 
 ORIGIN = Origin(kind=TOUCH_TENSION, id="x_1")
 
+#: A message that raises the belief's own strand, and therefore the message a
+#: correction has to follow.
+#:
+#: **This is the relevance floor made visible in the fixtures.** A correction
+#: aims at a belief the live conversation touches, read off the strand weight
+#: retrieval already computes — so a bare *"that's wrong"* into a fresh
+#: conversation aims at nothing, which is correct, because *that* has no
+#: antecedent. Every removal case below therefore has a turn in front of it,
+#: which is also how a correction actually arrives.
+ON_TOPIC = "farmland again please"
+
 
 # ── the doubles ──────────────────────────────────────────────────────────────
 
@@ -155,10 +166,30 @@ def labelled(label: str) -> Decision:
     return Decision(label=label, usage=Usage(input_tokens=90, micro_usd=700))
 
 
-def widening(answer: object = None, **kw) -> Widening:
-    """A widening for ``MAIN`` alone. ``None`` answers nothing readable, which
-    is a fallback — the table's answer stands."""
-    return Widening({MAIN: Holder(answer, **kw)}, bound_seconds=0.2)
+#: The fragment that marks the one message in a fixture the classifier is meant
+#: to read as a correction.
+INFERRED = "these days"
+
+
+def widening(answer: object = None, *, on: str = INFERRED, **kw) -> Widening:
+    """A widening for ``MAIN`` alone that answers ``answer`` for **one** message.
+
+    ``on`` is the fragment that identifies it; every other message is answered
+    ``no_correction``. A stub that answered the same thing to everything would
+    put a candidate up on the on-topic turn every correction now follows, and
+    then the case would be about the stub rather than about the product.
+
+    ``None``, a failure, a raise or prose all mean *no readable label* for that
+    one message, which is a fallback — the table's answer stands.
+    """
+    def reads(work: Classify):
+        if on and on not in work.prompt.turns[0].text:
+            return labelled(NO_CORRECTION)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    return Widening({MAIN: Holder(reads, **kw)}, bound_seconds=0.2)
 
 
 # ── the harness ──────────────────────────────────────────────────────────────
@@ -251,8 +282,23 @@ def a_turn(
     return transport
 
 
+def corrects(registry, *later, **kw):
+    """``ON_TOPIC``, then the correction. The ordinary shape of a correction.
+
+    Separate from ``a_turn`` so that a case which deliberately corrects into a
+    *fresh* conversation — where the aim must find nothing — has to say so by
+    calling ``a_turn`` directly.
+    """
+    return a_turn(registry, texts=(ON_TOPIC, *later), **kw)
+
+
 def sent(transport):
     return "\n".join(text for _, text in transport.sent)
+
+
+def last(transport):
+    """Only the final reply. The turn a case is actually about."""
+    return transport.sent[-1][1] if transport.sent else ""
 
 
 def log_of(root, main_id=MAIN):
@@ -291,12 +337,12 @@ def test_half_was_wrong_appends_a_revise_and_shows_the_claim(registry, tmp_path)
     """
     seed(tmp_path)
 
-    transport = a_turn(registry, texts=("you were wrong about that",))
+    transport = corrects(registry, "you were wrong about that")
 
     recorded = corrections_in(tmp_path)
     assert [r.op for r in recorded] == [Op.REVISE]
     assert recorded[0].data[TARGET] == BELIEF
-    assert recorded[0].data[EXPIRED_AT] == NOW
+    assert recorded[0].data[EXPIRED_AT] == stamp(NOON + 1)
     assert INVALID_AT not in recorded[0].data
     assert BELIEF not in beliefs_of(tmp_path)
     assert attribution_for(BELIEF, [r.data for r in log_of(tmp_path)]) is (
@@ -317,11 +363,11 @@ def test_the_main_changed_appends_a_retract_and_owes_no_apology(
     """
     seed(tmp_path)
 
-    transport = a_turn(registry, texts=("that has changed",))
+    transport = corrects(registry, "that has changed")
 
     recorded = corrections_in(tmp_path)
     assert [r.op for r in recorded] == [Op.RETRACT]
-    assert recorded[0].data[INVALID_AT] == NOW
+    assert recorded[0].data[INVALID_AT] == stamp(NOON + 1)
     assert EXPIRED_AT not in recorded[0].data
     assert attribution_for(BELIEF, [r.data for r in log_of(tmp_path)]) is (
         Attribution.MAIN_CHANGED
@@ -343,7 +389,7 @@ def test_a_correction_that_settles_no_cause_records_neither(registry, tmp_path):
     """
     seed(tmp_path)
 
-    a_turn(registry, texts=("thats wrong",))
+    corrects(registry, "thats wrong")
 
     recorded = corrections_in(tmp_path)
     assert len(recorded) == 1
@@ -365,7 +411,7 @@ def test_a_follow_up_settles_a_cause_the_first_message_did_not(
     in the log, and the fold over them now says which it was.
     """
     seed(tmp_path)
-    a_turn(registry, texts=("thats wrong",))
+    corrects(registry, "thats wrong")
 
     # The follow-up names the belief directly, because *which* belief a second
     # message is about is retrieval's question and not this story's — the
@@ -387,7 +433,7 @@ def test_a_reversal_appends_again_and_both_survive_in_the_log(
     """Matrix: *reversal*. The main corrects the correction; nothing is edited
     in place and nothing is lost (AD-3)."""
     seed(tmp_path)
-    a_turn(registry, texts=("that has changed",))
+    corrects(registry, "that has changed")
     with Store(tmp_path / MAIN) as store:
         store.record(Op.REVISE, "co_later", "2026-09-02T09:00:00Z",
                      target=BELIEF, **{EXPIRED_AT: "2026-09-02T09:00:00Z"})
@@ -395,7 +441,7 @@ def test_a_reversal_appends_again_and_both_survive_in_the_log(
     recorded = corrections_in(tmp_path)
     assert [(r.op, r.data.get(INVALID_AT), r.data.get(EXPIRED_AT))
             for r in recorded] == [
-        (Op.RETRACT, NOW, None),
+        (Op.RETRACT, stamp(NOON + 1), None),
         (Op.REVISE, None, "2026-09-02T09:00:00Z"),
     ]
 
@@ -409,16 +455,22 @@ def test_an_erasure_tombstones_the_body_and_says_something_different(
     registry, tmp_path
 ):
     """Matrix: *erase it*. Story 1's validate-then-erase, reached from the
-    inbound path for the first time.
+    inbound path for the first time — **and only after the main has answered.**
 
-    Three things at once, and the second is what makes it an erasure rather than
-    a removal: the op is ``expunge``, the claim is **gone from the log on disk**,
-    and what Half says names no claim — echoing the text back on the turn the
-    main asked for it to be gone is the one place quoting would be wrong.
+    That last part is a deliberate tightening past the story's own matrix. Every
+    other correction is recoverable, because the claim stays in the log and the
+    main can correct the correction; an erasure tombstones the body, so a
+    mis-aimed one leaves nothing to reverse and nothing to show. CAP-10's rule
+    is *never act on inference alone*; this is the same rule one step further.
+
+    So two turns: Half shows what it would erase, and the erasure happens on the
+    yes. Three things then hold at once, and the second is what makes it an
+    erasure rather than a removal: the op is ``expunge``, the claim is **gone
+    from the log on disk**, and what Half says names no claim.
     """
     seed(tmp_path)
 
-    transport = a_turn(registry, texts=("delete that",))
+    transport = corrects(registry, "delete that", "yes")
 
     recorded = corrections_in(tmp_path)
     assert [r.op for r in recorded] == [Op.EXPUNGE]
@@ -427,6 +479,7 @@ def test_an_erasure_tombstones_the_body_and_says_something_different(
     on_disk = "".join(path.read_text(encoding="utf-8") for path in shard)
     assert CLAIM not in on_disk
     body = sent(transport)
+    assert f"{Op.EXPUNGE.value}?[{BELIEF}]" in body, "Half asked first"
     assert f"{Op.EXPUNGE.value}[{BELIEF}]" in body
     assert CLAIM not in body
     assert Op.RETRACT.value not in body and Op.REVISE.value not in body
@@ -443,8 +496,7 @@ def test_a_correction_naming_nothing_half_holds_removes_nothing_and_says_so_gent
     transport = a_turn(registry, texts=("thats wrong",))
 
     assert corrections_in(tmp_path) == []
-    body = sent(transport)
-    assert body.strip() == "noted."
+    assert last(transport).strip() == "noted."
 
 
 def test_a_correction_of_a_belief_already_gone_removes_nothing_a_second_time():
@@ -470,14 +522,15 @@ def test_a_redelivered_correction_is_not_applied_twice(registry, tmp_path):
     """
     seed(tmp_path)
     transport = FakeTransport([
-        msg(text="thats wrong", message_id="m0", chat_id="123", date=int(NOON)),
-        msg(text="thats wrong", message_id="m0", chat_id="123", date=int(NOON)),
+        msg(text=ON_TOPIC, message_id="m0", chat_id="123", date=int(NOON)),
+        msg(text="thats wrong", message_id="m1", chat_id="123", date=int(NOON) + 1),
+        msg(text="thats wrong", message_id="m1", chat_id="123", date=int(NOON) + 1),
     ])
     channel = TelegramChannel(transport=transport, mains={"123": MAIN})
     asyncio.run(Runtime(channel=channel, registry=registry).run())
 
     assert len(corrections_in(tmp_path)) == 1
-    assert len(transport.sent) == 1
+    assert len(transport.sent) == 2
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -495,16 +548,19 @@ def test_an_inferred_correction_asks_and_appends_nothing(registry, tmp_path):
     seed(tmp_path)
     assert recognize("hm, i dont think that is me these days") is None
 
-    transport = a_turn(
-        registry,
-        texts=("hm, i dont think that is me these days",),
+    transport = corrects(
+        registry, "hm, i dont think that is me these days",
         corrections=widening(labelled(CORRECTION)),
     )
 
     assert corrections_in(tmp_path) == []
     assert BELIEF in beliefs_of(tmp_path)
     body = sent(transport)
-    assert f"{Op.RETRACT.value}?[{BELIEF}]: {CLAIM}" in body
+    assert f"{Op.RETRACT.value}?[{BELIEF}]" in body
+    # **And no claim.** A proposal is Half asking, on a turn where nothing was
+    # removed and the main may have said nothing corrective at all; the id is
+    # enough to ask about. See the AD-18 bound case below.
+    assert CLAIM not in body
 
 
 def test_a_declined_candidate_removes_nothing(registry, tmp_path):
@@ -513,9 +569,8 @@ def test_a_declined_candidate_removes_nothing(registry, tmp_path):
     stated ledger records as it records every message."""
     seed(tmp_path)
 
-    transport = a_turn(
-        registry,
-        texts=("hm, i dont think that is me these days", "no, leave it"),
+    transport = corrects(
+        registry, "hm, i dont think that is me these days", "no, leave it",
         corrections=widening(labelled(CORRECTION)),
     )
 
@@ -548,10 +603,9 @@ def test_a_declined_candidate_does_not_catch_a_later_yes(registry, tmp_path):
         )
     )
 
-    a_turn(
-        registry,
-        texts=("hm, i dont think that is me these days", "no, leave it", "yes"),
-        corrections=wide,
+    corrects(
+        registry, "hm, i dont think that is me these days", "no, leave it",
+        "yes", corrections=wide,
     )
 
     assert corrections_in(tmp_path) == []
@@ -575,9 +629,8 @@ def test_a_confirmed_candidate_is_applied_with_the_cause_unknown(
     """
     seed(tmp_path)
 
-    a_turn(
-        registry,
-        texts=("hm, i dont think that is me these days", answer),
+    corrects(
+        registry, "hm, i dont think that is me these days", answer,
         corrections=widening(labelled(CORRECTION)),
     )
 
@@ -597,9 +650,8 @@ def test_anything_that_is_not_a_clear_yes_is_a_decline(registry, tmp_path):
     """
     seed(tmp_path)
 
-    a_turn(
-        registry,
-        texts=("hm, i dont think that is me these days", "maybe, i am not sure"),
+    corrects(
+        registry, "hm, i dont think that is me these days", "maybe, i am not sure",
         corrections=widening(labelled(CORRECTION)),
     )
 
@@ -620,9 +672,8 @@ def test_an_explicit_correction_outranks_a_standing_candidate(
     seed(tmp_path)
     wide = widening(labelled(CORRECTION))
 
-    a_turn(
-        registry,
-        texts=("hm, i dont think that is me these days", "that has changed"),
+    corrects(
+        registry, "hm, i dont think that is me these days", "that has changed",
         corrections=wide,
     )
 
@@ -640,10 +691,7 @@ def test_the_widening_is_not_consulted_when_the_table_already_decided(
     *the call did not happen* rather than *a counter stayed at zero*."""
     seed(tmp_path)
 
-    a_turn(
-        registry, texts=("thats wrong",),
-        corrections=Widening({MAIN: Exploding()}),
-    )
+    corrects(registry, "thats wrong", corrections=Widening({MAIN: Exploding()}))
 
     assert [r.op for r in corrections_in(tmp_path)] == [Op.RETRACT]
 
@@ -655,15 +703,21 @@ def test_the_widening_is_not_consulted_while_a_candidate_is_standing(
     the main sent *while already being asked about it* would propose a second
     removal underneath the first."""
     seed(tmp_path)
-    wide = Widening({MAIN: Holder(labelled(CORRECTION))}, bound_seconds=0.2)
-    a_turn(registry, texts=("hm, i dont think that is me these days",),
-           corrections=wide)
+    wide = widening(labelled(CORRECTION))
+    corrects(registry, "hm, i dont think that is me these days",
+             corrections=wide)
     consulted = wide.tally.consulted
 
-    a_turn(registry, texts=("what is the weather like",), corrections=wide,
-           at=NOON + 100, tag="w")
+    # The **immediately** next turn, because a candidate stands for exactly one:
+    # a later one would find it already expired and consult, which is right, and
+    # would make this case vacuous.
+    a_turn(registry, texts=("hm, i dont think that is me these days",
+                            "what is the weather like"),
+           corrections=wide, at=NOON + 100, tag="w")
 
-    assert wide.tally.consulted == consulted
+    # Two turns went by; the second had a candidate standing and must not have
+    # consulted. The first re-proposed, which is one consult and no more.
+    assert wide.tally.consulted == consulted + 1
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -758,7 +812,7 @@ def test_a_widening_with_no_holder_for_this_main_recognises_the_table_alone(
     seed(tmp_path)
     wide = Widening()
 
-    a_turn(registry, texts=("thats wrong",), corrections=wide)
+    corrects(registry, "thats wrong", corrections=wide)
 
     assert [r.op for r in corrections_in(tmp_path)] == [Op.RETRACT]
     assert wide.tally.consulted == 0
@@ -768,7 +822,7 @@ def test_a_runtime_with_no_widening_still_corrects(registry, tmp_path):
     """The same sentence one layer up: correction is not a model feature."""
     seed(tmp_path)
 
-    a_turn(registry, texts=("you were wrong about that",), corrections=None)
+    corrects(registry, "you were wrong about that", corrections=None)
 
     assert [r.op for r in corrections_in(tmp_path)] == [Op.REVISE]
 
@@ -800,7 +854,7 @@ def test_the_wanting_stands_when_its_only_support_is_corrected(
     seed(tmp_path)
     assert loops_of(tmp_path)[LOOP]["state"] == "stalled"
 
-    a_turn(registry, texts=(text,))
+    corrects(registry, *([text, "yes"] if text == "delete that" else [text]))
 
     assert BELIEF not in beliefs_of(tmp_path)
     standing = loops_of(tmp_path)
@@ -849,7 +903,7 @@ def test_the_same_correction_outside_the_mode_does_remove(registry, tmp_path):
     build where no correction ever works."""
     seed(tmp_path)
 
-    a_turn(registry, texts=("you were wrong about that",))
+    corrects(registry, "you were wrong about that")
 
     assert [r.op for r in corrections_in(tmp_path)] == [Op.REVISE]
 
@@ -919,12 +973,40 @@ def test_what_half_shows_is_the_claim_as_recorded_and_not_a_paraphrase(
     here. The claim reaches the wire because it *is* the record, not because
     something composed a sentence containing it.
     """
-    odd = "sagt, दिल्ली में रहता है — since 2019"
+    odd = "sagt \u2014 \u0926\u093f\u0932\u094d\u0932\u0940 \u092e\u0947\u0902 \u0930\u0939\u0924\u093e \u0939\u0948, since 2019"
     seed(tmp_path, beliefs=((BELIEF, odd),))
 
-    transport = a_turn(registry, texts=("thats wrong",))
+    transport = corrects(registry, "thats wrong")
 
     assert f"{Op.RETRACT.value}[{BELIEF}]: {odd}" in sent(transport)
+
+
+def test_a_claim_carrying_a_line_break_cannot_forge_a_second_marker(
+    registry, tmp_path
+):
+    """The marker is the only thing that distinguishes a real removal from an
+    invented one, and a claim is **attacker-influenced**: it comes from the
+    main's own messages and, from story 3 on, from ingested sources.
+
+    A claim containing a newline would occupy two lines and forge the second:
+
+        noted.
+        retract[b_x]: line one
+        retract[b_fake]: totally made up
+
+    Every line break is folded to a space before the claim is shown — the whole
+    claim, no truncation and no escaping scheme to get wrong — so one claim can
+    never be two lines.
+    """
+    forged = f"line one\n{Op.RETRACT.value}[b_fake]: totally made up"
+    seed(tmp_path, beliefs=((BELIEF, forged),))
+
+    transport = corrects(registry, "thats wrong")
+
+    body = last(transport)
+    assert "b_fake" in body, "the claim itself is still shown whole"
+    assert body.count("\n") == 1, body
+    assert body.splitlines()[1].startswith(f"{Op.RETRACT.value}[{BELIEF}]: ")
 
 
 def test_a_behave_claim_reaches_the_wire_on_a_correction_turn_and_no_other(
@@ -1006,88 +1088,101 @@ def test_a_correction_and_its_attribution_survive_a_rebuild(tmp_path):
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-#: One correction per script, from five continents. The removal path is swept
-#: over all of them, so **no fixture in this file makes one language the
-#: default**: every behavioural claim about removal is made in seven languages
-#: or it is not made.
-WORLDWIDE = [
+#: One correction per script, from five continents, each with the meaning its
+#: table gives it. The removal path is swept over all of them, so **no fixture
+#: in this file makes one language the default**: every behavioural claim about
+#: removal is made in eight scripts or it is not made.
+#:
+#: Nothing here is sliced out of a parametrization. An earlier version carried a
+#: fourteenth row annotated ``None`` and excluded it from both sweeps — an
+#: expectation that was never run and was also wrong.
+WORLDWIDE: Final[tuple[tuple[str, Meaning], ...]] = (
     ("thats wrong", Meaning.WRONG),
     ("eso está mal", Meaning.WRONG),
     ("это неправда", Meaning.WRONG),
     ("यह गलत है", Meaning.WRONG),
-    ("这不对", Meaning.WRONG),
-    ("それは違う", Meaning.WRONG),
+    ("你说的不对", Meaning.WRONG),
+    ("それは間違いです", Meaning.WRONG),
     ("هذا خطأ", Meaning.WRONG),
     ("hiyo si kweli", Meaning.WRONG),
+    ("그건 틀렸어", Meaning.WRONG),
+    ("ไม่ถูกต้อง", Meaning.WRONG),
     ("das war nie wahr", Meaning.NEVER_TRUE),
-    ("我从来没说过", Meaning.NEVER_TRUE),
+    ("我从来没这么说过", Meaning.NEVER_TRUE),
     ("已经不是了", Meaning.CHANGED),
     ("अब ऐसा नहीं है", Meaning.CHANGED),
-    ("그거 삭제해", Meaning.ERASE),
-    ("บลบอันนั้น", None),
-]
+    ("그거 삭제해줘", Meaning.ERASE),
+)
 
 
 @pytest.mark.parametrize(
-    "text, expected", WORLDWIDE[:-1],
-    ids=[t.replace(" ", "-") for t, _ in WORLDWIDE[:-1]],
+    "text, expected", WORLDWIDE,
+    ids=[t.replace(" ", "-") for t, _ in WORLDWIDE],
 )
 def test_the_table_recognises_a_correction_in_every_script_it_carries(
     text, expected
 ):
     """Every entry means what its table says it means, in the script it is
-    written in — including the ones an unspaced-script tokenizer would have to
-    match inside a longer run."""
+    written in — including the ones an unspaced-script matcher has to find
+    inside a longer run."""
     assert recognize(text) is expected
 
 
 @pytest.mark.parametrize(
-    "text", [t for t, m in WORLDWIDE if m is not None][:8],
-    ids=[t.replace(" ", "-") for t, m in WORLDWIDE if m is not None][:8],
+    "text, expected", WORLDWIDE,
+    ids=[t.replace(" ", "-") for t, _ in WORLDWIDE],
 )
 def test_a_removal_happens_in_every_script_and_none_is_the_default(
-    registry, tmp_path, text
+    registry, tmp_path, text, expected
 ):
-    """The behavioural sweep. Eight scripts, one belief, one removal each.
+    """The behavioural sweep. Ten scripts, one belief, one removal each.
 
-    A build that recognised only Latin would fail seven of these, and a fixture
-    that quietly narrowed to English would fail the coverage case below.
+    **The op is asserted per row**, not merely that *some* removing op was
+    appended: a build that mapped every non-English correction to ``expunge``
+    would otherwise pass, which is the one mistake in this area that destroys
+    data. An erasure needs the main's answer, so those rows send the yes.
     """
     seed(tmp_path)
+    erasing = expected is Meaning.ERASE
 
-    a_turn(registry, texts=(text,))
+    corrects(registry, *((text, "yes") if erasing else (text,)))
 
-    assert [r.op for r in corrections_in(tmp_path)][:1] in (
-        [Op.RETRACT], [Op.REVISE], [Op.EXPUNGE],
-    )
+    wanted = {
+        Meaning.WRONG: Op.RETRACT,
+        Meaning.CHANGED: Op.RETRACT,
+        Meaning.NEVER_TRUE: Op.REVISE,
+        Meaning.ERASE: Op.EXPUNGE,
+    }[expected]
+    assert [r.op for r in corrections_in(tmp_path)] == [wanted]
     assert BELIEF not in beliefs_of(tmp_path)
 
 
 @pytest.mark.parametrize(
     "text, expected",
     [
-        ("我觉得这不对", Meaning.WRONG),
-        ("それは違うと思うんだけど", Meaning.WRONG),
-        ("ผมว่าไม่ถูกนะ", Meaning.WRONG),
-        ("我从来没说过这件事", Meaning.NEVER_TRUE),
+        ("我觉得你说的不对", Meaning.WRONG),
+        ("それは間違いですよ", Meaning.WRONG),
+        ("ข้อมูลไม่ถูกต้องครับ", Meaning.WRONG),
+        ("我从来没这么说过啊", Meaning.NEVER_TRUE),
         ("这已经变了呢", Meaning.CHANGED),
+        ("그건 틀렸어요", Meaning.WRONG),
     ],
-    ids=["chinese", "japanese", "thai", "chinese-never", "chinese-changed"],
+    ids=["chinese", "japanese", "thai", "chinese-never", "chinese-changed",
+         "korean"],
 )
 def test_a_correction_inside_an_unspaced_run_is_recognised(text, expected):
-    """**The case a mutation found missing, and the reason this module has its
-    own tokenizer at all.**
+    """**The case a mutation found missing, and the reason there are two
+    matchers rather than one.**
 
-    ``half.text.words`` keeps a scriptio-continua run whole, so a Chinese phrase
-    matches only a message that is *exactly* that phrase — which is what every
-    other script case in this file happens to be. Swapping ``terms`` for
-    ``words`` in ``signals._tokens`` left all of them green: the table was being
-    tested on the one shape the weaker tokenizer also handles.
+    A script that puts no spaces where words end has no clause-internal boundary
+    to anchor on, so a correction written in one arrives with a word in front of
+    it and a particle behind. Containment is the only matcher that can see it —
+    and containment is exactly what must *not* be used on a spaced script, where
+    it read *"the article says delete that button from the form"* as an erasure.
 
-    These are corrections with a word in front of them and a particle behind,
-    which is how the sentence is actually typed. ``terms`` cuts the run into
-    grapheme clusters and the phrase matches where they are adjacent; ``words``
-    sees one token and matches nothing.
+    The discipline containment costs is paid in the **rows**: one written in an
+    unspaced script has to be long enough that containment is safe, which is
+    what the negative sweep below enforces.
     """
     assert recognize(text) is expected
 
@@ -1102,7 +1197,8 @@ def test_a_message_past_the_tokenizers_ceiling_is_still_recognised():
     """
     from half.text import MAX_INPUT_CHARS
 
-    assert recognize("x" * (MAX_INPUT_CHARS + 10) + " thats wrong") is Meaning.WRONG
+    long = "x" * (MAX_INPUT_CHARS + 10) + ". thats wrong"
+    assert recognize(long) is Meaning.WRONG
 
 
 def _scripts(text: str) -> set[str]:
@@ -1146,10 +1242,12 @@ def test_a_correction_in_a_language_no_row_covers_is_still_reachable(
     assert recognize(unseen) is None
 
     seed(tmp_path)
-    transport = a_turn(registry, texts=(unseen,),
-                       corrections=widening(labelled(CORRECTION)))
+    transport = corrects(
+        registry, unseen,
+        corrections=widening(labelled(CORRECTION), on="rangt"),
+    )
 
-    assert f"{Op.RETRACT.value}?[{BELIEF}]: {CLAIM}" in sent(transport)
+    assert f"{Op.RETRACT.value}?[{BELIEF}]" in last(transport)
 
 
 @pytest.mark.parametrize(
@@ -1380,24 +1478,33 @@ def test_the_line_half_shows_is_made_of_the_op_and_the_claim_and_nothing_else():
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
         and id(node) not in unread
     ]
-    allowed = {"[", "]", ": ", "?", "", "claim", "co_", "table", "inferred"}
+    # Punctuation, the id separator, the two enum values, and the record-field
+    # names ``aim`` reads off a ranked candidate. Not one of them is a word a
+    # main could read: the op's own name is the whole vocabulary.
+    allowed = {"[", "]", ": ", "?", "", " ", "_", "co_", "table", "inferred",
+               "claim", "belief", "weights", "strand", "id", "t",
+               "\n\r\u2028\u2029\u0085\v\f"}
     assert set(literals) <= allowed, sorted(set(literals) - allowed)
 
 
 @pytest.mark.cap11_structure
 def test_the_shown_line_is_built_once_and_read_two_ways():
-    """A proposal and a removal differ by one character, from one function.
+    """A proposal and a removal are one function, and differ only in the claim.
 
     Two renderings of one item is how a guard that scans one string ends up
     admitting a different one — so the candidate Half shows and the removal it
-    performs cannot describe different things.
+    performs cannot name different beliefs.
     """
     removal = Removal(target=BELIEF, op=Op.RETRACT,
                       attribution=Attribution.NOT_YET_KNOWN, claim=CLAIM)
     assert correction.shown(removal) == f"retract[{BELIEF}]: {CLAIM}"
-    assert correction.proposed(removal) == f"retract?[{BELIEF}]: {CLAIM}"
-    assert correction.proposed(removal).replace("?", "") == correction.shown(
-        removal
+    assert correction.proposed(removal) == f"retract?[{BELIEF}]"
+    # **One rendering, read two ways, and the claim is the difference.** The
+    # head is identical byte for byte; a proposal stops there because it is Half
+    # asking, and a removal continues because the main needs the words to catch
+    # a mis-aim.
+    assert correction.shown(removal).startswith(
+        correction.proposed(removal).replace("?", "")
     )
 
 

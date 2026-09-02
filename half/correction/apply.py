@@ -3,9 +3,18 @@
 Three things live here, and each is a rule the story states:
 
 **A correction that reached this path only through inference cannot be
-applied.** ``plan`` refuses it unless the main answered — not by convention but
-by raising, so an unconfirmed inferred removal is unrepresentable rather than
-merely discouraged. This is CAP-10's quarantine rule applied to the same class
+applied, and neither can an erasure however it was recognised.** ``plan``
+refuses both unless the main answered — not by convention but by raising, so an
+unconfirmed removal of either kind is unrepresentable rather than merely
+discouraged.
+
+The second refusal is a deliberate tightening past the story's own matrix, and
+the reason is that the recovery argument below is **false for exactly one of
+the four meanings**. A `retract` or a `revise` can be corrected by the main
+correcting the correction, because the claim is still in the log; an `expunge`
+tombstones the body, so there is nothing left to reverse and nothing left to
+show. CAP-10's rule is *never act on inference alone*; this is the same rule
+one step further — *never destroy a body without the main's answer*. This is CAP-10's quarantine rule applied to the same class
 of problem: *detection produces a candidate and Half asks*. A new inference
 route added by a later story reaches this function like every other and is
 refused by it, which is what makes the rule structural instead of a paragraph
@@ -46,7 +55,7 @@ already held (``half.actor.runtime``'s turn path).
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
@@ -54,8 +63,9 @@ from typing import Any, Final
 from half.correction.attribute import Attribution, fields_for, op_for
 from half.correction.signals import Meaning
 from half.errors import CorrectionError
+from half.retrieval.strands import STRAND_FLOOR
 from half.store.ops import Op
-from half.store.records import TARGET
+from half.store.records import LEDGER, STATED, TARGET
 
 #: The field a belief's own words live in.
 CLAIM: Final[str] = "claim"
@@ -75,6 +85,12 @@ _CLOSE: Final[str] = "]"
 _JOIN: Final[str] = ": "
 _ASKING: Final[str] = "?"
 
+#: Every character that starts a new line somewhere. Folded out of a claim
+#: before it is shown — see ``_flattened``.
+_LINE_BREAKS: Final[frozenset[str]] = frozenset(
+    "\n\r\u2028\u2029\u0085\v\f"
+)
+
 
 class Source(StrEnum):
     """How a correction reached this path. Two values, and they are not equal.
@@ -88,6 +104,12 @@ class Source(StrEnum):
     TABLE = "table"
     INFERRED = "inferred"
 
+
+#: The meanings that may **not** be applied without the main's answer, whatever
+#: recognised them. One entry, and it is the erasure: an erasure destroys the
+#: body, so *"the main can correct the correction"* — the argument that makes a
+#: mis-aimed removal recoverable — is not available for it.
+NEEDS_ANSWER: Final[frozenset[Meaning]] = frozenset({Meaning.ERASE})
 
 #: Which meaning becomes which attribution. ``WRONG`` maps to the honest doubt,
 #: which is the one entry in this table that is a decision rather than a
@@ -114,6 +136,11 @@ class Removal:
     target: str
     op: Op
     attribution: Attribution
+    #: What the main's message meant. Carried so that a proposal can be applied
+    #: as *itself* once the answer comes back, rather than re-derived from a
+    #: message that no longer exists — an erasure the main confirmed has to
+    #: erase, not retract.
+    meaning: Meaning = Meaning.WRONG
     #: The belief's claim exactly as the record holds it, or ``""`` for an
     #: erasure, whose body is tombstoned.
     claim: str = ""
@@ -128,6 +155,64 @@ class Removal:
         correction is an ordinary append.
         """
         return self.op is Op.EXPUNGE
+
+
+def aim(candidates: Iterable[Any], *, exclude: Iterable[str] = ()) -> str:
+    """Which belief this turn's correction is about, or ``""``. Pure.
+
+    **A correction is about what the conversation is about**, and that is the
+    whole rule. Two filters, and each was a defect before it was a filter.
+
+    *A relevance floor.* ``Candidate.weights["strand"]`` is
+    ``STRAND_FLOOR`` for a belief on no strand the live conversation touches,
+    and above it for one on a strand it does. Taking the top of the ranked set
+    without looking meant a message about email expunged *"keeps bees in the
+    garden"*: with no term match the backstop supplies every belief the main
+    has, in an order that says nothing about this turn. The floor is
+    ``half.retrieval``'s own — not a number invented here — and above it the
+    ranked order decides, because that is what ranking is for.
+
+    A bare *"that's wrong"* in a fresh conversation therefore aims at **nothing**
+    and removes nothing, which is correct: *that* has no antecedent, and Half
+    inventing one is how a correction lands on a belief the main never
+    questioned.
+
+    *Not the message that carried it.* Every inbound message is recorded as a
+    belief on the stated ledger, so the second *"that's wrong"* in a
+    conversation retracted the belief holding the text *"that's wrong"*. This
+    turn's own id is excluded by the caller, and the newest stated-ledger record
+    — the previous turn's message — is excluded here, because a correction is
+    never about the sentence that provoked it.
+
+    Never raises: it runs on the turn's own path over values ranking produced,
+    and a candidate this build cannot read is one it does not aim at.
+    """
+    skip = set(exclude)
+    kept: list[Any] = []
+    newest_stated: tuple[str, str] | None = None
+    for candidate in candidates or ():
+        ident = getattr(candidate, "id", "")
+        if not isinstance(ident, str) or not ident or ident in skip:
+            continue
+        record = getattr(candidate, "belief", None)
+        if isinstance(record, Mapping) and record.get(LEDGER) == STATED:
+            stamp = record.get("t")
+            if isinstance(stamp, str) and (
+                newest_stated is None or stamp > newest_stated[0]
+            ):
+                newest_stated = (stamp, ident)
+        weights = getattr(candidate, "weights", None)
+        strand = weights.get("strand") if isinstance(weights, Mapping) else None
+        if not isinstance(strand, (int, float)) or isinstance(strand, bool):
+            continue
+        if strand <= STRAND_FLOOR:
+            continue
+        kept.append(candidate)
+    latest = newest_stated[1] if newest_stated is not None else None
+    for candidate in kept:
+        if candidate.id != latest:
+            return str(candidate.id)
+    return ""
 
 
 def plan(
@@ -163,6 +248,14 @@ def plan(
             "on an inferred negation deletes something the main actually "
             "believes"
         )
+    if meaning in NEEDS_ANSWER and not confirmed:
+        raise CorrectionError(
+            "an erasure may not be applied without the main's answer, however "
+            "it was recognised. Every other correction is recoverable because "
+            "the claim stays in the log and the main can correct the "
+            "correction; an erasure tombstones the body, so a mis-aimed one "
+            "leaves nothing to reverse and nothing to show"
+        )
     if not isinstance(target, str) or not target.strip():
         return None
     if not isinstance(belief, Mapping):
@@ -174,32 +267,46 @@ def plan(
         target=target,
         op=op,
         attribution=attribution,
+        meaning=meaning,
         claim="" if op is Op.EXPUNGE or not isinstance(claim, str) else claim,
         source=source,
     )
 
 
-def proposal(target: str, belief: Mapping[str, Any] | None) -> Removal | None:
-    """What an **inferred** correction would remove, as a candidate.
+def proposal(
+    target: str,
+    belief: Mapping[str, Any] | None,
+    *,
+    meaning: Meaning = Meaning.WRONG,
+    source: Source = Source.INFERRED,
+) -> Removal | None:
+    """What a correction Half must **ask** about would do, as a candidate.
 
-    A ``Removal`` built for showing and never for appending: it carries
-    ``Source.INFERRED`` and no confirmation, so handing it to ``fields`` is
-    fine — that only reads the target and the attribution — while re-planning
-    it without the main's answer raises. The op is a plain ``retract`` with the
+    A ``Removal`` built for showing and never for appending: it carries no
+    confirmation, so handing it to ``fields`` is fine — that only reads the
+    target and the attribution — while re-planning it without the main's answer
+    raises.
+
+    Two routes reach it, and the ``meaning`` is what tells them apart once the
+    answer comes back. A **classifier** reading produces ``WRONG`` with the
     cause unknown, because a model's reading of a message settles neither
-    whether Half was wrong nor whether the main changed.
+    whether Half was wrong nor whether the main changed. The **table** reaches
+    it only for an erasure, which is applied as an erasure or not at all.
     """
     if not isinstance(target, str) or not target.strip():
         return None
     if not isinstance(belief, Mapping):
         return None
+    attribution = ATTRIBUTION_FOR_MEANING[meaning]
+    op = Op.EXPUNGE if meaning is Meaning.ERASE else op_for(attribution)
     claim = belief.get(CLAIM)
     return Removal(
         target=target,
-        op=op_for(Attribution.NOT_YET_KNOWN),
-        attribution=Attribution.NOT_YET_KNOWN,
-        claim=claim if isinstance(claim, str) else "",
-        source=Source.INFERRED,
+        op=op,
+        attribution=attribution,
+        meaning=meaning,
+        claim="" if op is Op.EXPUNGE or not isinstance(claim, str) else claim,
+        source=source,
     )
 
 
@@ -217,11 +324,16 @@ def fields(removal: Removal, *, t: str) -> dict[str, Any]:
 def record_id(removal: Removal, *, t: str) -> str:
     """The append's own id. Never the belief's.
 
-    Built from the stamp, so a tombstone on this record enters nothing into the
-    belief namespace — the failure ``fold._APPEND_KEYED`` exists for, avoided
-    here by construction instead of by joining that set.
+    Built from the stamp **and the target**, so a tombstone on this record
+    enters nothing into the belief namespace — the failure ``fold._APPEND_KEYED``
+    exists for, avoided here by construction instead of by joining that set.
+
+    The target is the discriminator, in the shape ``Store.expunge`` already uses
+    (``x_<target>_<t>``). Without it two corrections landing inside one second —
+    two messages, two different beliefs — shared an id and were appended
+    silently, which is two records the log cannot tell apart.
     """
-    return f"{ID_PREFIX}{t}"
+    return f"{ID_PREFIX}{removal.target}_{t}"
 
 
 def shown(removal: Removal | None) -> str:
@@ -243,10 +355,16 @@ def shown(removal: Removal | None) -> str:
 def proposed(removal: Removal | None) -> str:
     """The one line Half says when it is **asking**, or ``""``.
 
-    The same rendering with a question mark on the op, so what Half shows the
-    main is exactly what it would remove — the claim as recorded, never a
-    paraphrase of it — and the difference between a proposal and a removal is
-    one character rather than two renderings that could drift.
+    The same rendering with a question mark on the op, and **without the
+    claim** — which is the one asymmetry between the two, and it is the bound on
+    the route this story opens through AD-18.
+
+    A *removal* shows the claim because the main needs the words to catch a
+    mis-aim: the belief is gone, and seeing what went is the only audit they
+    have. A *proposal* is Half asking, on a turn where nothing was removed and
+    the main may have said nothing corrective at all — a classifier reading an
+    ordinary message would otherwise put a `behave` claim on the wire. The id is
+    enough to ask about.
     """
     if removal is None:
         return ""
@@ -262,6 +380,29 @@ def _line(removal: Removal, *, asking: bool) -> str:
     """
     mark = _ASKING if asking else ""
     head = f"{removal.op.value}{mark}{_OPEN}{removal.target}{_CLOSE}"
-    if not removal.claim:
+    if asking or not removal.claim:
         return head
-    return f"{head}{_JOIN}{removal.claim}"
+    return f"{head}{_JOIN}{_flattened(removal.claim)}"
+
+
+def _flattened(claim: str) -> str:
+    """``claim`` with every line break folded to a space.
+
+    **The one thing done to the claim, and it is a forgery guard rather than
+    tidiness.** The marker is what distinguishes a real removal from an invented
+    one, and a claim carrying a newline forges a second marker line:
+
+        noted.
+        retract[b_x]: line one
+        retract[b_fake]: totally made up
+
+    Claims come from the main's own messages *and* from ingested sources, so the
+    text is attacker-influenced. Folding the breaks keeps the whole claim — no
+    truncation, no escaping scheme to get wrong — while making it structurally
+    impossible for one claim to occupy two lines.
+
+    The same characters ``half.text`` treats as invisible are folded here, for
+    the reason ``half.crisis.signals`` folds them: a line separator that is not
+    ``\n`` is still a line break to whatever renders the message.
+    """
+    return "".join(" " if char in _LINE_BREAKS else char for char in claim)
