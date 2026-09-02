@@ -403,6 +403,15 @@ class Runtime:
         lock held would block eviction and every other operation on that main
         for two seconds per turn (AD-33).
 
+        *The cost of that ordering, stated rather than discovered.* Recognition
+        therefore runs **before** the redelivery check below, so a redelivered
+        message pays for one classification that changes nothing. Moving it
+        after the check would take a second acquire, which is the composition
+        this docstring spends three paragraphs keeping out of the turn path — so
+        the redelivery pays instead. It is bounded at one call per delivery, it
+        is a crash-recovery path rather than a steady state, and the crisis gate
+        already pays the same cost one layer up for the same reason.
+
         **A correction turn attaches no question, and that is a decision rather
         than an omission.** Three reasons, each sufficient:
 
