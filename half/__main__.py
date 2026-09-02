@@ -24,6 +24,12 @@ from half.channel.telegram import TelegramChannel
 from half.channel.telegram_transport import PTBTransport
 from half.config import TELEGRAM_TOKEN_ENV, Config, load
 from half.consolidate.pass_ import TensionPass
+from half.correction.candidate import (
+    CLASSIFY_TIER as CORRECTION_TIER,
+    PER_CALL_MICRO_USD as CORRECTION_PER_CALL_MICRO_USD,
+    PER_PASS_MICRO_USD as CORRECTION_PER_PASS_MICRO_USD,
+    Widening,
+)
 from half.crisis.classifier import (
     CLASSIFY_TIER,
     PER_CALL_MICRO_USD,
@@ -78,6 +84,12 @@ class Wiring:
     #: ``Runtime`` below and to nothing else — the morning surface has no field
     #: for one.
     questions: QuestionEngine
+    #: Who widens correction recognition past the offline table (CAP-11, story
+    #: 12). Always constructed and possibly empty: a deployment with no key
+    #: recognises explicit corrections offline and proposes none, which is a
+    #: supported shape rather than a broken one — the table acts alone and no
+    #: model is anywhere on the path that removes a belief.
+    corrections: Widening
 
 
 def build(config: Config, token: str) -> Wiring:
@@ -158,7 +170,56 @@ def build(config: Config, token: str) -> Wiring:
     return Wiring(channel=channel, registry=registry, secrets=secrets,
                   sources=sources, scheduler=scheduler, mornings=mornings,
                   second=second_opinion(config, secrets),
-                  questions=QuestionEngine(ledger=registry))
+                  questions=QuestionEngine(ledger=registry),
+                  corrections=widening(config, secrets))
+
+
+def widening(config: Config, secrets: FileSecretStore) -> Widening:
+    """The correction classifier, for the mains a deployment has equipped (12).
+
+    Built beside ``second_opinion`` and on exactly its terms — a per-main narrow
+    holder, its own budget, every failure leaving that main unequipped and the
+    process running — with two differences worth stating.
+
+    **Its own provider, and therefore its own ledger.** A provider's spend is
+    shared by everything it hands out, so reusing the crisis one would let a
+    correction consult draw down the budget the crisis path runs on. The two
+    subsystems have separate caps because they answer different questions with
+    different consequences, and a shared ceiling is one silently spending the
+    other's.
+
+    **Unequipped is a much smaller loss here.** A main with no key still has
+    every explicit correction recognised, acted on and shown, because the table
+    is offline and the model only widens. That is the opposite of the crisis
+    path, where the table is the fallback and the model is the reach.
+    """
+    holders: dict[str, Classifier] = {}
+    for main_id in config.mains.values():
+        try:
+            provider = AnthropicProvider(
+                SDKTransport.from_secrets(secrets, main_id),
+                tiers=Tiers.parse({main_id: CORRECTION_TIER}),
+                budget=Budget(
+                    per_call_micro_usd=CORRECTION_PER_CALL_MICRO_USD,
+                    per_pass_micro_usd=CORRECTION_PER_PASS_MICRO_USD,
+                ),
+            )
+            holders[main_id] = provider.classifier()
+        except Exception as exc:  # noqa: BLE001 - a boot must not die here
+            # The class only — a provider's own message can quote what it was
+            # sent (AD-22).
+            logger.warning(
+                "main=%s has no usable model (%s); correction recognition is "
+                "the offline table alone for them", main_id, type(exc).__name__,
+            )
+    try:
+        return Widening(holders)
+    except Exception as exc:  # noqa: BLE001 - nor here
+        logger.error(
+            "the correction widening could not be assembled (%s); the table "
+            "decides alone for every main", type(exc).__name__,
+        )
+        return Widening()
 
 
 def second_opinion(config: Config, secrets: FileSecretStore) -> SecondOpinion:
@@ -257,6 +318,12 @@ async def serve(config: Config, token: str) -> None:
                     # 5b shipped in, where the gates had no production caller at
                     # all. Wired **by value** for the reason the classifier is.
                     questions=wiring.questions,
+                    # Correction recognition reaches the shipped product here
+                    # and nowhere else (CAP-11, story 12). Wired **by value**
+                    # for the reason the classifier and the question engine
+                    # are: a surface reachable only from a test is a surface
+                    # nobody has run.
+                    corrections=wiring.corrections,
                 ).run()
             finally:
                 # The inbound loop is the process's life; the ticker is not
@@ -273,6 +340,10 @@ async def serve(config: Config, token: str) -> None:
         # Without it a process that ran for a week with a wholly failing
         # classifier could end without ever reaching a round number.
         wiring.second.flush()
+        # And what the correction widening did — counts only (AD-22). A process
+        # that ran for a week proposing a candidate on every turn and having
+        # none confirmed would otherwise end with nothing anywhere saying so.
+        wiring.corrections.flush()
         wiring.registry.close()
 
 

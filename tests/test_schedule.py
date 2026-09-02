@@ -1996,10 +1996,12 @@ def test_serve_actually_fires_the_tick_beside_the_inbound_loop(monkeypatch, tmp_
             fired.set()
 
     class FakeRuntime:
-        def __init__(self, *, channel, registry, second=None, questions=None):
+        def __init__(self, *, channel, registry, second=None, questions=None,
+                     corrections=None):
             self.registry = registry
             self.second = second
             self.questions = questions
+            self.corrections = corrections
 
         async def run(self):
             await fired.wait()

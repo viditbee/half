@@ -1690,8 +1690,11 @@ def test_serve_hands_the_runtime_the_classifier_build_made(tmp_path, monkeypatch
     made: dict[str, object] = {}
 
     class Recording:
-        def __init__(self, *, channel, registry, second=None, questions=None):
+        def __init__(self, *, channel, registry, second=None, questions=None,
+                     corrections=None):
             captured["second"] = second
+            # Story 12: and the correction widening, for the same reason.
+            captured["corrections"] = corrections
             # Story 11: the runtime is also the only asker, so ``serve`` hands
             # it the engine ``build`` made. Captured here rather than ignored,
             # so a wiring that stopped passing it fails by name.
