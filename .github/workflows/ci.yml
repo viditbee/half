@@ -858,7 +858,21 @@ jobs:
         #   and that all three attributions read the same after the derived view
         #   is deleted and replayed (AD-4).
         #
-        # **Margin zero: 163 selected, 163 required.** Sized against the subset
+        #   that a correction phrase is matched **inside** an unspaced run —
+        #   which is why this package has its own tokenizer, and which a
+        #   mutation found untested: every other script case happened to be a
+        #   message that *was* exactly the phrase, so swapping the cutter for
+        #   the weaker one left all of them green;
+        #   that a declined candidate cannot catch a later yes — also a mutation
+        #   finding, and the failure it prevents is Half deleting something in
+        #   answer to a question the main already refused two turns ago;
+        #   that nothing at all is recorded on a crisis turn, asserted on what
+        #   the log *gains* rather than on what it fails to remove: the
+        #   no-correction assertion alone survived a gate that called the turn
+        #   path anyway, because crisis also disables retrieval, so the
+        #   correction aimed at nothing;
+        #
+        # **Margin zero: 172 selected, 172 required.** Sized against the subset
         # it protects rather than against a total, and every case here is the
         # only one asserting its rule.
         #
@@ -878,7 +892,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap11 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-11 correction cases collected: $collected"
-          if [ "$collected" -lt 163 ]; then
+          if [ "$collected" -lt 172 ]; then
             echo "::error::the CAP-11 gate collected $collected cases; a main may not be able to tell Half it is wrong"
             exit 1
           fi
@@ -927,7 +941,10 @@ jobs:
         #   value** off the composition root, because story 6d's identical claim
         #   once passed with the value set to ``None``.
         #
-        # 19 selected, 19 required. Zero margin: every case is a rule.
+        #   and that ``serve`` hands the runtime the widening ``build`` made,
+        #   by identity off the object the runtime was given.
+        #
+        # 20 selected, 20 required. Zero margin: every case is a rule.
         #
         # *"The package opens no store of its own"* is deliberately **not** here.
         # It is asserted in tests/test_unasked.py, where one predicate sweeps
@@ -940,7 +957,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap11_structure -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-11 structural cases collected: $collected"
-          if [ "$collected" -lt 19 ]; then
+          if [ "$collected" -lt 20 ]; then
             echo "::error::the CAP-11 structure gate collected $collected cases; a rule with one case has lost it"
             exit 1
           fi

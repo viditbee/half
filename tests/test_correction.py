@@ -131,6 +131,11 @@ class Holder:
             await asyncio.sleep(self._sleep)
         if isinstance(self._answer, BaseException):
             raise self._answer
+        if callable(self._answer):
+            # Private, because ``Widening`` refuses a holder with any public
+            # callable but ``classify`` — so an answer that is a lambda has to
+            # live behind an underscore, exactly as the real thing's does.
+            return self._answer(work)
         return self._answer
 
     @property
@@ -516,6 +521,40 @@ def test_a_declined_candidate_removes_nothing(registry, tmp_path):
     assert sent(transport).count(f"{Op.RETRACT.value}?[") == 1
 
 
+def test_a_declined_candidate_does_not_catch_a_later_yes(registry, tmp_path):
+    """**A candidate is over either way, and a mutation found this missing.**
+
+    Leaving a declined candidate standing looked harmless — nothing is appended
+    on the declining turn — and is not: the next thing the main says *yes* to,
+    about anything at all, would land on a proposal they already refused. Half
+    would delete a belief in answer to a question it asked two turns ago and was
+    told no about.
+
+    Three messages: the proposal, the refusal, and a plain yes about something
+    else. Nothing is removed, and the third turn is an ordinary one.
+    """
+    seed(tmp_path)
+    # Only the first message reads as a correction. A stub that answered
+    # *correction* to everything would put a fresh candidate up on the third
+    # turn and hide whether the first one was ever cleared.
+    wide = widening(
+        lambda work: labelled(
+            CORRECTION if "these days" in work.prompt.turns[0].text
+            else NO_CORRECTION
+        )
+    )
+
+    a_turn(
+        registry,
+        texts=("hm, i dont think that is me these days", "no, leave it", "yes"),
+        corrections=wide,
+    )
+
+    assert corrections_in(tmp_path) == []
+    assert BELIEF in beliefs_of(tmp_path)
+    assert wide.standing(MAIN) is None
+
+
 @pytest.mark.parametrize(
     "answer", ["yes", "yeah", "हाँ", "はい", "sim", "evet", "نعم"],
     ids=["english", "english-informal", "hindi", "japanese", "portuguese",
@@ -770,9 +809,23 @@ def test_a_correction_inside_the_mode_is_not_processed(registry, tmp_path):
     """Matrix: *in crisis*. The crisis path owns the turn.
 
     Structural rather than agreed: the gate never calls the turn path while the
-    mode is open, so there is no branch here to forget. The belief stays, which
-    is the right outcome — a correction made inside the mode is a thing to
-    handle when the mode is over, not a thing to lose.
+    mode is open (``tests/test_entrypoint.py``, ``tests/test_crisis.py``), so
+    there is no branch here to forget. The belief stays, which is the right
+    outcome — a correction made inside the mode is a thing to handle when the
+    mode is over, not a thing to lose.
+
+    **Asserted on what the log gains, not only on what it does not remove**, and
+    that is a mutation finding. *"No correction record"* survived a gate that
+    called the turn path anyway, because crisis also hard-disables retrieval, so
+    the correction aimed at nothing and removed nothing. Two mechanisms
+    delivering one outcome is good; a test that cannot tell which one is
+    working is not. Recording the main's message is the *first* thing the turn
+    path does that the mode forbids, so its absence is what says the path was
+    never entered.
+
+    The companion assertion is the second half: the same message outside the
+    mode removes the belief, so this case is not passing on a build where
+    nothing is ever corrected.
     """
     seed(tmp_path)
 
@@ -781,6 +834,20 @@ def test_a_correction_inside_the_mode_is_not_processed(registry, tmp_path):
 
     assert corrections_in(tmp_path) == []
     assert BELIEF in beliefs_of(tmp_path)
+    # Nothing at all was recorded for either turn: no correction, and no belief
+    # carrying the main's own message, which the turn path writes on every
+    # ordinary turn and which is therefore the trace of it having run.
+    assert [r.id for r in log_of(tmp_path) if r.op is Op.ASSERT] == [BELIEF]
+
+
+def test_the_same_correction_outside_the_mode_does_remove(registry, tmp_path):
+    """The other half of the crisis case, and without it that one passes on a
+    build where no correction ever works."""
+    seed(tmp_path)
+
+    a_turn(registry, texts=("you were wrong about that",))
+
+    assert [r.op for r in corrections_in(tmp_path)] == [Op.REVISE]
 
 
 @pytest.mark.parametrize(
@@ -957,6 +1024,48 @@ def test_a_removal_happens_in_every_script_and_none_is_the_default(
         [Op.RETRACT], [Op.REVISE], [Op.EXPUNGE],
     )
     assert BELIEF not in beliefs_of(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("我觉得这不对", Meaning.WRONG),
+        ("それは違うと思うんだけど", Meaning.WRONG),
+        ("ผมว่าไม่ถูกนะ", Meaning.WRONG),
+        ("我从来没说过这件事", Meaning.NEVER_TRUE),
+        ("这已经变了呢", Meaning.CHANGED),
+    ],
+    ids=["chinese", "japanese", "thai", "chinese-never", "chinese-changed"],
+)
+def test_a_correction_inside_an_unspaced_run_is_recognised(text, expected):
+    """**The case a mutation found missing, and the reason this module has its
+    own tokenizer at all.**
+
+    ``half.text.words`` keeps a scriptio-continua run whole, so a Chinese phrase
+    matches only a message that is *exactly* that phrase — which is what every
+    other script case in this file happens to be. Swapping ``terms`` for
+    ``words`` in ``signals._tokens`` left all of them green: the table was being
+    tested on the one shape the weaker tokenizer also handles.
+
+    These are corrections with a word in front of them and a particle behind,
+    which is how the sentence is actually typed. ``terms`` cuts the run into
+    grapheme clusters and the phrase matches where they are adjacent; ``words``
+    sees one token and matches nothing.
+    """
+    assert recognize(text) is expected
+
+
+def test_a_message_past_the_tokenizers_ceiling_is_still_recognised():
+    """The growth ceilings exist to bound an index, not to decide that a very
+    long message cannot be a correction.
+
+    Past them the split falls back to whole words — the crisis table's own
+    behaviour, and worse only for unspaced scripts, which is a degradation
+    stated rather than discovered.
+    """
+    from half.text import MAX_INPUT_CHARS
+
+    assert recognize("x" * (MAX_INPUT_CHARS + 10) + " thats wrong") is Meaning.WRONG
 
 
 def _scripts(text: str) -> set[str]:
@@ -1341,3 +1450,43 @@ def test_the_widening_reaches_the_shipped_product(tmp_path, monkeypatch):
     monkeypatch.setenv(MAINS_ENV, f"123:{MAIN}")
     wiring = entrypoint.build(load(), "123:fake")
     assert isinstance(wiring.corrections, Widening)
+
+
+@pytest.mark.cap11_structure
+def test_serve_hands_the_runtime_the_widening_build_made(tmp_path, monkeypatch):
+    """The other half, and the half a wiring test alone does not give.
+
+    ``build`` making one proves nothing if ``serve`` does not pass it. Asserted
+    by **identity**, off the object the runtime was actually given, because a
+    check that a keyword appeared in the call passes with the value set to
+    ``None`` — which is how story 6d's identical claim once passed.
+    """
+    import half.__main__ as entrypoint
+    from half.config import MAINS_ENV, ROOT_ENV, load
+
+    captured: dict[str, object] = {}
+    made: dict[str, object] = {}
+
+    class Recording:
+        def __init__(self, *, channel, registry, second=None, questions=None,
+                     corrections=None):
+            captured["corrections"] = corrections
+
+        async def run(self):
+            return None
+
+    real_build = entrypoint.build
+
+    def build_and_remember(config, token):
+        wiring = real_build(config, token)
+        made["wiring"] = wiring
+        return wiring
+
+    monkeypatch.setattr(entrypoint, "build", build_and_remember)
+    monkeypatch.setattr(entrypoint, "Runtime", Recording)
+
+    config = load({ROOT_ENV: str(tmp_path), MAINS_ENV: f"123:{MAIN}"})
+    asyncio.run(entrypoint.serve(config, "123:fake"))
+
+    assert isinstance(captured["corrections"], Widening)
+    assert captured["corrections"] is made["wiring"].corrections
