@@ -662,6 +662,68 @@ def test_anything_that_is_not_a_clear_yes_is_a_decline(registry, tmp_path):
     assert BELIEF in beliefs_of(tmp_path)
 
 
+def test_a_candidate_does_not_survive_a_turn_the_gate_answered_itself(
+    registry, tmp_path
+):
+    """**The worst place this failure could live, and it lived there.**
+
+    A candidate whose life was bounded only by the turn path outlived every turn
+    the crisis gate answers *itself* — a disclosure, its own standing question,
+    a third-party mention — because none of those reach the pipeline. The
+    third-party reply ends with *"And if any of this is closer to you than you
+    have said, tell me. I am here for that too."*, and the natural answer to
+    that is a bare "yes". A candidate proposed two turns earlier would have read
+    it as consent to delete a belief.
+
+    Three real turns through the real gate: the proposal, a third-party
+    disclosure the gate answers on its own, and the yes. Nothing is removed.
+
+    The candidate's life is bound in ``Runtime._handle``, which every inbound
+    message crosses — there is no route into Half that avoids it, which is the
+    property the fix rests on rather than a list of the gate's own branches.
+    """
+    seed(tmp_path)
+    wide = widening(labelled(CORRECTION))
+
+    transport = corrects(
+        registry,
+        "hm, i dont think that is me these days",
+        "my friend wants to kill herself",
+        "yes",
+        corrections=wide,
+    )
+
+    assert corrections_in(tmp_path) == []
+    assert BELIEF in beliefs_of(tmp_path)
+    assert wide.standing(MAIN) is None
+    # The gate really did answer the middle turn itself: the pipeline never ran,
+    # so that message was never recorded as a belief.
+    assert not any(
+        r.op is Op.ASSERT and "friend" in str(r.data.get("claim", ""))
+        for r in log_of(tmp_path)
+    )
+
+
+def test_a_candidate_stands_for_exactly_one_turn(registry, tmp_path):
+    """The bound stated as itself, so the rule is not *"until something else
+    happens"*.
+
+    An answer two turns later is not an answer. Without this the case above
+    could pass on a build that expired candidates only on crisis turns, which is
+    a list of the gate's branches rather than a property of the path.
+    """
+    seed(tmp_path)
+    wide = widening(labelled(CORRECTION))
+
+    corrects(
+        registry, "hm, i dont think that is me these days",
+        "what is the weather like", "yes", corrections=wide,
+    )
+
+    assert corrections_in(tmp_path) == []
+    assert BELIEF in beliefs_of(tmp_path)
+
+
 def test_an_explicit_correction_outranks_a_standing_candidate(
     registry, tmp_path
 ):
