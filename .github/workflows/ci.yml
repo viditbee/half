@@ -957,7 +957,8 @@ jobs:
         #   is punctuation, a field name or an enum value, so the op's own name
         #   is the whole vocabulary and nothing is composed;
         #   that the proposal and the removal are **one rendering read two
-        #   ways**, differing by one character;
+        #   ways**, sharing a head byte for byte and differing only in the
+        #   claim — which is the AD-18 bound expressed in the renderer;
         #   that the package reaches no channel, no ``half.crisis`` — the
         #   spine's layer rule, and the reason there are two tokenizers in the
         #   tree — and no clock;
@@ -969,12 +970,17 @@ jobs:
         #   falling back to the op when no stamp is there;
         #   that graphiti's other two timestamps are fields of no record;
         #   that the bound and both caps are the ones story 6d settled;
-        #   and that the widening reaches the shipped product, asserted **by
-        #   value** off the composition root, because story 6d's identical claim
-        #   once passed with the value set to ``None``.
-        #
-        #   that ``serve`` hands the runtime the widening ``build`` made, by
-        #   identity off the object the runtime was given;
+        #   that an **erasure** cannot be planned without the main's answer
+        #   however it was recognised — a different refusal from the inference
+        #   one, and unreachable through it, because an erasure destroys the
+        #   body and no correction of the correction can bring it back;
+        #   that the table registry cannot desync, run against both mutations —
+        #   a table defined and never consulted, and one renamed in a single
+        #   place, which raises on the turn path;
+        #   that the widening reaches the shipped product **and** that ``serve``
+        #   hands the runtime the one ``build`` made, both asserted by value off
+        #   the composition root, because story 6d's identical claim once passed
+        #   with the value set to ``None``;
         #   and that ``LIFTED`` — the exemption table this package's model lift
         #   lives in — holds that one entry and no other. Adding a line to it
         #   plus a model import in ``half/questions`` left the whole suite
