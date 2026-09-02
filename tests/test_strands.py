@@ -442,16 +442,20 @@ def test_the_runtime_never_reads_claim_text_off_a_candidate():
 
     **Story 12 added a second module that may reach belief text, and it is named
     here rather than left to be discovered.** ``half.correction.apply`` renders
-    the claim a correction removed, because CAP-11 requires Half to show what it
-    removed — and because a correction is aimed by ranking, so showing the claim
-    is what makes a mis-aimed one visible to the main on the same turn. That is
-    not the AD-18 hole it resembles: AD-18 governs what enters a *constructed
-    context* for a model to quote from, and nothing on the correction path
-    constructs one — no model runs, no context is built, and the text is a
-    rendering of a record the main has just told Half is wrong. The runtime
-    still names no claim, which is what this case checks; the bound on the new
-    route — that a `behave` claim reaches the wire on a correction turn and on
-    no other — is pinned in ``tests/test_correction.py``."""
+    the claim a correction **removed**, because CAP-11 requires Half to show
+    what it removed — and because a correction is aimed by ranking, so showing
+    the claim is what makes a mis-aimed one visible to the main on the same
+    turn. That is not the AD-18 hole it resembles: AD-18 governs what enters a
+    *constructed context* for a model to quote from, and nothing on the
+    correction path constructs one — no model runs, no context is built, and the
+    text is a rendering of a record the main has just told Half is wrong.
+
+    The route is bounded to the turn that removes something. A correction Half
+    only *proposes* — the classifier reading an ordinary message, or an erasure
+    waiting on an answer — shows the belief's id and **not** its claim, because
+    that is a turn where nothing was removed and the main may have said nothing
+    corrective at all. The runtime still names no claim, which is what this case
+    checks; the bound itself is pinned in ``tests/test_correction.py``."""
     tree = ast.parse((ROOT / "half/actor/runtime.py").read_text(encoding="utf-8"))
     reads = [
         node.attr for node in ast.walk(tree)

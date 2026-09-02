@@ -53,6 +53,32 @@ confirmation, never a record.
 provider quotes the request it rejected, so nothing here calls
 ``logger.exception`` or passes ``exc_info``: the class of a fault is the whole of
 what may cross.
+
+**Why this repeats ``half.crisis.classifier`` rather than sharing it.** Roughly
+half of this module — the bound, the tally, the breaker, the holder check, the
+verdict reading — is the same shape, and that is a real cost stated rather than
+hidden. Two things stop it being one module.
+
+The first is the spine's layer table: ``half.crisis`` is the entry gate and is
+depended upon by no domain module. This is a domain module, so it cannot import
+that one, and the shared machinery cannot live there.
+
+The second is that the two are the same *shape* and not the same *policy*, and
+the differences are the ones that would be argued away by a shared base. Crisis
+maps ``unsure`` to **ask**, because doubt is cheap when a wrong silence costs
+the only chance anyone had; this maps it to **nothing**, because asking on doubt
+here is Half proposing a deletion on every ambiguous message. Crisis's label set
+and instructions are **clinical-review material** pinned by digest
+(``tests/test_crisis_golden.py``); these are not, and must not acquire that
+status by inheritance. Crisis is the recall instrument with the table as its
+fallback; here the table acts alone and the model only widens.
+
+The honest resolution is a third module holding what is genuinely common — a
+bounded, counted, breaker-guarded consultation over the port's narrow
+classifier, with the label policy injected — under ``half/model`` or beside it,
+which is where both sides already reach. That is a refactor across the crisis
+path, and the crisis path is Ask-First for this story. It is recorded here
+rather than done quietly.
 """
 
 from __future__ import annotations

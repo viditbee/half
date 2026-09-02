@@ -47,16 +47,91 @@ def test_the_runtime_routes_inbound_through_the_gate():
     assert not direct, "runtime calls the pipeline directly, bypassing the gate"
 
 
-def test_no_module_imports_the_pipeline_around_the_gate():
+def pipeline_reach(path: Path) -> set[str]:
+    """Every way ``path``'s **code** names the pipeline. The predicate.
+
+    Four spellings, and each is a real route rather than a guess at one: taking
+    the attribute (which covers calling it, aliasing it and passing it on),
+    binding the bare name, defining a function with that name, and reaching it
+    through a string — ``getattr(runtime, "_pipeline")`` is the bypass an
+    attribute scan does not see.
+
+    **Not a substring scan over the file**, which is what this replaced. That
+    version fired on the word appearing in a *docstring*, so a module that
+    merely explained where the pipeline is failed the gate, and the fix on offer
+    was to reword the prose — which teaches exactly the wrong lesson about what
+    the rule is. Prose about a rule is not a violation of it; code is.
+
+    String constants inside docstrings are excluded for that reason, and only
+    for that reason: every other string is a candidate for a ``getattr``.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    docstrings = {
+        id(node.body[0].value) for node in ast.walk(tree)
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                             ast.AsyncFunctionDef))
+        and node.body and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+        and isinstance(node.body[0].value.value, str)
+    }
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr == PIPELINE_ATTR:
+            found.add("attribute")
+        elif isinstance(node, ast.Name) and node.id == PIPELINE_ATTR:
+            found.add("name")
+        elif (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == PIPELINE_ATTR
+        ):
+            found.add("definition")
+        elif (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and node.value == PIPELINE_ATTR
+            and id(node) not in docstrings
+        ):
+            found.add("string")
+    return found
+
+
+def test_no_module_reaches_the_pipeline_around_the_gate():
     """Nothing outside the gate and its own module may reach the pipeline."""
-    offenders = []
+    offenders = {}
     for path in (ROOT / "half").rglob("*.py"):
         rel = str(path.relative_to(ROOT))
         if rel in {"half/crisis/gate.py", "half/actor/runtime.py"}:
             continue
-        if PIPELINE_ATTR in path.read_text(encoding="utf-8"):
-            offenders.append(rel)
+        reached = pipeline_reach(path)
+        if reached:
+            offenders[rel] = sorted(reached)
     assert not offenders, f"modules reaching the pipeline outside the gate: {offenders}"
+
+
+def test_the_pipeline_scan_catches_every_spelling_and_ignores_prose(tmp_path):
+    """A guard nobody has run against the mutation it forbids is a guard nobody
+    knows the reach of — and this one replaced a scan that reported a docstring
+    as a violation while never having been run against a real bypass.
+    """
+    for name, line in (
+        ("attribute", "x = runtime._pipeline\n"),
+        ("name", "from half.actor.runtime import _pipeline\n_pipeline\n"),
+        ("string", 'x = getattr(runtime, "_pipeline")\n'),
+        ("definition", "async def _pipeline(inbound):\n    return None\n"),
+    ):
+        bypass = tmp_path / f"bypass_{name}.py"
+        bypass.write_text(line, encoding="utf-8")
+        assert name in pipeline_reach(bypass), (name, line)
+
+    prose = tmp_path / "prose.py"
+    prose.write_text(
+        '"""The turn path is _pipeline, and this module does not touch it."""\n'
+        "def go():\n"
+        '    """Called from _pipeline, once."""\n'
+        "    return 1\n",
+        encoding="utf-8",
+    )
+    assert pipeline_reach(prose) == set(), "prose about the rule is not a breach"
 
 
 def test_the_crisis_stub_is_gone():

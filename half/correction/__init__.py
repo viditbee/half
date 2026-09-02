@@ -23,7 +23,7 @@ Four modules, and the split is the story's three rules made structural:
 **Nothing here opens a store.** There is no ledger, no door, no injected
 registry: every module is a pure function over values, and the append happens
 in the one place that already holds the main's mutex
-(``half.actor.runtime``'s turn path). A second writer is against AD-1, and the
+(``half.actor.runtime._pipeline``). A second writer is against AD-1, and the
 cheapest way to have none is to have nothing here that could be one — asserted
 by ``tests/test_unasked.py``'s package sweep, which this package joins with an
 **empty** door.

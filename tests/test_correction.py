@@ -911,14 +911,21 @@ def test_the_same_correction_outside_the_mode_does_remove(registry, tmp_path):
     assert [r.op for r in corrections_in(tmp_path)] == [Op.REVISE]
 
 
+#: A correction that raises the belief's own topic **in the same message**, so
+#: the bought question is genuinely on offer on the turn the correction lands.
+#:
+#: Without this the case was vacuous in two ways at once: a correction into a
+#: fresh conversation aims at nothing, and a correction on a *second* turn is
+#: inside the re-ask bound of the question the first turn already bought. Both
+#: produce a turn with no question available, which any rule would pass.
 @pytest.mark.parametrize(
-    "text, engine",
-    [("thats wrong", True), ("delete that", True),
-     ("hm, i dont think that is me these days", True)],
+    "text",
+    ["farmland: thats wrong", "farmland: delete that",
+     "farmland: hm, i dont think that is me these days"],
     ids=["removal", "erasure", "candidate"],
 )
 def test_a_correction_turn_spends_no_favour_and_asks_no_bought_question(
-    registry, tmp_path, text, engine
+    registry, tmp_path, text
 ):
     """Matrix: *no favour*, and **the turn-path seam**.
 
@@ -935,10 +942,11 @@ def test_a_correction_turn_spends_no_favour_and_asks_no_bought_question(
     seed(tmp_path, rung=License.ASK, favours=1)
 
     transport = a_turn(
-        registry, texts=(text,), engine=engine,
+        registry, texts=(text,), engine=True,
         corrections=widening(labelled(CORRECTION)),
     )
 
+    assert transport.sent, "the main is still answered"
     with Store(tmp_path / MAIN) as store:
         assert [r for r in store.log if r.op is Op.ASKED] == []
         assert balance(store.log).spent == 0
@@ -951,12 +959,14 @@ def test_the_same_main_still_gets_a_bought_question_on_an_ordinary_turn(
     """The other half of the seam, and without it the case above passes on a
     build where nobody is ever asked anything.
 
-    Same fixture, same engine, same favour — a message that is not a correction
-    — and the question arrives.
+    Same fixture, same engine, same favour, same **single turn**, and a message
+    that raises the same topic and corrects nothing — and the question arrives.
+    The only difference between this case and the three above is the clause that
+    makes them corrections.
     """
     seed(tmp_path, rung=License.ASK, favours=1)
 
-    transport = a_turn(registry, texts=("farmland again please",), engine=True)
+    transport = a_turn(registry, texts=("farmland: any news",), engine=True)
 
     assert "question[" in sent(transport)
 
@@ -1027,22 +1037,43 @@ def test_a_behave_claim_reaches_the_wire_on_a_correction_turn_and_no_other(
     That is not AD-18 loosened, and the difference is what this case pins.
     AD-18 governs what enters a **constructed context** — the material a model
     is handed and may quote from — and nothing on the correction path
-    constructs one. So the exception is bounded to the turn that removes
-    something, and both halves are asserted here: the claim is on the wire on a
-    correction turn, and the *same claim* on the *same fixture* is absent from
-    an ordinary turn that retrieved it.
+    constructs one. So the exception is bounded to the turn that **removes**
+    something, and three halves are asserted here rather than two:
+
+    * an ordinary turn that retrieved the belief says none of it;
+    * **a turn the classifier read as a correction says none of it either.**
+      This is the half the first version structurally could not see: it ran its
+      negative with no classifier at all, so the proposal route — which renders
+      through the same function — was excluded from the assertion. With a
+      classifier answering ``correction`` on an ordinary message, a proposal
+      that carried the claim would put `behave` text on the wire on a turn where
+      nothing was removed and the main said nothing corrective;
+    * and the removal itself does carry it.
     """
     seed(tmp_path)
+    distinctive = [word for word in CLAIM.split() if len(word) > 5]
+    assert distinctive, "the fixture claim must have words worth searching for"
 
-    ordinary = a_turn(registry, texts=("farmland again please",))
-    assert CLAIM not in sent(ordinary)
-    for word in CLAIM.split():
-        if len(word) > 5:
-            assert word not in sent(ordinary), word
+    # A message that is not a correction, with a classifier that says it is.
+    proposing = corrects(
+        registry, "what did you do last weekend",
+        corrections=widening(labelled(CORRECTION), on="weekend"), tag="p",
+    )
+    body = last(proposing)
+    assert f"{Op.RETRACT.value}?[{BELIEF}]" in body, "the proposal route ran"
+    assert CLAIM not in body
+    for word in distinctive:
+        assert word not in body, word
 
-    corrected = a_turn(registry, texts=("thats wrong",), at=NOON + 100,
-                       tag="c")
-    assert CLAIM in sent(corrected)
+    # An ordinary turn that retrieved the belief and was read as nothing.
+    ordinary = a_turn(registry, texts=(ON_TOPIC,), tag="o", at=NOON + 50)  # noqa: E501
+    assert CLAIM not in last(ordinary)
+    for word in distinctive:
+        assert word not in last(ordinary), word
+
+    # The removal, and only here.
+    corrected = corrects(registry, "thats wrong", at=NOON + 100, tag="c")
+    assert CLAIM in last(corrected)
 
 
 def test_a_correction_and_its_attribution_survive_a_rebuild(tmp_path):

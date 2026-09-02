@@ -849,42 +849,56 @@ jobs:
         #   buys one on an ordinary turn, so the rule is not passing because
         #   nobody is ever asked anything;
         #   that what Half shows is the claim **as recorded**, byte for byte,
-        #   against a claim carrying punctuation and a second script;
-        #   that a removal happens in eight scripts and no table or fixture
-        #   makes one language the default, with the sweep's own coverage
-        #   asserted so that narrowing it fails rather than passing;
-        #   that the table fires on no ordinary message, including two negations
-        #   about something other than Half;
-        #   and that all three attributions read the same after the derived view
-        #   is deleted and replayed (AD-4).
-        #
-        #   that a correction phrase is matched **inside** an unspaced run —
-        #   which is why this package has its own tokenizer, and which a
-        #   mutation found untested: every other script case happened to be a
-        #   message that *was* exactly the phrase, so swapping the cutter for
-        #   the weaker one left all of them green;
-        #   that a declined candidate cannot catch a later yes — also a mutation
-        #   finding, and the failure it prevents is Half deleting something in
-        #   answer to a question the main already refused two turns ago;
-        #   that a `behave` claim reaches the wire on a correction turn and on
-        #   **no other** — the one route this story opens through AD-18, bounded
-        #   in both directions on one fixture, because AD-18 governs what enters
-        #   a constructed context and nothing here constructs one;
+        #   against a claim carrying punctuation and a second script — and that
+        #   a claim carrying a line break cannot forge a second marker line,
+        #   which matters because claims are attacker-influenced;
+        #   that a removal happens in **ten scripts with the op asserted per
+        #   row**, so a build mapping every non-English correction to `expunge`
+        #   fails rather than passes;
+        #   that a correction phrase is matched **inside** an unspaced run,
+        #   which is why there are two matchers, and which a mutation found
+        #   untested: every script case happened to be a message that *was*
+        #   exactly the phrase, so swapping the cutter for the weaker one left
+        #   all of them green;
+        #   that the table fires on **no ordinary message in any script it
+        #   carries** — including the four sentences containment used to break
+        #   on — with a coverage case that fails when a row is added in a script
+        #   the negatives do not reach, so the sweep cannot be narrowed quietly;
+        #   that a declined candidate cannot catch a later yes, and that a
+        #   candidate does not survive a turn the crisis gate answered itself —
+        #   both mutation findings, and the second is the worst of them: a
+        #   crisis reply that ends *"tell me, I am here for that too"* invites
+        #   exactly the bare yes that would have deleted a belief;
+        #   that a `behave` claim reaches the wire on a **removal** turn and on
+        #   no other — including a turn the classifier read as a correction,
+        #   which the first version of this bound structurally could not see
+        #   because it ran its negative with no classifier at all;
         #   that nothing at all is recorded on a crisis turn, asserted on what
         #   the log *gains* rather than on what it fails to remove: the
         #   no-correction assertion alone survived a gate that called the turn
-        #   path anyway, because crisis also disables retrieval, so the
-        #   correction aimed at nothing;
+        #   path anyway, because crisis also disables retrieval;
+        #   that the fail-open handler is run against the fault it exists for,
+        #   and that the breaker stops calling a failing provider, per main, and
+        #   is cleared by one good answer;
+        #   that what was proposed and what was confirmed are counted, that a
+        #   confirmation of a belief already gone is **not** counted as a
+        #   deletion, and that the counts reach an operator through `serve`;
+        #   and that all three attributions read the same after the derived view
+        #   is deleted and replayed (AD-4).
         #
-        # **Margin zero: 173 selected, 173 required.** Sized against the subset
+        # **Margin zero: 236 selected, 236 required.** Sized against the subset
         # it protects rather than against a total, and every case here is the
         # only one asserting its rule.
         #
-        # Two blocks of it are sweeps rather than single cases — twelve
-        # op-by-stamp crossings and eight scripts — and that is fine *here* in a
-        # way it was not in the AD-18 and AD-28 gates, because this gate is
-        # about corrections: a floor dominated by corrections in many scripts
-        # reports what it protects.
+        # Three blocks of it are sweeps rather than single cases — twelve
+        # op-by-stamp crossings, ten scripts twice over, and forty-odd ordinary
+        # messages that must fire on nothing — and that is fine *here* in a way
+        # it was not in the AD-18 and AD-28 gates, because this gate is about
+        # recognising corrections: a floor dominated by corrections and
+        # non-corrections in many scripts reports exactly what it protects. The
+        # negative sweep is the largest block and is the one that grew after
+        # review, which is the right shape for a table that acts with no
+        # confirmation.
         #
         # **The number is file-coupled** for tests/test_correction.py and
         # tests/test_attribution.py, which carry the marker at module scope
@@ -896,7 +910,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap11 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-11 correction cases collected: $collected"
-          if [ "$collected" -lt 173 ]; then
+          if [ "$collected" -lt 236 ]; then
             echo "::error::the CAP-11 gate collected $collected cases; a main may not be able to tell Half it is wrong"
             exit 1
           fi
@@ -945,8 +959,13 @@ jobs:
         #   value** off the composition root, because story 6d's identical claim
         #   once passed with the value set to ``None``.
         #
-        #   and that ``serve`` hands the runtime the widening ``build`` made,
-        #   by identity off the object the runtime was given.
+        #   that ``serve`` hands the runtime the widening ``build`` made, by
+        #   identity off the object the runtime was given;
+        #   and that ``LIFTED`` — the exemption table this package's model lift
+        #   lives in — holds that one entry and no other. Adding a line to it
+        #   plus a model import in ``half/questions`` left the whole suite
+        #   green, which made the rule story 11 fixed undoable by a one-line
+        #   edit in a test helper.
         #
         # 20 selected, 20 required. Zero margin: every case is a rule.
         #

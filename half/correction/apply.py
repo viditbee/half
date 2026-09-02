@@ -50,7 +50,7 @@ Half says* the glossary asks for.
 
 Pure. No clock, no store, no model, no network — ``fields`` and ``record_id``
 take the caller's ``t``, and the append itself happens where the main's mutex is
-already held (``half.actor.runtime``'s turn path).
+already held (``half.actor.runtime._pipeline``).
 """
 
 from __future__ import annotations
