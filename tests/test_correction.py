@@ -44,6 +44,7 @@ from pathlib import Path
 import pytest
 
 from half.actor.registry import ActorRegistry
+from half.actor import runtime as runtime_module
 from half.actor.runtime import Runtime
 from half.channel.telegram import TelegramChannel
 from half.correction import apply as correction
@@ -81,9 +82,10 @@ from half.loops import ledger as loops
 from half.model.port import Classify, Decision, Failure, Kind, Reason, Usage
 from half.questions.engine import QuestionEngine
 from half.retrieval.prefix import build_prefix
+from half.retrieval.strands import STRAND_FLOOR
 from half.schedule.clock import stamp
 from half.store.ops import TOUCH_TENSION, Op
-from half.store.records import EXPIRED_AT, INVALID_AT, TARGET
+from half.store.records import EXPIRED_AT, INVALID_AT, TARGET, make
 from half.store.store import Store
 from half.surface import touch as touch_module
 from half.surface.touch import Origin
@@ -102,6 +104,7 @@ NOW = stamp(NOON)
 DAY = 86_400.0
 
 LOOP = "buy-farmland"
+NOW = "2026-09-01T12:00:00Z"
 BELIEF = "b_land"
 #: The seeded claim, asserted **byte for byte** on the wire. Distinctive enough
 #: that its presence in a reply cannot be an accident, and sharing no word with
@@ -203,6 +206,12 @@ def registry(tmp_path):
     reg = ActorRegistry(tmp_path)
     yield reg
     reg.close()
+
+
+#: A belief on a strand the correction fixtures never raise. It is what makes
+#: the relevance floor a real comparison rather than a tie of one.
+OTHER = "b_bee"
+OTHER_CLAIM = "keeps bees in the garden"
 
 
 def seed(
@@ -534,6 +543,106 @@ def test_a_redelivered_correction_is_not_applied_twice(registry, tmp_path):
 
     assert len(corrections_in(tmp_path)) == 1
     assert len(transport.sent) == 2
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# the aim: what a correction is about
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def test_a_correction_about_nothing_the_conversation_touched_removes_nothing(
+    registry, tmp_path
+):
+    """**The defect the relevance floor exists for.**
+
+    A message about email, then *"that's wrong"*. With no term match the
+    backstop supplies every belief the main has, in an order that says nothing
+    about this turn — so taking the top of the ranked set expunged *"keeps bees
+    in the garden"*.
+
+    The floor is ``half.retrieval``'s own ``STRAND_FLOOR``, which is exactly the
+    weight of a belief on no strand the live conversation touches. Nothing here
+    is on one, so nothing is aimed at.
+    """
+    seed(tmp_path, beliefs=((BELIEF, CLAIM),), loop=LOOP)
+    with Store(tmp_path / MAIN, prefix=build_prefix) as store:
+        store.record(Op.ASSERT, OTHER, "2026-08-01T00:02Z", claim=OTHER_CLAIM,
+                     subject="self", topics=["bees"],
+                     **ladder.admitted(support=["s_bee"]))
+
+    a_turn(registry, texts=("did you see my email about the invoice",
+                            "thats wrong"))
+
+    assert corrections_in(tmp_path) == []
+    assert {BELIEF, OTHER} <= set(beliefs_of(tmp_path))
+
+
+def test_a_correction_with_no_antecedent_removes_nothing(registry, tmp_path):
+    """A bare *"that's wrong"* opening a conversation aims at nothing.
+
+    *That* has no antecedent, and Half inventing one is how a correction lands
+    on a belief the main never questioned. The strand weight of every belief is
+    exactly the floor here, which is what makes this the boundary case: a floor
+    written ``<`` rather than ``<=`` admits all of them.
+    """
+    seed(tmp_path)
+
+    transport = a_turn(registry, texts=("thats wrong",))
+
+    assert corrections_in(tmp_path) == []
+    assert BELIEF in beliefs_of(tmp_path)
+    assert last(transport).strip() == "noted."
+
+
+def test_the_aim_ignores_the_message_that_carried_the_correction():
+    """Every inbound message is recorded as a belief on the stated ledger, so
+    the second *"that's wrong"* in a conversation retracted the belief holding
+    the text *"that's wrong"*.
+
+    Asserted directly on ``aim`` over synthetic candidates, because the two
+    filters are ordered and the outer one hides the inner: a message belief
+    carries no topic and no loop, so **today** it never clears the floor anyway.
+    That is why this case exists at all — the exclusion is the filter that has
+    to keep working when a later story gives an inbound record a topic, and a
+    behavioural case would be asserting the floor twice.
+    """
+    from half.retrieval.port import Candidate
+
+    def belief(ident, ledger=None, t="2026-09-01T00:00Z"):
+        record = {"t": t}
+        if ledger:
+            record["ledger"] = ledger
+        return Candidate(id=ident, claim="", prefix="", bm25=-1.0,
+                         belief=record, score=1.0,
+                         weights={"strand": STRAND_FLOOR + 0.1})
+
+    live = [belief("b_said", "stated", "2026-09-01T00:02Z"),
+            belief("b_older", "stated", "2026-09-01T00:01Z"),
+            belief("b_real")]
+    # The newest stated record is the previous turn's message. It is skipped
+    # even though it ranks first.
+    assert correction.aim(live) == "b_older"
+    # And this turn's own id is skipped by the caller, whatever it ranks.
+    assert correction.aim(live, exclude=("b_older",)) == "b_real"
+
+
+def test_the_aim_needs_a_weight_it_can_read():
+    """Never raises, and never guesses. A candidate whose strand weight is
+    missing or unreadable is one the correction does not aim at — the safe
+    direction, because the cost of aiming wrongly is a belief removed."""
+    from half.retrieval.port import Candidate
+
+    odd = [
+        Candidate(id="b_no_weights", claim="", prefix="", bm25=None,
+                  belief={}, score=1.0, weights={}),
+        Candidate(id="b_bad_weight", claim="", prefix="", bm25=None,
+                  belief={}, score=1.0, weights={"strand": "high"}),
+        Candidate(id="b_bool", claim="", prefix="", bm25=None,
+                  belief={}, score=1.0, weights={"strand": True}),
+    ]
+    assert correction.aim(odd) == ""
+    assert correction.aim([]) == ""
+    assert correction.aim(None) == ""
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1563,7 +1672,15 @@ def test_a_run_of_failures_stands_the_widening_down(registry, tmp_path):
 
 
 def test_the_breaker_is_per_main(registry, tmp_path):
-    """One main's provider being down says nothing about another's."""
+    """One main's provider being down says nothing about another's.
+
+    **Interleaved, and one short of the trip.** A breaker keyed on the run
+    across *all* mains — the natural way to write it wrongly — is invisible if
+    the first main has already tripped and reset: the shared counter is back to
+    zero and the second main goes through. So the first main stops one failure
+    below the threshold, and the second must then be able to fail that many
+    times itself. Under a shared counter it trips on its first.
+    """
     calls: list[str] = []
 
     class Counting:
@@ -1572,12 +1689,14 @@ def test_the_breaker_is_per_main(registry, tmp_path):
             return Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED)
 
     wide = Widening({MAIN: Counting(), "other": Counting()}, bound_seconds=0.2)
-    for _ in range(BREAK_AFTER + 2):
+    for _ in range(BREAK_AFTER - 1):
         asyncio.run(wide.consult("hm, is that me", main_id=MAIN))
-    asyncio.run(wide.consult("hm, is that me", main_id="other"))
+    for _ in range(BREAK_AFTER - 1):
+        asyncio.run(wide.consult("hm, is that me", main_id="other"))
 
-    assert calls.count(MAIN) == BREAK_AFTER
-    assert calls.count("other") == 1
+    assert calls.count(MAIN) == BREAK_AFTER - 1
+    assert calls.count("other") == BREAK_AFTER - 1
+    assert wide.tally.skipped == 0
 
 
 def test_a_good_answer_clears_the_run(registry, tmp_path):
@@ -1742,6 +1861,81 @@ def test_a_main_with_no_key_is_left_unequipped_and_the_boot_survives(
     assert not wide.holds(MAIN)
 
 
+def test_a_declined_candidate_does_not_swallow_the_turn(registry, tmp_path):
+    """A proposal must not cost the main the question they asked next.
+
+    Any non-confirming message after a proposal is a decline, and a decline is
+    *also* an ordinary turn: the main said something, and whatever that turn was
+    going to do it still does. Before review the decline owned the turn — no
+    bought question, no widening, no line — so an unrelated question landing
+    right after a proposal was swallowed.
+    """
+    seed(tmp_path, rung=License.ASK, favours=1)
+
+    transport = a_turn(
+        registry,
+        texts=("farmland: hm, i dont think that is me these days",
+               "farmland: any news"),
+        engine=True, corrections=widening(labelled(CORRECTION)),
+    )
+
+    assert corrections_in(tmp_path) == []
+    assert f"{Op.RETRACT.value}?[" in transport.sent[0][1], "the proposal ran"
+    assert "question[" in transport.sent[1][1], "the declining turn still asks"
+
+
+def test_a_removal_is_shown_even_when_the_turn_has_no_reply_of_its_own(
+    registry, tmp_path, monkeypatch
+):
+    """CAP-11's success criterion does not depend on there being anything else
+    to say.
+
+    ``respond`` answers every non-empty message today, so this ordering is
+    defensive rather than reachable — which is exactly why it is asserted with
+    ``respond`` stubbed to silence rather than left to be discovered. Returning
+    early on an empty reply left the belief gone durably, the candidate
+    consumed, and *"Half shows what it removed"* silently not happening.
+    """
+    seed(tmp_path)
+    monkeypatch.setattr(runtime_module, "respond",
+                        lambda inbound, ranked=None, *, ceiling=None: None)
+
+    transport = corrects(registry, "thats wrong")
+
+    assert [r.op for r in corrections_in(tmp_path)] == [Op.RETRACT]
+    assert last(transport) == f"{Op.RETRACT.value}[{BELIEF}]: {CLAIM}"
+
+
+def test_two_corrections_inside_one_second_are_two_records(registry, tmp_path):
+    """The append's id carries the target as well as the stamp.
+
+    Two messages can arrive with the same transport timestamp — they routinely
+    do — and without the discriminator the two corrections shared an id and were
+    appended silently. Every neighbouring id in the tree carries one.
+    """
+    seed(tmp_path)
+    with Store(tmp_path / MAIN, prefix=build_prefix) as store:
+        store.record(Op.ASSERT, OTHER, "2026-08-01T00:02Z", claim=OTHER_CLAIM,
+                     subject="self", topics=["bees"],
+                     **ladder.admitted(support=["s_bee"]))
+
+    # Each message raises its own topic in its own clause, so each turn aims at
+    # its own belief — and both carry the same transport timestamp.
+    at = int(NOON)
+    transport = FakeTransport([
+        msg(text="farmland: thats wrong", message_id="m1", chat_id="123",
+            date=at),
+        msg(text="bees: thats wrong", message_id="m2", chat_id="123", date=at),
+    ])
+    channel = TelegramChannel(transport=transport, mains={"123": MAIN})
+    asyncio.run(Runtime(channel=channel, registry=registry).run())
+
+    recorded = corrections_in(tmp_path)
+    assert len(recorded) == 2, [r.id for r in recorded]
+    assert len({r.id for r in recorded}) == 2, [r.id for r in recorded]
+    assert {r.data[TARGET] for r in recorded} == {BELIEF, OTHER}
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # structural: the rules an inference route cannot walk around
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1767,6 +1961,85 @@ def test_an_inferred_correction_cannot_be_planned_without_an_answer():
             source=Source.INFERRED, confirmed=True,
         )
         assert planned is not None
+
+
+@pytest.mark.cap11_structure
+def test_an_erasure_cannot_be_planned_without_an_answer_however_it_was_read():
+    """**The second refusal, at the same function, and it is not the first one
+    in disguise.**
+
+    An erasure recognised by the **offline table** carries ``Source.TABLE``, so
+    the inference refusal does not apply to it — and every other meaning from
+    the table is applied directly. This is the one that is not, because an
+    erasure tombstones the body: the recovery argument that makes a mis-aimed
+    removal survivable is false for exactly this meaning.
+    """
+    with pytest.raises(CorrectionError):
+        correction.plan(
+            Meaning.ERASE, target=BELIEF, belief={"claim": CLAIM},
+            source=Source.TABLE,
+        )
+    assert correction.NEEDS_ANSWER == frozenset({Meaning.ERASE})
+    # The other three from the table go through untouched.
+    for meaning in set(Meaning) - correction.NEEDS_ANSWER:
+        assert correction.plan(
+            meaning, target=BELIEF, belief={"claim": CLAIM},
+            source=Source.TABLE,
+        ) is not None
+
+
+@pytest.mark.parametrize("stamp_name", [EXPIRED_AT, INVALID_AT],
+                         ids=["expired-at", "invalid-at"])
+@pytest.mark.parametrize("op", [Op.ASSERT, Op.LOOP_TRANSITION, Op.CEILING,
+                                Op.CRISIS],
+                         ids=lambda o: o.value)
+def test_a_cause_may_not_be_written_on_an_op_that_removes_nothing(op, stamp_name):
+    """The two stamps are the whole of why a belief **left**, so an op that
+    removes nothing has no cause to record.
+
+    Before review an ``expired_at`` on an ``assert`` passed every gate: durable,
+    on an append-only log, carrying an attribution nothing had checked, and
+    skipped by the reader — a field that reads as an answer and is consulted by
+    nothing.
+
+    The four ops here are the ones with no field allowlist of their own.
+    ``tension``, ``touch`` and ``asked`` already refuse every stray field,
+    including these two, and refuse it as their own error — which is the right
+    error for them and is asserted where those allowlists are.
+    """
+    fields: dict[str, object] = {}
+    if op is Op.LOOP_TRANSITION:
+        fields = {"loop": LOOP}
+    elif op is Op.CEILING:
+        fields = {"rung": "behave"}
+    elif op is Op.CRISIS:
+        fields = {"state": "entered"}
+    with pytest.raises(CorrectionError):
+        make(op, "x_1", NOW, **fields, **{stamp_name: NOW})
+
+
+@pytest.mark.cap11_structure
+def test_the_table_registry_cannot_desync(monkeypatch):
+    """A table defined and never consulted fires on nothing and reads in review
+    as coverage; one renamed in a single place raises ``KeyError`` **on the turn
+    path**, which is a main losing their reply to a dictionary key.
+
+    Run against both mutations, because a guard nobody has run against the thing
+    it forbids is a guard nobody knows the reach of.
+    """
+    from half.correction import signals as table
+
+    monkeypatch.setitem(table.VOCABULARY, "orphan", ("never consulted",))
+    with pytest.raises(CorrectionError):
+        table._check_tables()
+    monkeypatch.undo()
+
+    monkeypatch.setattr(
+        table, "MEANING_FOR_TABLE",
+        (*table.MEANING_FOR_TABLE, ("renamed", Meaning.WRONG)),
+    )
+    with pytest.raises(CorrectionError):
+        table._check_tables()
 
 
 @pytest.mark.cap11_structure

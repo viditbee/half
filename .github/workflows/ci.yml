@@ -878,15 +878,29 @@ jobs:
         #   no-correction assertion alone survived a gate that called the turn
         #   path anyway, because crisis also disables retrieval;
         #   that the fail-open handler is run against the fault it exists for,
-        #   and that the breaker stops calling a failing provider, per main, and
-        #   is cleared by one good answer;
+        #   and that the breaker stops calling a failing provider, per main —
+        #   **interleaved and one short of the trip**, because a shared counter
+        #   is invisible once the first main has tripped and reset — and is
+        #   cleared by one good answer;
+        #   that a correction about nothing the conversation touched removes
+        #   nothing, that a correction with no antecedent removes nothing (the
+        #   floor's own boundary), and that the aim skips the message that
+        #   carried it;
+        #   that an erasure cannot be planned without an answer **however it was
+        #   recognised**, which is a different refusal from the inference one
+        #   and is not reachable through it;
+        #   that a cause may not be written on an op that removes nothing;
+        #   that the table registry cannot desync, run against both mutations;
+        #   that a declined candidate does not swallow the turn, that a removal
+        #   is shown even when the turn has no reply of its own, and that two
+        #   corrections inside one second are two records;
         #   that what was proposed and what was confirmed are counted, that a
         #   confirmation of a belief already gone is **not** counted as a
         #   deletion, and that the counts reach an operator through `serve`;
         #   and that all three attributions read the same after the derived view
         #   is deleted and replayed (AD-4).
         #
-        # **Margin zero: 238 selected, 238 required.** Sized against the subset
+        # **Margin zero: 255 selected, 255 required.** Sized against the subset
         # it protects rather than against a total, and every case here is the
         # only one asserting its rule.
         #
@@ -910,7 +924,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap11 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-11 correction cases collected: $collected"
-          if [ "$collected" -lt 238 ]; then
+          if [ "$collected" -lt 255 ]; then
             echo "::error::the CAP-11 gate collected $collected cases; a main may not be able to tell Half it is wrong"
             exit 1
           fi
@@ -967,7 +981,7 @@ jobs:
         #   green, which made the rule story 11 fixed undoable by a one-line
         #   edit in a test helper.
         #
-        # 20 selected, 20 required. Zero margin: every case is a rule.
+        # 22 selected, 22 required. Zero margin: every case is a rule.
         #
         # *"The package opens no store of its own"* is deliberately **not** here.
         # It is asserted in tests/test_unasked.py, where one predicate sweeps
@@ -980,7 +994,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap11_structure -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-11 structural cases collected: $collected"
-          if [ "$collected" -lt 20 ]; then
+          if [ "$collected" -lt 22 ]; then
             echo "::error::the CAP-11 structure gate collected $collected cases; a rule with one case has lost it"
             exit 1
           fi
