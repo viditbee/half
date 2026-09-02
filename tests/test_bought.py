@@ -53,7 +53,7 @@ from half.governance import ladder
 from half.governance.ladder import RUNGS, Ceiling, License, height, permitted
 from half.loops import ledger as loops
 from half.loops.timescale import PERIOD_DAYS, Timescale
-from half.questions.engine import QuestionEngine
+from half.questions.engine import Purchase, QuestionEngine
 from half.questions.mint import question_id
 from half.retrieval.port import Candidate as RankedBelief
 from half.retrieval.strands import known_strands
@@ -74,6 +74,7 @@ from half.surface.morning import (
 )
 from half.surface.touch import Origin
 from half.trust.balance import balance
+from half.trust.unasked import ASK_UNAFFORDABLE
 
 pytestmark = [pytest.mark.cap4, pytest.mark.cap4_bought]
 
@@ -568,29 +569,43 @@ def test_a_question_ignored_a_full_period_later_may_be_put_again_for_a_favour(
 
 
 @pytest.mark.cap4_favour
+@pytest.mark.parametrize("past", [False, True], ids=["at-the-boundary", "past-it"])
 @pytest.mark.parametrize("scale", list(Timescale), ids=[str(s) for s in Timescale])
 def test_the_re_ask_bound_is_each_wantings_own_period_end_to_end(
-    registry, tmp_path, scale
+    registry, tmp_path, scale, past
 ):
     """The sweep, driven through the whole product rather than through the pure
-    function — one interval against four wantings, four answers.
+    function: **each wanting measured at its own boundary and one day past it.**
 
-    The interval is fixed at thirty-one days. A days- and a weeks-loop are past
-    their own period and a months- and a years-loop are not; the days-loop is
-    additionally below the stakes bar, so it is never asked at any interval.
-    A single shared cooldown gives one answer for all four and fails here.
+    Eight runs, four different boundaries — one day, one week, one month, one
+    year — so a build holding every wanting to one shared cadence answers wrongly
+    for three of the four and fails by name here.
+
+    **A single interval was not enough, and this case is the second version.**
+    The first swept thirty-one days across all four scales, which happens to give
+    the same answer as gbrain's fourteen-day cooldown at every scale but one:
+    the mutation was caught by exactly one parameter, and deleting that one
+    parameter would have left the rule unguarded while the sweep still looked
+    like a sweep. That is defect shape three in this project's own list — a test
+    exercising only the shape the implementation happens to handle.
+
+    A days-routine is below the stakes bar whatever the interval, so it is never
+    asked at all; that is asserted here rather than excused, because *"never
+    bought"* and *"not bought yet"* are different answers.
     """
+    period = PERIOD_DAYS[scale]
     seed(tmp_path, favours=2, scales={FARMLAND: scale},
-         asks=(("b_1", ago(31)),))
+         asks=(("b_1", ago(period + (1 if past else 0))),))
     talking(registry)
     channel = FakeChannel()
 
     run_morning(registry, channel)
 
-    past_its_period = 31 > PERIOD_DAYS[scale]
-    above_the_bar = PERIOD_DAYS[scale] > PERIOD_DAYS[Timescale.DAYS]
-    expected = 2 if (past_its_period and above_the_bar) else 1
-    assert len(spends(tmp_path)) == expected
+    above_the_bar = period > PERIOD_DAYS[Timescale.DAYS]
+    expected = 2 if (past and above_the_bar) else 1
+    assert len(spends(tmp_path)) == expected, (
+        f"a {scale} wanting asked {period + past} days ago"
+    )
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -644,6 +659,150 @@ def test_a_crisis_opening_after_the_question_is_chosen_spends_nothing(
 
     assert isinstance(outcome, Silence)
     assert channel.sent == []
+    assert spends(tmp_path) == []
+
+
+@pytest.mark.cap4_favour
+@pytest.mark.cap4_gates
+def test_a_spend_the_gates_refuse_takes_the_question_out_of_the_send(
+    registry, tmp_path
+):
+    """**The rule the whole story is: no question without a favour spent.**
+
+    The offer passes every gate; the spend, re-run against a view read at the
+    moment of spending, does not. What must then reach the main is the morning
+    *without* the question — not the text that was composed when the purchase
+    still looked affordable.
+
+    This case exists because a mutation escaped the suite: deleting the two
+    lines that fall back to the unbought text left every other case green while
+    a refused spend still put the question on the wire, which is CAP-4's central
+    rule broken on the one path that matters. The crisis case does not cover it —
+    there the *claim* refuses first, so the send never happens at all.
+    """
+    seed(tmp_path, favours=1, extra=(("b_say", "the mornings have been clear"),))
+    talking(registry)
+    channel = FakeChannel()
+
+    class Refusing:
+        """Offers honestly and cannot pay. The two halves of a stale purchase."""
+
+        def __init__(self, inner):
+            self.inner = inner
+            self.attempts = 0
+
+        async def offer(self, main_id, **kwargs):
+            found = await self.inner.offer(main_id, **kwargs)
+            assert found is not None, "the fixture must offer something to lose"
+            return found
+
+        async def buy(self, main_id, **kwargs):
+            self.attempts += 1
+            return Purchase(outcome=ASK_UNAFFORDABLE)
+
+    surface = a_surface(registry, channel)
+    engine = Refusing(surface.questions)
+    object.__setattr__(surface, "questions", engine)
+    outcome = asyncio.run(surface.surface(
+        "vidit", now=Instant(),
+        candidates=[Candidate(origin=ORIGIN, entries=("b_1", "b_say"))],
+    ))
+
+    assert engine.attempts == 1, "the spend must have been attempted"
+    assert isinstance(outcome, Surfaced)
+    assert "question[" not in channel.sent[0][1], (
+        "a question reached the main that no favour paid for"
+    )
+    assert "content[b_say]" in channel.sent[0][1]
+    assert spends(tmp_path) == []
+
+
+@pytest.mark.cap4_favour
+def test_a_refused_spend_with_nothing_else_to_say_sends_nothing_at_all(
+    registry, tmp_path
+):
+    """The same refusal when the question *was* the whole morning.
+
+    The day is already claimed, so it is spent — story 10's asymmetry, which
+    this story inherits rather than repairs — and the main is sent nothing
+    rather than a question nobody paid for.
+    """
+    seed(tmp_path, favours=1)
+    talking(registry)
+    channel = FakeChannel()
+
+    class Refusing:
+        def __init__(self, inner):
+            self.inner = inner
+
+        async def offer(self, main_id, **kwargs):
+            return await self.inner.offer(main_id, **kwargs)
+
+        async def buy(self, main_id, **kwargs):
+            return Purchase(outcome=ASK_UNAFFORDABLE)
+
+    surface = a_surface(registry, channel)
+    object.__setattr__(surface, "questions", Refusing(surface.questions))
+    outcome = asyncio.run(surface.surface(
+        "vidit", now=Instant(),
+        candidates=[Candidate(origin=ORIGIN, entries=("b_1",))],
+    ))
+
+    assert outcome == Silence(NOTHING_MAY_BE_SAID)
+    assert channel.sent == []
+    assert spends(tmp_path) == []
+    with Store(tmp_path / "vidit") as store:
+        assert any(
+            record.op is Op.TOUCH and record.data.get("local_day") == TODAY
+            for record in store.log
+        ), "the day was claimed before the spend, so it is spent"
+
+
+@pytest.mark.cap4_favour
+@pytest.mark.cap4_gates
+def test_a_quarantine_landing_between_the_choice_and_the_spend_refuses(
+    registry, tmp_path
+):
+    """The same rule through the real gates rather than a stub.
+
+    The subject is quarantined between the offer and the spend, so
+    ``ActorRegistry.note_ask`` refuses under the main's own mutex — the window
+    story 5b's review found open — and the morning goes out without the
+    question.
+    """
+    seed(tmp_path, favours=1, extra=(("b_say", "the mornings have been clear"),))
+    talking(registry)
+    channel = FakeChannel()
+
+    class Quarantining:
+        def __init__(self, inner):
+            self.inner = inner
+
+        async def offer(self, main_id, **kwargs):
+            found = await self.inner.offer(main_id, **kwargs)
+            assert found is not None
+            async with registry.acquire(main_id) as actor:
+                record = actor.store.state().beliefs["b_1"]
+                candidate = ladder.quarantine_candidate(record, reason="asked")
+                actor.store.record(
+                    Op.ASSERT, "b_1", "2026-09-01T11:00:00Z",
+                    **ladder.quarantine(record, candidate=candidate,
+                                        answered=True),
+                )
+            return found
+
+        async def buy(self, main_id, **kwargs):
+            return await self.inner.buy(main_id, **kwargs)
+
+    surface = a_surface(registry, channel)
+    object.__setattr__(surface, "questions", Quarantining(surface.questions))
+    outcome = asyncio.run(surface.surface(
+        "vidit", now=Instant(),
+        candidates=[Candidate(origin=ORIGIN, entries=("b_1", "b_say"))],
+    ))
+
+    assert isinstance(outcome, Surfaced)
+    assert "question[" not in channel.sent[0][1]
     assert spends(tmp_path) == []
 
 
