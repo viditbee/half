@@ -105,6 +105,24 @@ PURE_MODULES = (
     "half/trust/balance.py",
     "half/trust/stakes.py",
     "half/trust/unasked.py",
+    # The bought question (CAP-4, story 11). The answer state is *folded from
+    # the log* — asked, answered, or ignored-and-how-long-ago — and the bound on
+    # re-asking is arithmetic between a stamp out of that log and an injected
+    # ``now``. A clock in any of these would make *"has this already been put to
+    # them?"* a question two builds reading one log disagree about, and the
+    # failure is one-directional: a clock reading slightly ahead would let every
+    # ignored question be put again immediately, which is the nag this story
+    # exists to prevent.
+    #
+    # ``engine.py`` is here for the reason ``unasked.py`` is, and on the same
+    # terms: it carries a composition, and every door that composition uses is
+    # injected. It opens no store, reaches no channel and takes no clock, so it
+    # genuinely imports nothing impure — and ``tests/test_bought.py`` asserts
+    # the doors separately, by signature against the real registry.
+    "half/questions/__init__.py",
+    "half/questions/mint.py",
+    "half/questions/answered.py",
+    "half/questions/engine.py",
 )
 
 #: **``half/schedule/due.py`` is deliberately not in that list**, and the reason
