@@ -1690,8 +1690,12 @@ def test_serve_hands_the_runtime_the_classifier_build_made(tmp_path, monkeypatch
     made: dict[str, object] = {}
 
     class Recording:
-        def __init__(self, *, channel, registry, second=None):
+        def __init__(self, *, channel, registry, second=None, questions=None):
             captured["second"] = second
+            # Story 11: the runtime is also the only asker, so ``serve`` hands
+            # it the engine ``build`` made. Captured here rather than ignored,
+            # so a wiring that stopped passing it fails by name.
+            captured["questions"] = questions
 
         async def run(self):
             return None
@@ -1711,6 +1715,9 @@ def test_serve_hands_the_runtime_the_classifier_build_made(tmp_path, monkeypatch
 
     assert isinstance(captured["second"], SecondOpinion)
     assert captured["second"] is made["wiring"].second
+    # Story 11: and the question engine, for the same reason — a surface
+    # reachable only from a test is a surface nobody has run.
+    assert captured["questions"] is made["wiring"].questions
 
 
 # =============================================================================

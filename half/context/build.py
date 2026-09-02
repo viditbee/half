@@ -127,6 +127,52 @@ _TOPICS: Final[str] = "topics"
 _SUBJECT: Final[str] = "subject"
 
 
+#: The one rung a question may be raised from.
+#:
+#: Named here rather than compared inline because ``bought_question`` and
+#: ``tests/test_bought.py`` both read it, and because it is deliberately an
+#: **equality** and not a floor: ``half.trust.unasked.may_be_raised`` permits
+#: `ask` *or above*, which is the right rule for *may Half raise this*, and a
+#: belief the ladder lifted to `assert` belongs in the content channel where Half
+#: may simply say it. The gap between the two is real and cost a favour before
+#: review found it — see ``bought_question``.
+_ASKABLE: Final[License] = License.ASK
+
+
+def bought_question(
+    candidate_id: object, license_: License, *, bought: object
+) -> bool:
+    """Whether this candidate is the one question a favour paid for.
+
+    **The predicate the builder and the tests both read**, rather than a
+    condition each of them writes out. The first version of this rule lived only
+    inside ``_item`` and was guarded in the tests by an AST scan for a branch
+    naming ``bought`` — which ``if not bought: return Question(...)`` satisfies
+    while doing the exact opposite, and which a ternary or a ``match`` would have
+    made false-fail. A predicate can be swept exhaustively against an
+    independently written expectation; a syntax scan can only ever be as clever
+    as whoever wrote it.
+
+    Two facts, and neither is inferred here. The rung is the ladder's answer,
+    resolved under this main's ceiling one frame up. Whether a favour was spent
+    is the trust package's, decided before the build and handed in. A belief the
+    ladder does not put at `ask` is never a question however much was paid for
+    it, and an `ask`-rung belief nobody paid for is never a question however
+    clearly it looks like one.
+
+    The rung is compared for **equality** with `ask`, not for reaching it. A
+    belief at `assert` is one Half may state, so it belongs in the content
+    channel; asking about something you are licensed to assert is not a question.
+    That asymmetry against ``may_be_raised``'s *ask-or-above* is why a spend must
+    never happen until the built context actually carries a question line.
+    """
+    if license_ is not _ASKABLE:
+        return False
+    paid = bought.strip() if isinstance(bought, str) else ""
+    ident = candidate_id.strip() if isinstance(candidate_id, str) else ""
+    return bool(paid) and paid == ident
+
+
 def resolve(belief: Mapping[str, Any] | Any, *, ceiling: Ceiling | None) -> License:
     """The license this belief actually permits, resolved downward only.
 
@@ -234,9 +280,8 @@ def build(
         truncated=bool(getattr(ranked, "truncated", False)),
         rerank=getattr(ranked, "rerank", RerankSource.ABSENT),
     )
-    paid = bought.strip() if isinstance(bought, str) else ""
     for candidate, license_ in licensed:
-        item = _item(candidate, license_, bought=paid)
+        item = _item(candidate, license_, bought=bought)
         if item is None:
             continue
         trial = context.plus(item)
@@ -246,7 +291,9 @@ def build(
     return context
 
 
-def _item(candidate: Candidate, license_: License, *, bought: str) -> Item | None:
+def _item(
+    candidate: Candidate, license_: License, *, bought: object
+) -> Item | None:
     """The one channel item this candidate contributes, or nothing.
 
     **The question channel needs two facts and this function holds neither of
@@ -272,7 +319,7 @@ def _item(candidate: Candidate, license_: License, *, bought: str) -> Item | Non
         return None  # no structured topic, or one that echoes the claim
     # The rungs differ in what Half may do with the topic, never in how much of
     # the belief it was allowed to see — so they share every line above this.
-    if license_ is License.ASK and bought and candidate.id == bought:
+    if bought_question(candidate.id, license_, bought=bought):
         return Question(id=candidate.id, topics=topics)
     return Directive(id=candidate.id, topics=topics)
 

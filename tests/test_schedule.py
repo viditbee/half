@@ -1944,21 +1944,23 @@ def test_the_scheduler_is_wired_into_the_shipped_composition(tmp_path):
         # this registry and this channel. Compared by value all the way down,
         # because an ``isinstance`` check passes for a surface wired to
         # somebody else's registry, to somebody else's channel, or to neither.
+        from half.questions.engine import QuestionEngine
         from half.surface.morning import MorningPass, MorningSurface
 
         # Story 11: the surface also holds *this* wiring's question engine,
         # compared by value for the reason everything else here is — a surface
         # wired with ``questions=None`` never asks anything, which is exactly
         # the state story 5b shipped in and which this equality now forbids.
-        from half.questions.engine import QuestionEngine
-
+        # Story 11, review loop 1: the morning surface is **not** an asker and
+        # has no field for an engine. Delivery is the runtime's — the wiring
+        # carries the engine on ``Wiring.questions``, asserted below by value.
         assert wiring.scheduler.work == MorningPass(
             consolidate=TensionPass(ledger=wiring.registry),
             surface=MorningSurface(
-                ledger=wiring.registry, channel=wiring.channel,
-                questions=QuestionEngine(ledger=wiring.registry),
+                ledger=wiring.registry, channel=wiring.channel
             ),
         )
+        assert wiring.questions == QuestionEngine(ledger=wiring.registry)
         assert isinstance(wiring.scheduler.clock, SystemClock)
         assert wiring.scheduler.bound == DEFAULT_BOUND
         assert wiring.scheduler.timeout == DEFAULT_TIMEOUT
@@ -1994,9 +1996,10 @@ def test_serve_actually_fires_the_tick_beside_the_inbound_loop(monkeypatch, tmp_
             fired.set()
 
     class FakeRuntime:
-        def __init__(self, *, channel, registry, second=None):
+        def __init__(self, *, channel, registry, second=None, questions=None):
             self.registry = registry
             self.second = second
+            self.questions = questions
 
         async def run(self):
             await fired.wait()

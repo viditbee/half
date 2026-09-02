@@ -19,6 +19,33 @@ order and adds no rule of its own beyond the re-ask bound:
    main's own mutex. A question that no longer passes is refused rather than
    paid for.
 
+**The question is delivered on the turn path, and that is not a detail** (review
+loop 1). 5b's topic gate reads the actor's *live* strands — *"attach the
+question to the next conversation that already touches the topic; never ping to
+ask"* — and those exist only on a conversation turn. The first build gated on
+them and delivered on the unprompted morning, where a dormant actor has none:
+gating on a conversation and then broadcasting is a ping however the gate is
+worded. So the caller is ``half.actor.runtime``, behind the crisis gate, and the
+morning surface does not ask at all.
+
+**A favour must have been delivered before the turn began**, which the turn path
+gives structurally rather than by a check: nothing on this path writes a record
+``half.trust.balance.delivered`` counts, so the balance this engine reads can
+only contain favours that predate the turn. The first build spent *after* the
+morning claimed the day — and story 10 claims a day by writing ``sent=True``,
+which is exactly what earns — so every morning funded its own question and a
+main with zero delivered favours was asked. CAP-4 says *preceded*.
+
+**A favour is spent only when the question actually reaches the main.** This
+module will refuse, gate and choose; whether the built text carries a question
+line is the caller's own observation, and ``buy`` is called only once that is
+true. The rule exists because ``may_be_raised`` permits `ask` **or above** while
+the context builder emits a ``Question`` only at exactly `ask` and drops any item
+whose topic echoes its claim (AD-18) — so a bought belief can be perfectly
+permitted and still produce no line. Spending for it wrote a phantom ``asked``
+record, which then suppressed the real question for one of the wanting's own
+periods.
+
 **Exactly one question leaves this module, ever.** ``offer`` returns an ``Ask``
 or nothing and there is no plural door out of this class onto an asking path;
 what a caller may hand the context builder is one belief id, because that is all
@@ -29,20 +56,12 @@ any value in this module, no template in any language, and no channel reachable
 from it. What a question *says* is composed at delivery and is never durable
 (AD-22).
 
-**Nothing here opens a store.** Five narrow doors, injected — 5b's three, plus
-the live conversation and the ask history — because a second path to a main's
-log is a second writer (AD-1). ``live_strands`` and ``ask_history`` are doors on
-*this* protocol rather than additions to ``TrustLedger``: 5b's door is unchanged
-and still has exactly the three methods it was reviewed with.
-
-**Why the engine reads the conversation and the surface does not.** The topic
-gate is 5b's — *"attach the question to the next conversation that already
-touches the topic; never ping to ask"* — and it reads the actor's live strands,
-which are volatile (AD-26) and never in the fold. The morning surface must not
-hold them: it is handed a ``SurfaceView`` precisely so that a field it should not
-consult is an ``AttributeError`` rather than a line a scan has to be clever
-enough to see. So the surface holds an *engine* and the engine holds the door,
-and the strands never reach the module that decides what to say.
+**Nothing here opens a store.** Two narrow doors, injected: 5b's own
+``TrustLedger`` — **unchanged, still exactly three methods** — plus one read that
+folds the trust view and the answer state out of a single pass over one log, so
+there is no window between them for an append to land in. The conversation is
+passed in by the caller that holds it, so this module needs no door onto volatile
+state at all.
 
 Pure of clocks and of the network: ``now`` and ``t`` are stamps the caller was
 handed, no gate here is a function of time except the re-ask bound, and that one
@@ -52,13 +71,13 @@ takes its instant as an argument (AD-30).
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final, Protocol
 
 from half.questions.answered import Answer, Reask, reaskable
 from half.questions.mint import minted
 from half.retrieval.strands import Strands
-from half.trust.stakes import Stakes, stakes
+from half.trust.stakes import stakes
 from half.trust.unasked import (
     ASK_OUTCOMES,
     ASK_RECORDED,
@@ -71,39 +90,33 @@ from half.trust.unasked import (
 )
 
 __all__ = [
-    "ASK_OUTCOMES", "Bought", "NOTHING_OFFERED", "Purchase", "QuestionEngine",
-    "QuestionLedger", "offered",
+    "ASK_OUTCOMES", "NOTHING_OFFERED", "Purchase", "QuestionEngine",
+    "QuestionLedger", "QuestionView", "offered",
 ]
 
-#: What ``buy`` reports when it was handed nothing to buy. Inside
-#: ``ASK_OUTCOMES``? Deliberately **not** — that set is what a *spend* came back
-#: as, and no spend was attempted here. A caller branching on the two sets
-#: together would read *"there was no question"* as a refusal by the gates,
-#: which are different facts with different remedies (and only one of them is
-#: worth a log line).
+#: What ``buy`` reports when it was handed nothing to buy. Deliberately **not**
+#: inside ``ASK_OUTCOMES``: that set is what a *spend* came back as, and no spend
+#: was attempted here. A caller branching on the two together would read *"there
+#: was no question"* as a refusal by the gates, which are different facts with
+#: different remedies — and only one of them is worth a log line.
 NOTHING_OFFERED: Final[str] = "nothing-offered"
 
 
 @dataclass(frozen=True, slots=True)
-class Bought:
-    """One question a favour has actually been spent on.
+class QuestionView:
+    """One main's state, as one pass over one log leaves it.
 
-    The value a caller hands the context builder, and it exists so that *"a
-    question reaches the context only by being handed in"* has something to hand
-    in that cannot be confused with a proposal. An ``Ask`` is a proposal — 5b
-    says so, and review built one by hand and watched it burn a favour — and the
-    difference between the two types is the spend that happened between them.
-
-    Carries no text, for the reason ``Unasked`` carries none.
+    Two folds, one read. They are carried together because they are read
+    together and must describe one moment: the balance says whether a question
+    can be paid for and the answer state says whether it may be put again, and a
+    build that read them under two separate acquires could answer *"affordable"*
+    about one instant and *"never asked"* about another.
     """
 
-    question: Unasked
-    stakes: Stakes
-
-    @property
-    def about(self) -> str:
-        """The belief id the favour paid for. What ``build`` is handed."""
-        return self.question.about
+    trust: TrustView = field(default_factory=TrustView)
+    #: What the log says about every question Half has put — folded, never
+    #: stored (AD-3, AD-30). See ``half.questions.answered``.
+    answers: Mapping[str, Answer] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,56 +124,48 @@ class Purchase:
     """What trying to buy a question came back as.
 
     ``outcome`` is one of ``ASK_OUTCOMES`` when a spend was attempted, and
-    ``NOTHING_OFFERED`` when there was nothing to attempt. ``bought`` is set
+    ``NOTHING_OFFERED`` when there was nothing to attempt. ``question`` is set
     exactly when ``outcome`` is ``ASK_RECORDED``, so a caller cannot reach a
     question id on a path where no favour was spent.
     """
 
     outcome: str = NOTHING_OFFERED
-    bought: Bought | None = None
-
-    @property
-    def about(self) -> str:
-        """The belief a favour paid for, or ``""``. Safe on every path."""
-        return self.bought.about if self.bought is not None else ""
+    question: Unasked | None = None
 
     @property
     def spent(self) -> bool:
-        return self.outcome == ASK_RECORDED and self.bought is not None
+        return self.outcome == ASK_RECORDED and self.question is not None
 
 
 class QuestionLedger(TrustLedger, Protocol):
-    """The five doors this composition needs into one main's state.
+    """The four doors this composition needs into one main's state.
 
     ``TrustLedger``'s three, **unchanged and not re-declared** — the mode, the
-    narrowed trust view, and the serialized spend — plus two of this story's
+    narrowed trust view, and the serialized spend — plus one of this story's
     own. Extending by inheritance rather than by editing 5b's protocol is
     deliberate: 5b's door stays exactly the three methods it was reviewed with,
     and ``half.trust`` neither knows nor can reach what is added here.
 
-    ``live_strands`` is the conversation as it stands right now — volatile
-    (AD-26), never in the fold, and the only input the topic gate has. It is
-    synchronous and returns a value or ``None``; ``None`` is a caller with no
-    conversation to attach a question to, and every question is then correctly
-    held.
+    ``question_view`` is one read of the log folded two ways. It replaced a pair
+    of separate doors after review: reading the trust view under one acquire and
+    the answer state under another left a window an append could land in, and
+    the two would then describe different moments.
 
-    ``ask_history`` is folded from the log by ``half.questions.answered`` and
-    holds no stored state: the registry reads the records under this main's own
-    mutex and folds them, exactly as it folds the balance.
+    There is deliberately **no door onto the live conversation.** The strands the
+    topic gate reads are volatile (AD-26) and belong to whoever is holding the
+    turn; that caller passes them in. A door here would be a second thing that
+    could reach a main's in-memory state, and the only caller that has any is the
+    one that just moved them.
     """
 
-    def live_strands(self, main_id: str) -> Strands | None:
-        ...
-
-    async def ask_history(self, main_id: str) -> Mapping[str, Answer]:
+    async def question_view(self, main_id: str) -> QuestionView:
         ...
 
 
 def offered(
     beliefs: Iterable[object] | None,
     *,
-    view: TrustView,
-    answers: Mapping[str, Answer] | None,
+    view: QuestionView,
     now: object,
 ) -> tuple[Unasked, ...]:
     """The questions that are not inside their own wanting's period. Pure.
@@ -182,12 +187,15 @@ def offered(
     ``reaskable`` says about it, and a malformed value is refused by the gates
     below rather than by an exception on a turn's own path.
     """
-    loops = view.loop_table() if isinstance(view, TrustView) else {}
-    table: Mapping[str, Answer] = answers if isinstance(answers, Mapping) else {}
+    held = view if isinstance(view, QuestionView) else QuestionView()
+    trust = held.trust if isinstance(held.trust, TrustView) else TrustView()
+    loops = trust.loop_table()
+    table: Mapping[str, Answer] = (
+        held.answers if isinstance(held.answers, Mapping) else {}
+    )
     kept: list[Unasked] = []
     for question in minted(beliefs):
-        belief = view.beliefs.get(question.about) if isinstance(view, TrustView) else None
-        weighed = stakes(belief, loops=loops)
+        weighed = stakes(trust.beliefs.get(question.about), loops=loops)
         bound: Reask = reaskable(
             table.get(question.id), period_days=weighed.cost_days, now=now
         )
@@ -213,15 +221,20 @@ class QuestionEngine:
         return UnaskedQueue(ledger=self.ledger)
 
     async def offer(
-        self, main_id: str, *, beliefs: Sequence[object], now: str
+        self,
+        main_id: str,
+        *,
+        beliefs: Sequence[object],
+        live: Strands | None,
+        now: str,
     ) -> Ask | None:
         """The one question worth asking about ``beliefs``, or ``None``.
 
         ``None`` is the ordinary answer and carries no reason, because there is
-        usually nothing to explain: most mornings touch no belief the ladder
-        raises to `ask`, most such beliefs are below the stakes bar, and most of
-        the rest are waiting on a topic nobody raised or a favour nobody earned.
-        None of that is a failure (AD-27).
+        usually nothing to explain: most turns touch no belief the ladder raises
+        to `ask`, most such beliefs are below the stakes bar, and most of the
+        rest are waiting on a topic nobody raised or a favour nobody earned. None
+        of that is a failure (AD-27).
 
         **Writes nothing.** A question that is offered — and one that is offered
         and then refused at the spend — leaves the balance exactly as it was.
@@ -231,50 +244,61 @@ class QuestionEngine:
         context is built from. A question about a belief the context does not
         carry could not reach a channel anyway, and offering one would be a
         favour spent on nothing.
+
+        ``live`` is the conversation as the caller holds it, because the strands
+        are volatile and this module has no door onto them. ``None`` is a caller
+        with no conversation to attach a question to, and every question is then
+        correctly held — which is what *"never ping to ask"* means.
+
+        **Two reads, and only one of them is this module's.** The view is one
+        pass over one log; the second is ``UnaskedQueue.next_ask``'s own, which
+        is 5b's door and re-runs every gate. A window exists between them and is
+        harmless: the spend re-checks everything a third time, under the main's
+        own mutex, and every gate resolves toward asking less.
         """
-        view = await self.ledger.trust_view(main_id)
-        answers = await self.ledger.ask_history(main_id)
-        fresh = offered(beliefs, view=view, answers=answers, now=now)
+        view = await self.ledger.question_view(main_id)
+        fresh = offered(beliefs, view=view, now=now)
         if not fresh:
             return None
-        return await self.queue.next_ask(
-            main_id, questions=fresh, live=self.ledger.live_strands(main_id)
-        )
+        return await self.queue.next_ask(main_id, questions=fresh, live=live)
 
-    async def buy(self, main_id: str, *, t: str, ask: Ask | None) -> Purchase:
+    async def buy(
+        self, main_id: str, *, t: str, ask: Ask | None, live: Strands | None
+    ) -> Purchase:
         """Spend one favour on ``ask``, or report why not. Never raises.
 
-        **Called immediately before the question reaches the main, and after the
-        day is claimed** — 5b's spend contract and story 10's claim-then-send
-        order. The alternative, sending and then recording, lets two overlapping
-        runs both find the favour unspent and both ask. The cost of this order is
-        story 10's own accepted asymmetry: a question that fails to reach the
-        main costs one favour.
+        **Called only once the caller's built text actually carries the question
+        line, and immediately before that text reaches the main.** Both halves
+        matter. A question that was bought and never rendered — a belief the
+        ladder raised *above* `ask`, or one whose topic echoes its own claim —
+        used to spend the favour and write an ``asked`` record for a question
+        nobody was asked, which then suppressed the real one for a year. And the
+        spend sits before the send because the alternative lets two runs both
+        find the favour unspent and both ask; the cost of this order is the
+        asymmetry story 10 accepted, where a send that fails still costs the
+        favour.
 
         Every gate runs again inside ``spend``, against a view read at this
         moment, and the registry re-asserts the mode, the balance and the ladder
         under this main's mutex. An ``Ask`` carries no authority — a caller can
         build one — so nothing here trusts the value it is handed.
 
-        Never raises, because the caller is on a path where the day has already
-        been claimed: losing the whole morning over a question is strictly worse
-        than sending it without one. A failure is reported as a refusal, which
-        is what it is from the main's side — nothing was asked.
+        Never raises. The caller is composing a reply to the main's own message,
+        and losing that reply over a question is strictly worse than sending it
+        without one. A failure is reported as a refusal, which is what it is from
+        the main's side: nothing was asked.
         """
         if not isinstance(ask, Ask) or not isinstance(ask.question, Unasked):
             return Purchase()
         try:
             outcome = await self.queue.spend(
-                main_id, t=t, ask=ask, live=self.ledger.live_strands(main_id)
+                main_id, t=t, ask=ask, live=live
             )
-        except Exception:  # noqa: BLE001 - the question, never the morning
+        except Exception:  # noqa: BLE001 - the question, never the turn
             # The *type* is not even logged here: the caller owns this main's
             # log line and an exception message quotes the value that caused it,
             # which here is a record out of a main's own ledger (AD-22).
             return Purchase(outcome=ASK_REFUSED)
         if outcome != ASK_RECORDED:
             return Purchase(outcome=outcome)
-        return Purchase(
-            outcome=outcome,
-            bought=Bought(question=ask.question, stakes=ask.stakes),
-        )
+        return Purchase(outcome=outcome, question=ask.question)

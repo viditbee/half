@@ -27,6 +27,28 @@ enforcement by construction rather than by filtering what was generated.
 only through ``half.context``, so there is no path from a `Candidate` to an
 outbound message that skips the license split — asserted statically in
 ``tests/test_strands.py``, byte-wise in ``tests/test_context.py``.
+
+**The bought question is delivered here, and here only** (CAP-4, story 11).
+*"The favor buys the question"* means a question is attached to a conversation
+that already touches its topic — 5b's topic gate reads the live strands, and the
+live strands exist on a turn and nowhere else. The first build of story 11 gated
+on them and delivered on the unprompted morning, where a dormant actor has none;
+that is a ping however the gate is worded, so delivery moved here and the morning
+surface no longer asks at all.
+
+Three orderings on this path are the rule rather than the arrangement:
+
+* **The favour precedes the turn.** Nothing here writes a record the trust
+  balance counts as *delivered* — that is the morning's ``touch``, and this path
+  writes only the main's own message — so the balance a question is paid from can
+  only hold favours older than this turn. CAP-4 says *preceded*.
+* **The question is attached after the reply is composed and the turn is
+  recorded**, so nothing about buying one can cost the main their answer. Every
+  step of it is fail-open.
+* **The favour is spent only once the built text carries the question line**,
+  and immediately before that text is sent. A belief the ladder raised above
+  `ask`, or one whose topic echoes its claim, produces no line — and used to
+  spend a favour and write an ``asked`` record for a question nobody was asked.
 """
 
 from __future__ import annotations
@@ -39,6 +61,7 @@ from dataclasses import dataclass, field
 from half.actor.registry import Actor, ActorRegistry
 from half.channel.port import Channel, Inbound
 from half.context.build import build as build_context
+from half.context.channels import Context, render_line
 from half.crisis.aftercare import Schedule
 from half.crisis.classifier import SecondOpinion
 from half.crisis.gate import CrisisGate
@@ -54,7 +77,9 @@ from half.errors import (
 )
 from half.governance import ladder
 from half.governance.ladder import Ceiling
+from half.questions.engine import QuestionEngine
 from half.retrieval.port import Ranked, Reranker
+from half.retrieval.strands import Strands
 from half.retrieval.rank import Retriever
 from half.retrieval.strands import known_strands
 from half.store.ops import Op
@@ -181,6 +206,12 @@ class Runtime:
     #: gate rather than constructed here, because the key it rests on lives
     #: beside the store tree and is read at the composition root (AD-11).
     second: SecondOpinion | None = None
+    #: Who buys the question (CAP-4, story 11). ``None`` is a runtime that never
+    #: asks anything — the fail-closed default, and every caller that predates
+    #: this story. A question is *attached* to a reply this turn was going to
+    #: send anyway; it is never a message of its own, which is what keeps
+    #: *"never ping to ask"* true of the path as well as of the gate.
+    questions: QuestionEngine | None = None
     _gate: CrisisGate = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -316,6 +347,16 @@ class Runtime:
         """The ordinary turn. Exactly one caller: the crisis gate (AD-10).
 
         Idempotent, because at-least-once delivery makes redelivery routine.
+
+        **Two phases, and the mutex is held for the first only.** The reply is
+        composed and the main's message recorded under this main's own lock, as
+        they have been since story 6d; the bought question is attached
+        afterwards, outside it, because ``ActorRegistry.acquire`` is not
+        reentrant and the spend takes that same lock to make its check and its
+        append one serialized operation. Per-main turns are already serialized by
+        this main's worker (``_Turns``), so releasing between the two costs no
+        ordering — and the spend re-reads and re-gates everything under the lock
+        regardless.
         """
         belief_id = f"b_{inbound.external_id}"
         async with self.registry.acquire(inbound.main_id) as actor:
@@ -325,9 +366,16 @@ class Runtime:
             # The ceiling travels with the actor, so the cap this main is under
             # is applied wherever this turn resolves a license — never assembled
             # into the reply and then subtracted from it (AD-28).
-            reply = respond(
-                inbound, self._retrieve(actor, inbound), ceiling=actor.ceiling
-            )
+            ranked = self._retrieve(actor, inbound)
+            ceiling = actor.ceiling
+            reply = respond(inbound, ranked, ceiling=ceiling)
+            # The conversation as *this* turn left it. ``_retrieve`` has just
+            # moved the strands against this message, so these are the weights
+            # 5b's topic gate must read: a question is attached to the
+            # conversation that already touches its subject, and this is that
+            # conversation. Copied, so nothing downstream can move a main's
+            # attention by writing into what it was handed (AD-26).
+            live = actor.strands.copy()
 
             # Recorded last, and this ordering is load-bearing. Recording first
             # meant that anything failing afterwards — retrieval raising because
@@ -349,6 +397,97 @@ class Runtime:
                 # the main — so there is no spelling of this call that could
                 # mint an `assert`.
                 **ladder.admitted(),
+            )
+        # The mutex is released. Nothing below this line can cost the main their
+        # reply: it is already composed, their message is already recorded, and
+        # every step of attaching a question is fail-open.
+        if reply is None:
+            return None
+        return await self._attach_question(
+            inbound, ranked, ceiling=ceiling, live=live, reply=reply
+        )
+
+    async def _attach_question(
+        self,
+        inbound: Inbound,
+        ranked: Ranked,
+        *,
+        ceiling: Ceiling | None,
+        live: Strands | None,
+        reply: str,
+    ) -> str:
+        """``reply`` with one bought question attached, or ``reply`` (CAP-4).
+
+        The whole of story 11's delivery, and it is four steps with a refusal at
+        each:
+
+        1. **Offer.** Every gate 5b established, in 5b's order, through 5b's own
+           door. Most turns stop here: the material is below `ask`, or below the
+           stakes bar, or its topic was never raised, or no favour is unspent.
+        2. **Build.** The context is rebuilt with the offered belief handed in as
+           bought. Nothing else changes, so the question is the only difference
+           between the two renderings.
+        3. **Render, then decide.** ``question_line`` is empty whenever the
+           builder emitted no ``Question`` — a belief the ladder raised *above*
+           `ask`, or one whose only topic echoes its own claim (AD-18). **No
+           line, no spend, and no ``asked`` record**: the permission the favour
+           buys is to *ask*, and a question nobody was asked costs nothing.
+           Before review this spent the favour anyway and wrote a phantom record,
+           which then suppressed the real question for one of the wanting's own
+           periods.
+        4. **Spend, then send.** ``buy`` is the last thing before the caller puts
+           this text on the wire (5b's contract). A send that then fails still
+           costs the favour — story 10's asymmetry, inherited deliberately — and
+           is logged where it happens, without content.
+
+        **Never raises, and never returns nothing.** The main asked something and
+        is owed an answer; a bug in the question path must cost the question and
+        not the reply. This is the one handler on this path and it is exercised
+        by a test that makes the engine raise, because a fail-open branch nothing
+        has ever run is a branch nobody knows is open.
+        """
+        if self.questions is None:
+            return reply
+        try:
+            ask = await self.questions.offer(
+                inbound.main_id,
+                beliefs=[candidate.id for candidate in (ranked or ())],
+                live=live,
+                now=inbound.t,
+            )
+            if ask is None:
+                return reply
+            line = question_line(
+                build_context(
+                    ranked, now=inbound.t, ceiling=ceiling,
+                    bought=ask.question.about,
+                )
+            )
+            if not line:
+                # Bought and unrendered. Nothing is spent, so there is nothing
+                # to undo and no record to explain later.
+                logger.debug(
+                    "main=%s: a question passed every gate and produced no "
+                    "line; nothing was spent", inbound.main_id,
+                )
+                return reply
+            purchase = await self.questions.buy(
+                inbound.main_id, t=inbound.t, ask=ask, live=live
+            )
+            if not purchase.spent:
+                logger.debug(
+                    "main=%s: the spend was refused (%s); the reply goes out "
+                    "without a question", inbound.main_id, purchase.outcome,
+                )
+                return reply
+            return f"{reply}\n{line}"
+        except Exception as exc:  # noqa: BLE001 - the question, never the reply
+            # The *type* and nothing else (AD-22): an exception message
+            # routinely quotes the value that caused it, and here that is a
+            # record out of a main's own ledger.
+            logger.warning(
+                "could not attach a question for main=%s (%s); the reply goes "
+                "out without one", inbound.main_id, type(exc).__name__,
             )
             return reply
 
@@ -397,6 +536,25 @@ class Runtime:
                 "without the ledger", inbound.main_id
             )
             return Ranked()
+
+
+def question_line(context: Context | None) -> str:
+    """The one line a bought question contributes to a reply, or ``""``.
+
+    **The single serialization**, shared with ``Context.render`` rather than
+    written out beside it: two renderings of one item is how the guard that
+    scans one string ends up admitting a different one, which is the argument
+    ``half.context.channels.render_line`` already carries.
+
+    The empty string is the answer to *"was a question actually built?"*, and it
+    is the same answer for both ways one can fail to be: a bought belief the
+    ladder put above `ask`, and one whose only topic echoes its own claim. The
+    caller spends a favour exactly when this is non-empty, so *"no question line,
+    no spend"* is one comparison rather than a flag somebody has to keep true.
+    """
+    if not isinstance(context, Context) or context.question is None:
+        return ""
+    return render_line(context.question)
 
 
 def respond(

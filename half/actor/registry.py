@@ -74,8 +74,8 @@ from half.surface.view import (
     SurfaceView,
     narrowed,
 )
-from half.questions.answered import Answer
 from half.questions.answered import history as ask_history_of
+from half.questions.engine import QuestionView
 from half.tensions.states import STATE as TENSION_STATE
 from half.trust.balance import balance as trust_balance
 from half.trust.unasked import (
@@ -939,45 +939,29 @@ class ActorRegistry:
                 state, Ceiling(state.ceiling), balance=trust_balance(records)
             )
 
-    # -- the question engine's two further doors (CAP-4, story 11) ------------
+    # -- the question engine's one further door (CAP-4, story 11) ------------
     #
-    # Neither is a change to ``half.trust.unasked.TrustLedger``, which still has
+    # Not a change to ``half.trust.unasked.TrustLedger``, which still has
     # exactly the three methods story 5b reviewed. ``half.questions.engine``
-    # declares its own protocol extending that one, and these are what satisfy
+    # declares its own protocol extending that one, and this is what satisfies
     # it — so widening what the *question* path may see cannot widen what the
     # *trust* path may see.
 
-    def live_strands(self, main_id: str) -> Strands | None:
-        """This main's live conversation weights, or ``None`` if none is held.
+    async def question_view(self, main_id: str) -> QuestionView:
+        """The trust view and the answer state, from **one** read of the log.
 
-        **Volatile, and deliberately not on any narrowed view** (AD-26). The
-        strands are how the main is *right now*; they are never in the fold and
-        never in the log, so they are read from the actor rather than from a
-        projection. The topic gate is their only reader — *"attach the question
-        to the next conversation that already touches the topic; never ping to
-        ask"* — and the morning surface is deliberately not given them, because
-        a surface holding volatile state is a surface that can branch on it.
-
-        ``None`` for a main this process is not currently hosting: a dormant
-        actor is a main with no conversation open, and every question is then
-        correctly held rather than asked cold. Hydrating one here to find out
-        would be reading a store to answer a question about memory.
-
-        A **copy**, so a caller cannot move a main's attention by writing into
-        what it was handed.
-        """
-        actor = self._actors.get(main_id)
-        return actor.strands.copy() if actor is not None else None
-
-    async def ask_history(self, main_id: str) -> Mapping[str, Answer]:
-        """What this main's log says about every question Half has put.
+        **One acquire, two folds, one moment.** They were two separate doors
+        before review, and reading the balance under one acquire and the answer
+        state under another left a window an append could land in: the pair would
+        then describe two different instants, and *"affordable"* and *"never
+        asked"* would be answers about different logs.
 
         **Folded from the log, never stored** (AD-3, AD-30), exactly as the
         balance is and for the same reason: an ``answered`` flag on ``State``
         would be materialized state that is a function of which code paths ran
         rather than of the log, and it would replay perfectly — so it would only
-        ever be *wrong*, never *inconsistent*, and no round-trip assertion in
-        the suite would see it.
+        ever be *wrong*, never *inconsistent*, and no round-trip assertion in the
+        suite would see it.
 
         **From the log rather than from SQLite**, for the reason ``trust_view``
         and ``surface_view`` read the log: ``Store.append`` writes the line and
@@ -985,10 +969,21 @@ class ActorRegistry:
         behind — and a question read from a stale view as never-asked is a
         question put twice.
 
+        There is deliberately **no door here onto the live conversation.** The
+        strands the topic gate reads are volatile (AD-26); the caller holding the
+        turn has just moved them and passes them in.
+
         Held only for the read; nothing here writes.
         """
         async with self.acquire(main_id) as actor:
-            return ask_history_of(actor.store.log)
+            records = list(actor.store.log)
+            state = fold_records(records)
+            return QuestionView(
+                trust=narrowed_for_trust(
+                    state, Ceiling(state.ceiling), balance=trust_balance(records)
+                ),
+                answers=ask_history_of(records),
+            )
 
     async def note_ask(
         self, main_id: str, *, t: str, question: str, about: str

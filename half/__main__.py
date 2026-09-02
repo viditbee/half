@@ -70,6 +70,14 @@ class Wiring:
     #: neither gets story 6a's offline gate, which is a supported shape rather
     #: than a broken one.
     second: SecondOpinion
+    #: Who buys the question (CAP-4, story 11). Constructed here rather than
+    #: inside ``serve`` for the reason the scheduler is: *"the favour buys the
+    #: question, in the shipped product"* has to be assertable by **value**
+    #: rather than by finding a keyword in the source, which is how story 6d's
+    #: identical claim passed with the value set to ``None``. Handed to the
+    #: ``Runtime`` below and to nothing else — the morning surface has no field
+    #: for one.
+    questions: QuestionEngine
 
 
 def build(config: Config, token: str) -> Wiring:
@@ -136,25 +144,21 @@ def build(config: Config, token: str) -> Wiring:
         root=config.root,
         work=MorningPass(
             consolidate=TensionPass(ledger=registry),
+            # **The morning surface does not ask** (CAP-4, story 11). It is
+            # given no question engine and has no field for one: a question is
+            # attached to a conversation that already touches its topic, and a
+            # scheduler tick is not a conversation. Delivery is the runtime's,
+            # below.
             surface=MorningSurface(
-                ledger=registry, channel=channel, mornings=mornings,
-                # Who buys the question (CAP-4, story 11). Wired **by value**
-                # for the reason the ledger and the channel are: *"the favour
-                # buys the question, in the shipped product"* has to be
-                # assertable by identity rather than by finding a keyword in the
-                # source, which is how story 6d's identical claim passed with
-                # the value set to ``None``. Without this the surface never
-                # asks — which is the fail-closed default, and a default that
-                # would have made story 5b's gates uncalled for a second story
-                # running.
-                questions=QuestionEngine(ledger=registry),
+                ledger=registry, channel=channel, mornings=mornings
             ),
         ),
     )
 
     return Wiring(channel=channel, registry=registry, secrets=secrets,
                   sources=sources, scheduler=scheduler, mornings=mornings,
-                  second=second_opinion(config, secrets))
+                  second=second_opinion(config, secrets),
+                  questions=QuestionEngine(ledger=registry))
 
 
 def second_opinion(config: Config, secrets: FileSecretStore) -> SecondOpinion:
@@ -247,6 +251,12 @@ async def serve(config: Config, token: str) -> None:
                     # a surface nobody has run, and this one exists to catch
                     # the disclosures the phrase table cannot (story 6d).
                     second=wiring.second,
+                    # The bought question reaches the shipped product here and
+                    # nowhere else (CAP-4, story 11). Without it the runtime
+                    # never asks — the fail-closed default, and the state story
+                    # 5b shipped in, where the gates had no production caller at
+                    # all. Wired **by value** for the reason the classifier is.
+                    questions=wiring.questions,
                 ).run()
             finally:
                 # The inbound loop is the process's life; the ticker is not

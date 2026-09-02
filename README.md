@@ -333,7 +333,7 @@ raises.
 | `half/store/` | The four layers: log, pure fold, SQLite + FTS5, export |
 | `half/ingest/` | Connectors, secret scrubbing, independence, admission gates |
 | `half/retrieval/` | Strand weighting, contextual prefix, salience, bm25 fusion |
-| `half/context/` | The license split: content, directives, question candidates |
+| `half/context/` | The license split: content, directives, and the one question a favour bought |
 | `half/governance/` | The license ladder: rung rules, quarantine, the ceiling, and the aftercare schedule both the actor and crisis enforce |
 | `half/loops/` | The open-loop ledger: the closed state vocabulary, each loop's own timescale, computed silence, and the abandonment candidate |
 | `half/schedule/` | The due-time queue: the one clock reader, local pre-dawn with jitter from a told zone, and the file-locked drain |

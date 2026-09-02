@@ -56,6 +56,7 @@ from half.trust.stakes import (
     NO_WANTING,
     Stakes,
 )
+from half.questions.engine import QuestionLedger
 from half.trust.unasked import (
     ASKS_AT,
     ASK_CRISIS,
@@ -82,6 +83,15 @@ from half.trust.unasked import (
     on_topic,
     queue,
     view_fields,
+)
+
+from tests.conftest import (
+    CLOSED,
+    UNREACHABLE,
+    door_of,
+    ledger_calls,
+    reaches,
+    resolved_imports,
 )
 
 pytestmark = [pytest.mark.cap4]
@@ -1299,108 +1309,41 @@ def test_nothing_in_the_trust_package_can_reach_a_channel():
         )
 
 
-#: What a module under ``half/trust/`` may not reach, as **dotted roots rather
-#: than as import lines**. A second writer inside the package is against AD-1
-#: and CAP-4 both, and the rule is *"no path to a store"*, not *"none of these
-#: four spellings"*.
-#:
-#: Review walked the earlier list with one line: ``from half.store import store
-#: as _second`` has ``ImportFrom.module == "half.store"``, which was not among
-#: the four denied strings, and ``_second.Store(...).record(...)`` is not the
-#: substring ``store.record(``. Resolving each import to its full dotted target
-#: catches it, and catches the spellings nobody thought of.
-CLOSED: Final[tuple[str, ...]] = (
-    "half.store.store", "half.store.log", "half.store.db", "half.actor",
+#: Every package that reaches a main's log through an injected door, with the
+#: door it is allowed. **Both are swept by one rule**, which is the correction
+#: story 11's review forced: its first build copied this guard into its own file
+#: as a string-prefix denylist, and both of 5b's known bypasses walked straight
+#: past the copy. A predicate worth having twice is worth having once.
+GUARDED: Final[tuple[tuple[str, object], ...]] = (
+    ("half/trust", TrustLedger),
+    ("half/questions", QuestionLedger),
 )
 
 
-def resolved_imports(path: Path) -> set[str]:
-    """Every dotted target ``path`` imports, both spellings resolved.
-
-    ``import half.store.store`` and ``from half.store import store`` and
-    ``from half.store.store import Store`` all resolve to something under
-    ``half.store.store``, so a rule written about the module catches every way
-    of naming it. Relative imports resolve through the package the file sits in.
-    """
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    # A file outside the tree — a synthetic bypass written to ``tmp_path`` —
-    # has no package to resolve a relative import against, and answering
-    # ``()`` for it is correct: the bypasses this is proved against are all
-    # absolute.
-    package = (
-        path.relative_to(ROOT).with_suffix("").parts[:-1]
-        if path.is_relative_to(ROOT) else ()
-    )
-    found: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                found.add(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            if node.level:
-                base = ".".join(package[: len(package) - (node.level - 1)])
-            else:
-                base = node.module or ""
-            for alias in node.names:
-                found.add(f"{base}.{alias.name}" if base else alias.name)
-                if base:
-                    found.add(base)
-    return found
-
-
-def ledger_calls(path: Path) -> set[str]:
-    """Every method this module calls on ``self.ledger``.
-
-    A **predicate over the door**, not a list of forbidden words. The rule is
-    that the trust package reaches a main's log through ``TrustLedger`` and
-    through nothing else, so the thing to measure is what it asks that object
-    for — a word list would have to guess the name of the next wider door, and
-    every denylist this codebase has shipped was walked around. It also has to
-    tolerate ``list.append``, which is not a log append and which an earlier
-    spelling of this gate reported as one.
-    """
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    found: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-            continue
-        target = node.func.value
-        if isinstance(target, ast.Await):
-            target = target.value
-        if (
-            isinstance(target, ast.Attribute)
-            and target.attr == "ledger"
-            and isinstance(target.value, ast.Name)
-            and target.value.id == "self"
-        ):
-            found.add(node.func.attr)
-    return found
-
-
 @pytest.mark.cap4_structure
-def test_the_package_reaches_a_log_only_through_the_narrow_door():
+@pytest.mark.parametrize(
+    "package, protocol", GUARDED, ids=[name for name, _ in GUARDED]
+)
+def test_the_package_reaches_a_log_only_through_the_narrow_door(package, protocol):
     """One writer, one door. A second path to a main's log is a second writer,
     and the single writer is what lets the store skip a journal (AD-1).
 
     Two halves. The package may not open a store at all — no ``Store``, no
     ``BeliefLog``, no path to a main's directory — and what it asks of the
-    ledger it *is* given must be inside ``TrustLedger``, which is three
-    methods. Reaching for a fourth is how a narrow door becomes ``State``
-    again, which is the failure story 10's review found.
-    """
-    door = {
-        name for name in vars(TrustLedger)
-        if not name.startswith("_")
-    }
-    assert door == {"crisis_open", "trust_view", "note_ask"}, sorted(door)
+    ledger it *is* given must be inside that package's own protocol. Reaching
+    for one method more is how a narrow door becomes ``State`` again, which is
+    the failure story 10's review found.
 
-    for path in sorted((ROOT / "half/trust").rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        reached = resolved_imports(path)
-        offending = sorted(
-            name for name in reached
-            if any(name == root or name.startswith(f"{root}.") for root in CLOSED)
-        )
+    **``half/questions`` is swept here rather than in its own file**, because a
+    copy of this rule is a weaker copy of this rule: story 11 shipped one, and
+    ``from half.store import store as _second`` and ``self.ledger.acquire(...)``
+    both passed it.
+    """
+    door = door_of(protocol)
+    assert {"crisis_open", "trust_view", "note_ask"} <= door, sorted(door)
+
+    for path in sorted((ROOT / package).rglob("*.py")):
+        offending = reaches(path, CLOSED)
         assert not offending, (
             f"{path.name} opens a store of its own: {offending}"
         )
@@ -1409,6 +1352,25 @@ def test_the_package_reaches_a_log_only_through_the_narrow_door():
             f"{path.name} asks the ledger for {sorted(asked - door)}, which is "
             f"outside the narrow door"
         )
+
+
+@pytest.mark.cap4_structure
+@pytest.mark.parametrize(
+    "package", [name for name, _ in GUARDED], ids=[name for name, _ in GUARDED]
+)
+def test_no_package_that_decides_whether_to_ask_can_reach_outward(package):
+    """*"No model call, no generated prose"*, and no channel to say it on.
+
+    Asserted structurally, because *"it does not call a model today"* decays the
+    first time somebody reaches for one — and the reach would be invisible: a
+    question composed by a model still looks like a question. Written against
+    resolved dotted roots for the reason the store rule is: story 11's first
+    version compared string prefixes, which ``from half import model`` walks
+    past.
+    """
+    for path in sorted((ROOT / package).rglob("*.py")):
+        offending = reaches(path, UNREACHABLE)
+        assert not offending, f"{path.name} can reach outward: {offending}"
 
 
 @pytest.mark.cap4_structure

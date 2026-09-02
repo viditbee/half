@@ -38,6 +38,7 @@ from half.loops import ledger as loops
 from half.loops.timescale import PERIOD_DAYS, Timescale
 from half.questions.answered import (
     ANSWERED,
+    ANSWERS_WITHIN_DAYS,
     NEVER_ASKED,
     NO_PERIOD,
     REASONS,
@@ -57,7 +58,11 @@ from half.store.fold import fold as fold_records
 from half.store.ops import Op
 from half.store.records import LEDGER, STATED, Record, make
 from half.store.store import Store
+from half.surface import touch as touch_module
+from half.surface.touch import Origin
+from half.store.ops import TOUCH_TENSION
 from half.trust.balance import balance
+from half.trust.stakes import INTERRUPTION_DAYS
 
 pytestmark = [pytest.mark.cap4, pytest.mark.cap4_bought]
 
@@ -69,6 +74,7 @@ NOON = 1_788_264_000.0
 NOW = stamp(NOON)
 
 FARMLAND = "buy-farmland"
+ORIGIN = Origin(kind=TOUCH_TENSION, id="x_1")
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -197,19 +203,93 @@ def test_a_belief_from_the_revealed_ledger_is_not_the_main_speaking():
     assert history([an_ask(at=ago(2)), ingested])["q_b_1"].answered is False
 
 
-def test_two_outstanding_questions_are_both_answered_by_one_reply():
-    """**The honest limit, asserted rather than hidden.** This recognizes
-    responsiveness, and one message cannot be attributed to one of two open
-    questions without interpreting it — which is claim derivation, deferred
-    with the model port since story 3. It errs toward asking *less*, which is
-    the correct direction for a rule whose failure is a nag.
+def test_one_reply_retires_one_question_and_it_is_the_most_recent():
+    """**One reply, one question.** A defect the first build shipped: every
+    outstanding question was marked answered on the first inbound message, so a
+    main who writes daily was never asked twice about anything — *"never ask
+    twice, whatever happened"*, which story 5b was right to refuse.
+
+    Half holds at most one or two open questions by construction, so the one a
+    message could plausibly be about is the one most recently put. The older one
+    stays *ignored*, which is a different state with a different consequence: its
+    own wanting's period decides when it may be put again.
     """
     answers = history([
-        an_ask("q_b_1", at=ago(3), about="b_1"),
-        an_ask("q_b_2", at=ago(2), about="b_2"),
-        a_reply(ago(1)),
+        an_ask("q_b_1", at=ago(0.9), about="b_1"),
+        an_ask("q_b_2", at=ago(0.8), about="b_2"),
+        a_reply(ago(0.7)),
     ])
-    assert all(answer.answered for answer in answers.values())
+    assert answers["q_b_2"].answered is True
+    assert answers["q_b_1"].answered is False, (
+        "one message closed a question it could not have been about"
+    )
+
+
+def test_a_reply_outside_the_window_retires_nothing():
+    """**The time bound.** A question is live for exactly the interruption it
+    cost — one of the main's days, read from ``half.trust.stakes`` and never
+    typed here — because *"a question attached to a conversation is over when
+    that conversation is"*. A message a week later is a new conversation."""
+    inside = history([an_ask(at=ago(1.5)), a_reply(ago(0.9))])
+    outside = history([an_ask(at=ago(9)), a_reply(ago(1))])
+
+    assert inside["q_b_1"].answered is True
+    assert outside["q_b_1"].answered is False
+    assert outside["q_b_1"].asked is True, "it is ignored, not forgotten"
+
+
+@pytest.mark.parametrize(
+    "gap, answered",
+    [(0.0, True), (0.5, True), (ANSWERS_WITHIN_DAYS, True),
+     (ANSWERS_WITHIN_DAYS + 0.001, False), (30.0, False)],
+    ids=["same-instant", "half-a-day", "at-the-boundary", "just-past", "a-month"],
+)
+def test_both_sides_of_the_answering_window_are_pinned(gap, answered):
+    """Both sides, because story 8's review found a threshold anything between
+    six and thirteen satisfied — a band rather than a number. At exactly the
+    window a reply still answers; a thousandth of a day later it does not."""
+    put = ago(40)
+    replied = stamp(NOON - (40 - gap) * DAY)
+    assert history([an_ask(at=put), a_reply(replied)])["q_b_1"].answered is answered
+
+
+def test_a_reply_stamped_before_the_ask_answers_nothing():
+    """Not clamped and not absolute: reading a message that predates the
+    question as an answer to it would let a skewed clock retire a question the
+    main never saw."""
+    answers = history([an_ask(at=ago(1)), a_reply(ago(1.5))])
+    assert answers["q_b_1"].answered is False
+
+
+def test_an_unreadable_stamp_leaves_the_question_ignored_rather_than_answered():
+    """The direction an unreadable record resolves in here is the one that keeps
+    a question askable, because the alternative is silencing an uncertainty for
+    ever on a stamp nobody could read."""
+    broken = make(Op.ASKED, "qa_x", ago(2), question="q_b_1", about="b_1")
+    broken = Record(op=Op.ASKED, id="qa_x", t="whenever",
+                    data={**broken.data, "t": "whenever"})
+    answers = history([broken, a_reply(ago(1))])
+    assert answers["q_b_1"].answered is False
+
+
+def test_the_window_is_the_interruption_a_question_cost_and_is_not_typed_here():
+    """**Derived, not chosen**, and asserted structurally as well as by value —
+    because review set an identical constant to a literal once and the value
+    check passed."""
+    import ast
+
+    assert ANSWERS_WITHIN_DAYS == INTERRUPTION_DAYS == PERIOD_DAYS[Timescale.DAYS]
+    tree = ast.parse((ROOT / "half/questions/answered.py").read_text("utf-8"))
+    assignment = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "ANSWERS_WITHIN_DAYS"
+    )
+    assert isinstance(assignment.value, ast.Name), (
+        "the window is a literal again; it must be the imported interruption"
+    )
+    assert assignment.value.id == "INTERRUPTION_DAYS"
 
 
 def test_putting_a_question_again_starts_it_over():
@@ -417,41 +497,45 @@ def test_every_reason_this_module_reports_is_inside_its_closed_set():
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def test_the_registrys_ask_history_folds_the_log_and_not_the_derived_view(tmp_path):
+def test_the_registrys_question_view_folds_the_log_and_not_the_derived_view(
+    tmp_path
+):
     """``Store.append`` writes the line and *then* rebuilds, so a crash between
     the two leaves the derived view behind — and a question read from a stale
     view as never-asked is a question put twice."""
     registry = ActorRegistry(tmp_path)
     try:
         with Store(tmp_path / "vidit") as store:
-            store.record(Op.ASKED, "qa_1", ago(3), question="q_b_1", about="b_1")
-        answers = asyncio.run(registry.ask_history("vidit"))
-        assert answers["q_b_1"].asked is True
-        assert answers["q_b_1"].answered is False
+            store.record(Op.ASKED, "qa_1", ago(1.2), question="q_b_1", about="b_1")
+        view = asyncio.run(registry.question_view("vidit"))
+        assert view.answers["q_b_1"].asked is True
+        assert view.answers["q_b_1"].answered is False
         with Store(tmp_path / "vidit") as store:
             store.record(Op.ASSERT, "b_in", ago(1), subject="self", claim="ok",
                          **{LEDGER: STATED}, **ladder.admitted())
-        assert asyncio.run(registry.ask_history("vidit"))["q_b_1"].answered is True
+        again = asyncio.run(registry.question_view("vidit"))
+        assert again.answers["q_b_1"].answered is True
     finally:
         registry.close()
 
 
-def test_the_registry_hands_out_a_copy_of_the_live_strands(tmp_path):
-    """Volatile state (AD-26), so a caller cannot move a main's attention by
-    writing into what it was handed — and a main this process is not hosting has
-    no conversation open, which correctly holds every question."""
+def test_the_question_view_reads_the_balance_and_the_answers_at_one_moment(
+    tmp_path
+):
+    """One read, folded twice. They were two doors and two acquires before
+    review, which left a window an append could land in — and the pair would
+    then describe two different logs."""
     registry = ActorRegistry(tmp_path)
     try:
-        assert registry.live_strands("vidit") is None
-        asyncio.run(_hydrate(registry, "vidit"))
-        live = registry.live_strands("vidit")
-        assert live is not None
-        live.weights["forged"] = 1.0
-        assert "forged" not in registry.live_strands("vidit").weights
+        with Store(tmp_path / "vidit") as store:
+            store.record(
+                Op.TOUCH, "tc_1", "2026-08-30T03:00Z",
+                **touch_module.spoke(day="2026-08-30", origin=ORIGIN, loops=()),
+            )
+            store.record(Op.ASKED, "qa_1", ago(3), question="q_b_1", about="b_1")
+        view = asyncio.run(registry.question_view("vidit"))
+        assert view.trust.balance.earned == 1
+        assert view.trust.balance.spent == 1
+        assert set(view.answers) == {"q_b_1"}
     finally:
         registry.close()
-
-
-async def _hydrate(registry, main_id):
-    async with registry.acquire(main_id) as actor:
-        actor.strands.observe("farmland", {"farmland"})

@@ -8,6 +8,14 @@ the wire, and no favour was ever spent. CAP-4's central rule — *"no question i
 asked that was not preceded by a delivered favor"* — was enforced in a package
 with no production caller.
 
+**The caller is ``half.actor.runtime``, and only that.** *"The favour buys the
+question"* says when; *"attach the question to the next conversation that already
+touches the topic, never ping to ask"* says where. 5b's topic gate reads the
+actor's live strands, which exist on a conversation turn and nowhere else, so
+the question rides on a reply the main was owed anyway. The morning surface does
+not ask and cannot: nothing under ``half/surface`` can resolve an import into
+this package, which ``tests/test_bought.py`` asserts.
+
 Three modules, and the split is the story:
 
 * ``mint`` — one ``Unasked`` per belief, its id **derived** from the belief id,
@@ -42,6 +50,7 @@ single writer is what lets the store skip a journal (AD-1).
 
 from half.questions.answered import (
     ANSWERED,
+    ANSWERS_WITHIN_DAYS,
     NEVER_ASKED,
     NO_PERIOD,
     REASONS,
@@ -53,13 +62,15 @@ from half.questions.answered import (
     history,
     reaskable,
     responsive,
+    spend_of,
 )
 from half.questions.engine import (
+    ASK_OUTCOMES,
     NOTHING_OFFERED,
-    Bought,
     Purchase,
     QuestionEngine,
     QuestionLedger,
+    QuestionView,
     offered,
 )
 from half.questions.mint import QUESTION_PREFIX, about_of, mint, minted, question_id
@@ -70,8 +81,9 @@ from half.questions.mint import QUESTION_PREFIX, about_of, mint, minted, questio
 #: beside the type is one every consumer re-spells.
 __all__ = [
     "ANSWERED",
+    "ANSWERS_WITHIN_DAYS",
+    "ASK_OUTCOMES",
     "Answer",
-    "Bought",
     "NEVER_ASKED",
     "NOTHING_OFFERED",
     "NO_PERIOD",
@@ -79,6 +91,7 @@ __all__ = [
     "QUESTION_PREFIX",
     "QuestionEngine",
     "QuestionLedger",
+    "QuestionView",
     "REASONS",
     "Reask",
     "TOO_SOON",
@@ -92,4 +105,5 @@ __all__ = [
     "question_id",
     "reaskable",
     "responsive",
+    "spend_of",
 ]

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+from typing import Final
+
 import pytest
 
 from half.crisis import safetyplan
@@ -312,3 +316,119 @@ def msg(**kw):
 @pytest.fixture
 def fake_transport():
     return FakeTransport
+
+
+# ── the narrow door, as a predicate two packages read ────────────────────────
+#
+# Story 5b built this for ``half/trust`` and story 11's first build copied it
+# into ``tests/test_bought.py`` as a **string-prefix denylist** — which is the
+# same defect 5b's review had already found and fixed, arriving one package
+# over. ``from half.store import store as _second`` has ``ImportFrom.module ==
+# "half.store"``, which no prefix list contained, and ``self.ledger.acquire(...)``
+# is not any forbidden word at all. So the machinery lives here now and both
+# packages are swept by one rule: if a predicate is worth having twice, it is
+# worth having once.
+
+ROOT = Path(__file__).resolve().parents[1]
+
+#: What a module inside a guarded package may not reach, as **dotted roots
+#: rather than as import lines**. A second writer is against AD-1 and CAP-4
+#: both, and the rule is *"no path to a store"*, not *"none of these spellings"*.
+CLOSED: Final[tuple[str, ...]] = (
+    "half.store.store", "half.store.log", "half.store.db", "half.actor",
+)
+
+#: What no module that decides *whether* to ask may reach: a model, a channel,
+#: or the network. Written as roots for the reason ``CLOSED`` is — a list of
+#: forbidden strings only ever catches the spellings somebody thought of.
+UNREACHABLE: Final[tuple[str, ...]] = (
+    "half.model", "half.channel", "anthropic", "httpx", "socket", "urllib",
+    "http", "requests",
+)
+
+
+def resolved_imports(path: Path) -> set[str]:
+    """Every dotted target ``path`` imports, both spellings resolved.
+
+    ``import half.store.store`` and ``from half.store import store`` and
+    ``from half.store.store import Store`` all resolve to something under
+    ``half.store.store``, so a rule written about the module catches every way
+    of naming it. Relative imports resolve through the package the file sits in.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    # A file outside the tree — a synthetic bypass written to ``tmp_path`` —
+    # has no package to resolve a relative import against, and answering ``()``
+    # for it is correct: the bypasses this is proved against are all absolute.
+    package = (
+        path.relative_to(ROOT).with_suffix("").parts[:-1]
+        if path.is_relative_to(ROOT) else ()
+    )
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                found.add(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                base = ".".join(package[: len(package) - (node.level - 1)])
+            else:
+                base = node.module or ""
+            for alias in node.names:
+                found.add(f"{base}.{alias.name}" if base else alias.name)
+                if base:
+                    found.add(base)
+    return found
+
+
+def reaches(path: Path, roots: tuple[str, ...]) -> list[str]:
+    """The imports of ``path`` that land inside ``roots``. The predicate."""
+    return sorted(
+        name for name in resolved_imports(path)
+        if any(name == root or name.startswith(f"{root}.") for root in roots)
+    )
+
+
+def ledger_calls(path: Path) -> set[str]:
+    """Every method this module calls on ``self.ledger``.
+
+    A **predicate over the door**, not a list of forbidden words. The rule is
+    that a package reaches a main's log through its injected ledger and through
+    nothing else, so the thing to measure is what it asks that object for — a
+    word list would have to guess the name of the next wider door, and every
+    denylist this codebase has shipped was walked around. It also has to
+    tolerate ``list.append``, which is not a log append and which an earlier
+    spelling of this gate reported as one.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        target = node.func.value
+        if isinstance(target, ast.Await):
+            target = target.value
+        if (
+            isinstance(target, ast.Attribute)
+            and target.attr == "ledger"
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "self"
+        ):
+            found.add(node.func.attr)
+    return found
+
+
+def door_of(protocol) -> set[str]:
+    """Every public method a protocol declares, its bases included.
+
+    Read off the MRO rather than off ``vars`` alone, because
+    ``QuestionLedger`` extends ``TrustLedger``: a scan that saw only the
+    subclass's own two names would report 5b's three methods as outside the
+    door, and one that saw only the base would miss the addition.
+    """
+    found: set[str] = set()
+    for base in protocol.__mro__:
+        found |= {
+            name for name, value in vars(base).items()
+            if not name.startswith("_") and callable(value)
+        }
+    return found

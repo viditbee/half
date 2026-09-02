@@ -80,20 +80,26 @@ jobs:
         # someone quietly unmarking the cases this gate exists for.
         #
         # **The floor moves with the count so the margin does not grow.** Story
-        # 11 added eleven, and they belong to this invariant as much as to
+        # 11 added fifty-eight, and they belong to this invariant as much as to
         # CAP-4: the question channel is now filled by a *purchase* rather than
         # by a rung, which changes what one of AD-18's three channels means. An
         # unbought `ask` belief becomes a directive (so nothing is filtered away
         # — AD-18's second named failure), a context has room for exactly one
-        # question, and the builder may not construct one outside the branch that
-        # reads what it was handed. 66 selected, 51 required: the margin stays at
-        # fifteen, where a floor left at 40 would have widened it to twenty-six.
+        # question, and only one expression in the tree may build one.
+        #
+        # Forty-eight of the fifty-eight are one parametrized case — the truth
+        # table over every rung, every ceiling and every way of being bought —
+        # which is deliberate: it is the guard that replaced an AST scan an
+        # inverted branch satisfied, and it has to be exhaustive to be worth
+        # having. Deleting it alone drops this gate forty-eight cases and fails.
+        # 113 selected, 98 required: the margin stays at fifteen, where a floor
+        # left at 40 would have widened it to seventy-three.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m ad18 -q --collect-only \
             | grep -c '::' || true)
           echo "AD-18 cases collected: $collected"
-          if [ "$collected" -lt 51 ]; then
+          if [ "$collected" -lt 98 ]; then
             echo "::error::the AD-18 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -138,15 +144,18 @@ jobs:
         # zero — which is the pattern this file already uses for
         # ``cap6_structure`` and ``cap12_aftercare_property``.
         #
-        # 59 selected, 53 required. Story 11 added one — a main capped at
-        # `behave` buys no question however much has been delivered — and the
-        # floor moves with it so the margin stays at six.
+        # 107 selected, 101 required. Story 11 added forty-nine: a main capped
+        # at `behave` buys no question however much has been delivered, and the
+        # truth table above sweeps every ceiling on the ladder against every rung
+        # and every way of being bought — which is an AD-28 assertion as much as
+        # an AD-18 one, because the rung it compares is the *resolved* one. The
+        # floor moves with them so the margin stays at six.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m ad28 -q --collect-only \
             | grep -c '::' || true)
           echo "AD-28 cases collected: $collected"
-          if [ "$collected" -lt 53 ]; then
+          if [ "$collected" -lt 101 ]; then
             echo "::error::the AD-28 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -836,18 +845,20 @@ jobs:
         # from the unreadable-marker path, and the per-loop half of the same
         # finding.
         #
-        # Story 11 added three, and they are a change to *when* a morning is
-        # silent rather than three more reasons for one: the rung alone no longer
-        # speaks. A main whose only material is `ask`-rung and who has earned no
-        # favour now gets silence, and that is swept over every rung against a
-        # main who has earned one. 83 selected, 75 required — the floor moves
-        # with the count so the margin stays at eight.
+        # Story 11 added two, and they are a change to *what a morning may do*
+        # rather than two more reasons for silence: **the morning surface is not
+        # an asker.** One is an import rule over the whole package — nothing under
+        # half/surface may resolve an import into half.questions or half.trust —
+        # and one is a full morning, with an affordable question in the log and
+        # its topic freshly raised, that writes no `asked` record. 82 selected,
+        # 74 required — the floor moves with the count so the margin stays at
+        # eight.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap8_silence -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-8 silence cases collected: $collected"
-          if [ "$collected" -lt 75 ]; then
+          if [ "$collected" -lt 74 ]; then
             echo "::error::the CAP-8 silence gate collected $collected cases; silence is now unguarded"
             exit 1
           fi
@@ -933,16 +944,16 @@ jobs:
         #
         # **A floor on a superset protects nothing small**, which is why there
         # are five sub-gates below rather than a comfortable margin here. This
-        # step's own margin is sized against the sub-gates: 275 selected, 265
+        # step's own margin is sized against the sub-gates: 337 selected, 327
         # required, so the margin is 10 — smaller than the smallest chunk any
         # sub-gate exclusively owns, and far smaller than any sub-gate entire.
         # Deleting a sub-gate's content drops this step beneath its floor *and*
         # fails that sub-gate.
         #
         # **The floor moves with the count so the margin does not grow.** Story
-        # 11 added 93 cases — the bought question is the first thing in the
+        # 11 added 155 cases — the bought question is the first thing in the
         # product that actually spends a favour — so the floor moves from 167 to
-        # 275 - 10 = 265. Leaving it at 167 would have widened the margin to a
+        # 337 - 10 = 327. Leaving it at 167 would have widened the margin to a
         # hundred and two, which is room for every case this story wrote. (The
         # count named in the previous revision of this comment, 177, was stale
         # against a measured 182; the numbers here are measured.)
@@ -951,7 +962,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap4 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-4 cases collected: $collected"
-          if [ "$collected" -lt 265 ]; then
+          if [ "$collected" -lt 327 ]; then
             echo "::error::the CAP-4 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -997,7 +1008,7 @@ jobs:
         # to put the question on the wire anyway. The floor moves with them,
         # 27 to 47.
         #
-        # **The margin is deliberately zero: 47 selected, 47 required.** Review
+        # **The margin is deliberately zero: 48 selected, 48 required.** Review
         # found the previous margin was *exactly* the two concurrency cases the
         # gate exists for — delete them and the floor still passed, and
         # ``note_ask`` could then regress to read-under-one-acquire and
@@ -1009,7 +1020,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap4_favour -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-4 favour cases collected: $collected"
-          if [ "$collected" -lt 47 ]; then
+          if [ "$collected" -lt 48 ]; then
             echo "::error::the CAP-4 favour gate collected $collected cases; the currency is unguarded"
             exit 1
           fi
@@ -1044,10 +1055,11 @@ jobs:
         # never bought at any balance (swept across four), a main capped at
         # `behave`, a quarantined subject, a topic nobody raised, a main with no
         # conversation open at all, and a crisis opening between the choice and
-        # the send — plus a quarantine landing between the choice and the spend.
-        # The floor moves with them, 46 to 56.
+        # the send — plus a quarantine landing between the offer and the spend,
+        # and a main in the mode being asked nothing at all. The floor moves
+        # with them, 46 to 57.
         #
-        # 56 selected, 56 required. Zero margin, for the reason the favour gate
+        # 57 selected, 57 required. Zero margin, for the reason the favour gate
         # has none: a floor with room in it is a floor that lost the case it was
         # written for.
         run: |
@@ -1055,7 +1067,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap4_gates -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-4 gate cases collected: $collected"
-          if [ "$collected" -lt 56 ]; then
+          if [ "$collected" -lt 57 ]; then
             echo "::error::the CAP-4 gate sweep collected $collected cases; a gate has lost its case"
             exit 1
           fi
@@ -1096,7 +1108,7 @@ jobs:
           fi
           uv run --locked --extra dev pytest -q -m cap4_stakes
 
-      - name: 'CAP-4: the questions channel is bought, and bounded'
+      - name: 'CAP-4: the questions channel is bought, and asked on the turn'
         # The gate for the half of CAP-4 that reaches the main. Story 5b built
         # the currency, the gates and the spend and **nothing called them**: an
         # `ask`-rung belief became a question line and the morning surface put
@@ -1107,49 +1119,63 @@ jobs:
         # Marker-selected rather than file-selected, for the reason every other
         # gate here is: it must not go green because another step happened to
         # run one of the same files. The cases live in tests/test_questions.py,
-        # tests/test_bought.py, tests/test_context.py and tests/test_ladder.py.
+        # tests/test_bought.py and tests/test_context.py.
         #
         # What it covers, and each of these is a rule with no second case:
         #
-        #   that a question reaches a context **only by being handed in** —
-        #   behaviourally off the live store and through the real surface, and
-        #   structurally, by an AST guard that no `Question` may be constructed
-        #   in the builder outside a branch reading the parameter, with a bypass
-        #   case run against the exact mutation it forbids (the builder deciding
-        #   from the rung alone, which is what shipped before this story);
-        #   that a send carries **at most one** question, asserted off the type
-        #   rather than counted off a fixture — the field is a `Question | None`
-        #   and the parameter is one id, so a second has nowhere to go — swept
-        #   over ranked sets of four sizes and with the duplicate-id bypass;
+        #   that a question reaches a context **only by being handed in** — as an
+        #   exhaustive truth table over every rung x every ceiling x every way of
+        #   being bought or not, checked against an expectation written in the
+        #   test rather than read from the code, so that no inverted guard, no
+        #   ternary and no `match` can satisfy it. This replaced an AST scan that
+        #   `if not bought: return Question(...)` walked straight past;
+        #   that **exactly one expression in the whole tree** can construct a
+        #   Question, with a bypass case for a second construction site;
+        #   that a send carries **exactly one** question, read off the resolved
+        #   type (`Optional[Question]`, not an annotation string) rather than
+        #   counted off a fixture, swept over ranked sets of four sizes and
+        #   asserting one is *present* — the earlier `<= 1` held at zero;
         #   that the re-ask bound is the **wanting's own period**, swept over all
         #   four timescales twice: once against the pure bound with both sides of
         #   every boundary pinned, and once end to end through the real registry,
-        #   store and surface, where one shared cooldown gives one answer for all
-        #   four and fails by name;
-        #   that the answer state is folded from the log and nothing
-        #   materializes — no field on `State` whose name mentions asking or
-        #   answering, and the same fold before and after a rebuild;
-        #   that no string constant outside a docstring on the question path
-        #   carries a space, so no template in any language can live there, with
-        #   its own bypass case;
-        #   and that story 5b's `TrustLedger` still has exactly the three methods
-        #   it was reviewed with, compared signature for signature against the
-        #   registry that satisfies the engine's own protocol.
+        #   store and runtime, where one shared cooldown answers wrongly for
+        #   three of the four and fails by name;
+        #   that **one reply retires one question, and only inside its own
+        #   window** — the interruption that question cost, imported from
+        #   half.trust.stakes and asserted structurally as well as by value. The
+        #   first build closed every open question on any later message for ever;
+        #   that the favour **precedes the turn**: nothing a turn writes is a
+        #   delivered favour, so a question can never be funded by the message
+        #   carrying it, which is the defect that made the first build's rule
+        #   vacuous;
+        #   that **no line means no spend** — a bought belief the ladder raised
+        #   above `ask`, or one whose topic echoes its claim, produces no question
+        #   and writes no `asked` record;
+        #   that the **morning surface cannot ask**, asserted as an import rule
+        #   over the whole half/surface package with its own bypass case, and
+        #   behaviourally with a full morning that spends nothing;
+        #   that both fail-open handlers actually degrade — a broken engine and a
+        #   spend that raises each cost the question and never the reply;
+        #   and that no string constant outside a docstring is a phrase, on every
+        #   module that builds what reaches the wire — half/questions, and now
+        #   half/context/channels.py and half/context/build.py, which is where
+        #   the words actually are.
         #
-        # **Margin zero: 93 selected, 93 required.** Sized against the subset it
-        # protects rather than against a total, which is the correction review
-        # forced three stories running — and here every case is the only one
-        # asserting its rule, so there is nothing to prune. Story 5b's own
-        # `cap4_favour` gate shipped with a margin of *exactly* the two
-        # concurrency cases it existed for: delete both, the floor still passed,
-        # and `note_ask` could regress with CI green. Changing this set is a
-        # deliberate edit to this number.
+        # **Margin zero: 152 selected, 152 required.** Sized against the subset
+        # it protects rather than against a total, and every case here is the
+        # only one asserting its rule.
+        #
+        # **The number is file-coupled for tests/test_questions.py**, which
+        # carries the marker at module scope because every case in it is a
+        # story-11 rule; tests/test_bought.py and tests/test_context.py mark per
+        # case. Adding a case to either is therefore a deliberate edit to this
+        # number, which is what a zero margin means.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap4_bought -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-4 bought-question cases collected: $collected"
-          if [ "$collected" -lt 93 ]; then
+          if [ "$collected" -lt 152 ]; then
             echo "::error::the CAP-4 bought gate collected $collected cases; the questions channel may be free again"
             exit 1
           fi
@@ -1191,13 +1217,20 @@ jobs:
         # denylist did not see; and the write scan catches ``opened.record(...)``
         # while ignoring a local list.
         #
-        # 30 selected, 30 required. Zero margin: every case is a rule.
+        # 35 selected, 35 required. Zero margin: every case is a rule.
+        #
+        # Story 11's review round added five. The narrow-door rule and the
+        # no-model rule are now **parametrized over both packages that reach a
+        # main's log through an injected door** - half/trust and half/questions
+        # - because story 11's first build copied this guard into its own file
+        # as a string-prefix denylist and both of 5b's known bypasses walked
+        # past the copy. A predicate worth having twice is worth having once.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap4_structure -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-4 structural cases collected: $collected"
-          if [ "$collected" -lt 30 ]; then
+          if [ "$collected" -lt 35 ]; then
             echo "::error::the CAP-4 structure gate collected $collected cases; a rule with one case has lost it"
             exit 1
           fi
