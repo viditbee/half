@@ -25,6 +25,20 @@ replays perfectly. It is only *wrong*; it is never *inconsistent*.
   cannot be mistaken for a message; this module reads the delivered half and
   invents no second fact about it. A favour is **delivered, not endorsed**:
   whether it landed well is AD-21's sampled question and is not asked here.
+
+  **Known limit, deferred and recorded rather than hidden.** *"Says a message
+  was sent"* is what the marker claims, not what the channel confirmed: story 10
+  claims the day *before* sending, so a morning whose send then fails leaves a
+  record this function counts as a delivered favour. That is the asymmetry story
+  10 accepted deliberately — a retry loop costs the one-a-day rule, which is
+  worth more than one message — and story 11 inherits a narrower instance of it:
+  a question asked on a turn can be funded by a favour from a morning claimed
+  seconds earlier and not yet on the wire, so *"preceded by a delivered
+  favor"* is true of the claim rather than of the delivery. Both close the same
+  way and only that way — the log recording whether a message was **delivered**,
+  which is a new field on a closed op and therefore an Ask-First change (AD-29).
+  Until then the direction of the error is one question too many at the margin,
+  never a question with no favour behind it at all.
 * **Spending** is an ``asked`` record — the op story 5b adds, because the
   spend had no record and a currency with only an earning half is not one.
 

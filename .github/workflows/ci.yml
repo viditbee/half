@@ -80,26 +80,32 @@ jobs:
         # someone quietly unmarking the cases this gate exists for.
         #
         # **The floor moves with the count so the margin does not grow.** Story
-        # 11 added fifty-eight, and they belong to this invariant as much as to
-        # CAP-4: the question channel is now filled by a *purchase* rather than
-        # by a rung, which changes what one of AD-18's three channels means. An
-        # unbought `ask` belief becomes a directive (so nothing is filtered away
-        # — AD-18's second named failure), a context has room for exactly one
-        # question, and only one expression in the tree may build one.
+        # 11 added ten, and they belong to this invariant: the question channel
+        # is now filled by a *purchase* rather than by a rung, which changes what
+        # one of AD-18's three channels means. An unbought `ask` belief becomes a
+        # directive (so nothing is filtered away — AD-18's second named failure),
+        # a context has room for exactly one question, and only one expression in
+        # the tree may build one.
         #
-        # Forty-eight of the fifty-eight are one parametrized case — the truth
-        # table over every rung, every ceiling and every way of being bought —
-        # which is deliberate: it is the guard that replaced an AST scan an
-        # inverted branch satisfied, and it has to be exhaustive to be worth
-        # having. Deleting it alone drops this gate forty-eight cases and fails.
-        # 113 selected, 98 required: the margin stays at fifteen, where a floor
-        # left at 40 would have widened it to seventy-three.
+        # **The forty-eight-case truth table is deliberately *not* here.** It is
+        # story 11's guard on bought-ness, and carrying it into this gate took
+        # the count from 55 to 113 while adding no AD-18 coverage at all — a
+        # floor that reports itself twice as well covered as it is, which is a
+        # floor telling a lie. It is gated by `cap4_bought` at margin zero.
+        #
+        # 65 selected, 50 required. **The margin is fifteen and it is not zero
+        # on purpose**: several cases here are neighbours inside one sweep — the
+        # nine malformed-license parameters, the script cases — so pruning a
+        # redundant parameter should be possible without editing this number,
+        # while gutting the gate should not. Every rule with a *single* case
+        # (the rendering-completeness enumeration, the byte-wise leak guard) sits
+        # far enough below the floor that losing it drops the count beneath it.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m ad18 -q --collect-only \
             | grep -c '::' || true)
           echo "AD-18 cases collected: $collected"
-          if [ "$collected" -lt 98 ]; then
+          if [ "$collected" -lt 50 ]; then
             echo "::error::the AD-18 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -144,18 +150,23 @@ jobs:
         # zero — which is the pattern this file already uses for
         # ``cap6_structure`` and ``cap12_aftercare_property``.
         #
-        # 107 selected, 101 required. Story 11 added forty-nine: a main capped
-        # at `behave` buys no question however much has been delivered, and the
-        # truth table above sweeps every ceiling on the ladder against every rung
-        # and every way of being bought — which is an AD-28 assertion as much as
-        # an AD-18 one, because the rung it compares is the *resolved* one. The
-        # floor moves with them so the margin stays at six.
+        # 59 selected, 53 required. Story 11 added **one**: a main capped at
+        # `behave` buys no question however much has been delivered. The floor
+        # moves with it so the margin stays at six, and the meaning of that
+        # margin is the one this comment already gives — prune a redundant case,
+        # do not gut the gate.
+        #
+        # Story 11's truth table sweeps every ceiling on the ladder and is
+        # deliberately **not** marked here. It would have taken this gate from 58
+        # to 107 while adding one case of AD-28 coverage, so a later reader would
+        # find a floor claiming twice the protection it has. It is gated by
+        # `cap4_bought`, at margin zero.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m ad28 -q --collect-only \
             | grep -c '::' || true)
           echo "AD-28 cases collected: $collected"
-          if [ "$collected" -lt 101 ]; then
+          if [ "$collected" -lt 53 ]; then
             echo "::error::the AD-28 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -1164,6 +1175,13 @@ jobs:
         # **Margin zero: 152 selected, 152 required.** Sized against the subset
         # it protects rather than against a total, and every case here is the
         # only one asserting its rule.
+        #
+        # **Forty-eight of them are one exhaustive parametrize**, and that is
+        # fine *here* in a way it was not in the AD-18 and AD-28 gates: this gate
+        # is about bought-ness, so a floor dominated by the truth table over
+        # bought-ness reports what it protects. The same cases carried into those
+        # two gates reported coverage that did not exist, and were removed from
+        # them.
         #
         # **The number is file-coupled for tests/test_questions.py**, which
         # carries the marker at module scope because every case in it is a

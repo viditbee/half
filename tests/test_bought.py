@@ -1079,8 +1079,15 @@ def test_no_ranked_set_of_any_size_produces_two_questions(size):
 
 @pytest.mark.cap4
 @pytest.mark.cap4_bought
-@pytest.mark.ad18
-@pytest.mark.ad28
+#: **Deliberately not marked ``ad18`` or ``ad28``.** This is forty-eight cases
+#: about *bought-ness*, and carrying them into those two gates took ``ad18``
+#: from 55 to 113 and ``ad28`` from 58 to 107 without adding one case of AD-18
+#: or AD-28 coverage — so a future story would read those floors as far better
+#: covered than they are. A CI floor that tells a lie is the exact class of
+#: defect this project keeps paying for. The AD-18 and AD-28 halves of this
+#: story are marked where they actually live: the channel split in
+#: ``tests/test_context.py``, and the ceiling in
+#: ``test_a_main_capped_at_behave_buys_nothing``.
 @pytest.mark.parametrize(
     "bought", [None, "", "b_1", "b_other"],
     ids=["nothing", "empty", "this-one", "another-one"],

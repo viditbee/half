@@ -353,10 +353,32 @@ class Runtime:
         they have been since story 6d; the bought question is attached
         afterwards, outside it, because ``ActorRegistry.acquire`` is not
         reentrant and the spend takes that same lock to make its check and its
-        append one serialized operation. Per-main turns are already serialized by
-        this main's worker (``_Turns``), so releasing between the two costs no
-        ordering — and the spend re-reads and re-gates everything under the lock
-        regardless.
+        append one serialized operation.
+
+        **Why releasing between the two is safe, written out because it rests on
+        a fact that could change.** Three things hold it:
+
+        * *Two turns for one main cannot interleave.* Each main has their own
+          inbox and worker (``_Turns``), which awaits one turn before taking the
+          next, and every mutation goes through that main's own mutex (AD-1,
+          AD-8). A turn is never evicted mid-flight and the append that closes it
+          happens before the lock is released (AD-33).
+        * *Nothing else spends.* Since review loop 1 the turn path is the **only**
+          spender: the morning surface has no engine, no field for one, and
+          cannot resolve an import into ``half.questions`` at all
+          (``tests/test_bought.py``). So there is no second writer to race with
+          across the gap.
+        * *The spend does not trust the gap anyway.* ``UnaskedQueue.spend``
+          re-runs every gate against a view read at that moment, and
+          ``ActorRegistry.note_ask`` re-asserts the mode, the balance and the
+          ladder inside a single acquire — so a favour cannot be spent twice even
+          if the first two facts stopped holding.
+
+        **The second fact is the fragile one.** A future story that lets another
+        surface spend a favour — an interrupt, a nudge, a second channel —
+        invalidates this argument, and the fix would be to move the spend back
+        inside a single serialized operation rather than to widen this one. Say
+        so here rather than discovering it from a balance that went negative.
         """
         belief_id = f"b_{inbound.external_id}"
         async with self.registry.acquire(inbound.main_id) as actor:
