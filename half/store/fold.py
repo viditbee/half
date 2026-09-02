@@ -72,6 +72,7 @@ from half.store.records import (
     LOCAL_DAY,
     LOOP,
     NEXT_PASS_AT,
+    QUESTION,
     STATE,
     TIMESCALE,
     Record,
@@ -103,7 +104,13 @@ _RESOLVED: Final[str] = TensionState.RESOLVED.value
 #: what it was — ``record.op is not Op.LOOP_TRANSITION`` — and story 10 added
 #: the second member. The next op keyed on its own append is caught by this
 #: same rule rather than by somebody remembering the branch.
-_APPEND_KEYED: Final[frozenset[Op]] = frozenset({Op.LOOP_TRANSITION, Op.TOUCH})
+#: ``Op.ASKED`` joins them in story 5b for exactly the same reason: a spend's
+#: record id is built from the stamp (``qa_<t>``) and names no object, so
+#: remembering it in ``State.expunged`` would suppress whatever belief happened
+#: to share the identifier, for ever.
+_APPEND_KEYED: Final[frozenset[Op]] = frozenset(
+    {Op.LOOP_TRANSITION, Op.TOUCH, Op.ASKED}
+)
 
 
 @dataclass(slots=True)
@@ -561,6 +568,48 @@ def fold(records: Iterable[Record]) -> State:
                         path="<fold>", line=0,
                     )
                 state.schedule = copy.deepcopy(dict(record.data))
+
+            case Op.ASKED:
+                # **The one op this fold deliberately materializes nothing
+                # from, and the omission is the story's central rule.**
+                #
+                # A spend is half of the trust balance — delivered favours
+                # minus questions asked — and the obvious implementation is a
+                # pair of integers on ``State`` that this case decrements. That
+                # is the counter story 4 refused for salience and story 9c
+                # refused for decay, one layer lower down: a number kept in the
+                # derived view is a number that can be read *from* the derived
+                # view, and the derived view is what a crash between an append
+                # and a rebuild leaves behind (``Store.append`` writes the line
+                # first). A balance read from a stale view is a favour spent
+                # twice, and it would replay correctly every time, so no
+                # round-trip test would ever see it.
+                #
+                # So the balance is computed by folding the **log** — the only
+                # authority (AD-3) — in ``half.trust.balance``, which counts
+                # ``touch`` records that delivered against ``asked`` records
+                # that spent. There is nowhere in ``State`` to keep a stale
+                # copy, because there is no copy.
+                #
+                # This is **not** the silent skip AD-29 exists to prevent. The
+                # record is validated here rather than passed over: one naming
+                # no question is fatal, on the same terms as a ceiling with no
+                # rung, because a spend the balance cannot count is a question
+                # that was asked and never paid for. What is absent is a
+                # *derived* copy of a fact the log already holds, and every
+                # reader of that fact reads the log.
+                #
+                # Read tolerant on everything else, for the reason every case
+                # above is: ``records.validate_asked_fields`` refuses the shape
+                # before it is durable, and refusing it again here would mean a
+                # log written by a later build took a main's whole store down
+                # over a field.
+                question = record.data.get(QUESTION)
+                if not isinstance(question, str) or not question:
+                    raise CorruptLogError(
+                        f"{record.op} record {record.id!r} has no {QUESTION!r}",
+                        path="<fold>", line=0,
+                    )
 
             case _:  # pragma: no cover - guarded by the closed vocabulary
                 # A new Op added to the enum must not fold to nothing. Silently

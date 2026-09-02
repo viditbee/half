@@ -56,7 +56,17 @@ from typing import Final
 #: from a loop having *moved* (story 8 refused to conflate them). A build that
 #: could not see one would fold every main to *never raised*: the per-loop
 #: nagging bound would compute *may raise* for every loop on every pass.
-SCHEMA_VERSION: Final[int] = 7
+#:
+#: v8 added ``asked`` (story 5b), and the bump is not optional for a reason
+#: none of the seven before it had. Every other op says something the *fold*
+#: materializes, so an older build meeting one would silently drop a field. An
+#: ``asked`` record is different: it is one half of a quantity computed
+#: directly from the log — the trust balance, which is ``touch`` records that
+#: delivered minus ``asked`` records that spent — and a build that could not
+#: see one would count only the earning half. That is not a missing field. It
+#: is a Half whose balance never falls however many questions it asks, which is
+#: the currency's one rule inverted, silently, on a rollback.
+SCHEMA_VERSION: Final[int] = 8
 
 
 class Op(StrEnum):
@@ -157,6 +167,31 @@ class Op(StrEnum):
     #: own contact recorded as the main's progress, which is the whole
     #: distinction the op exists to keep.
     TOUCH = "touch"
+    #: Half spent a favour by asking a clarifying question (CAP-4, story 5b).
+    #:
+    #: **The op exists because the balance is computed, not counted.** A trust
+    #: balance is delivered favours minus questions asked, and story 4 (salience)
+    #: and story 9c (decay) both refused to keep such a quantity as a stored
+    #: number that a code path increments: materialized state would then be a
+    #: function of which paths ran rather than of the log, and two builds folding
+    #: one log would disagree (AD-30). Earning already has a record — a ``touch``
+    #: that marks a day and says a message was sent — so spending needed one too,
+    #: and *this is that record*. It is not a counter and there is nowhere here to
+    #: keep one: it says that one question was asked, once, and the arithmetic is
+    #: done by whoever reads the log (``half.trust.balance``).
+    #:
+    #: **Deliberately not materialized by the fold**, which is the one thing about
+    #: this op that reads like an omission and is not. See the ``Op.ASKED`` case in
+    #: ``half.store.fold`` for why a derived count would be exactly the counter
+    #: AD-30 forbids, and why the log — the only authority (AD-3) — is what the
+    #: balance is read from instead.
+    #:
+    #: **Content-free** (AD-22). The record carries the question's opaque id and
+    #: the id of the belief whose ambiguity it would resolve — never the question's
+    #: wording, never the claim, never the main's answer. What Half *asked* is
+    #: text, and text about a person's own uncertainty is the last thing that
+    #: belongs in an append-only log.
+    ASKED = "asked"
 
 
 #: The two states a ``crisis`` record may carry. Named here, beside the op, so

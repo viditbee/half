@@ -25,6 +25,7 @@ from half.errors import (
     ScheduleError,
     TensionError,
     TouchError,
+    TrustError,
     UnknownOpError,
 )
 from half.loops.ledger import LOOP
@@ -276,6 +277,38 @@ TOUCH_FIELDS: Final[frozenset[str]] = frozenset(
     {LOOP, ORIGIN_KIND, ORIGIN_ID, LOCAL_DAY, SENT}
 )
 
+#: What an ``asked`` record carries: the question Half spent a favour on, and
+#: the belief whose ambiguity it would resolve (CAP-4, story 5b).
+#:
+#: Named here for the reason ``ORIGIN_KIND`` and ``LOCAL_DAY`` are: the layer
+#: that owns record shapes owns the spelling, and ``half.trust`` — which sits
+#: above the ladder and the store — imports them rather than declaring a second
+#: copy. A second spelling of ``question`` is a spend the balance cannot see,
+#: and a spend the balance cannot see is a favour that buys two questions.
+#:
+#: **Two ids and nothing else.** ``ABOUT`` is required rather than optional for
+#: the reason a touch's origin is required: a spend that cannot say what it was
+#: about is a permission consumed with no trace of what for, and the log is
+#: append-only. Neither field is text a main would recognise — the question's
+#: wording is composed at delivery (story 11) and is never durable (AD-22).
+QUESTION: Final[str] = "question"
+ABOUT: Final[str] = "about"
+
+#: Everything an ``asked`` record may carry, beside the reserved four. An
+#: **allowlist**, for the reason ``TOUCH_FIELDS`` and ``TENSION_FIELDS`` are
+#: allowlists: every denylist this codebase has shipped was walked around, and
+#: this is the record that sits closest to the one thing it must never contain.
+#: A ``claim``, a ``text`` or an ``answer`` riding in beside the ids would be
+#: the main's own uncertainty made permanent, which is AD-22 at the one layer
+#: where it cannot be taken back.
+#:
+#: ``tombstone`` is deliberately **absent**, exactly as it is from
+#: ``TOUCH_FIELDS`` and for the same finding: listing it let a caller write
+#: ``tombstone=True`` on a live record through ``Store.record``, producing a
+#: durable line the fold skips. ``BeliefLog.expunge_bodies`` builds its stub and
+#: appends the line itself, without passing through this gate.
+ASKED_FIELDS: Final[frozenset[str]] = frozenset({QUESTION, ABOUT})
+
 
 def is_civil_day(value: object) -> bool:
     """Whether ``value`` is a day marker this build can read. Never raises.
@@ -511,6 +544,14 @@ _TYPED_FIELDS: Final[dict[str, type | tuple[type, ...]]] = {
     ORIGIN_ID: str,
     LOCAL_DAY: str,
     SENT: bool,
+    # The spend half of the trust balance (CAP-4, story 5b). Validated at the
+    # append for the reason every field above is, and here the reason is the
+    # currency's own rule: the balance is *computed from the log*, so a
+    # ``question`` stored as a number is a spend no build can ever count, and a
+    # spend that cannot be counted is a favour that buys a second question for
+    # ever.
+    QUESTION: str,
+    ABOUT: str,
     # The tension ledger (CAP-7). ``between`` names the two entries that
     # disagree, validated at the append for the reason every field above is:
     # the log is append-only, so a ``between`` stored as a bare string is a
@@ -807,6 +848,60 @@ def validate_touch_fields(fields: Mapping[str, Any]) -> None:
         )
 
 
+def validate_asked_fields(fields: Mapping[str, Any]) -> None:
+    """Reject a spend the balance could never count back (CAP-4, story 5b).
+
+    **Write strict, read tolerant**, on the same terms as a touch, a loop
+    transition, a schedule record and a tension — and here the strictness
+    protects the one rule the whole currency rests on: *the favour buys the
+    question*, and the same favour cannot buy two.
+
+    * ``question`` — **required**, a non-empty id. The balance is computed from
+      the log rather than counted into a field, so a spend nothing can read is
+      a question that was asked and never paid for. The log is append-only, so
+      that would be permanent.
+    * ``about`` — **required**, the belief whose ambiguity this question would
+      resolve. Required rather than encouraged for the reason a touch's origin
+      is required: a permission consumed with no trace of what it was consumed
+      for is exactly the record a later reviewer cannot audit, and there is no
+      branch here that supplies a missing one.
+    * **nothing outside ``ASKED_FIELDS``.** The allowlist is the point — see
+      that constant, including why ``tombstone`` is not in it.
+
+    Neither field's *value* is quoted back in a refusal. A question is about a
+    main's own life, and an exception message reaches a log line through every
+    handler that formats one (AD-22); the type is enough to fix the caller.
+
+    The read direction is deliberately looser — see ``half.store.fold``, which
+    is fatal only on a record naming no question — so a log written by a later
+    build costs one spend rather than taking a main's whole store down.
+    """
+    stray = sorted(fields.keys() - ASKED_FIELDS)
+    if stray:
+        raise TrustError(
+            f"an {Op.ASKED.value} record may not carry {stray}: a spend is the "
+            f"question's id and the belief it was about. A claim, a wording or "
+            f"an answer written here is the main's own uncertainty made "
+            f"permanent, and no correction takes it back"
+        )
+    question = fields.get(QUESTION)
+    if not isinstance(question, str) or not question.strip():
+        raise TrustError(
+            f"an {Op.ASKED.value} record must name the question it spent a "
+            f"favour on in {QUESTION!r} as a non-empty id, got "
+            f"{type(question).__name__}; the balance is computed from the log, "
+            f"so a spend nothing can read is a question that was never paid for"
+        )
+    about = fields.get(ABOUT)
+    if not isinstance(about, str) or not about.strip():
+        raise TrustError(
+            f"an {Op.ASKED.value} record must name the belief it was about in "
+            f"{ABOUT!r} as a non-empty id, got {type(about).__name__}; a "
+            f"permission consumed with no trace of what it was consumed for is "
+            f"a spend nobody can audit, and the log is append-only"
+        )
+
+
 def _type_names(expected: type | tuple[type, ...]) -> str:
     if isinstance(expected, tuple):
         return " or ".join(t.__name__ for t in expected)
@@ -917,6 +1012,11 @@ def validate_fields(fields: dict[str, Any], *, op: Op | None = None) -> None:
         # cites nothing must refuse as a ``TouchError`` rather than as the
         # generic type check's bare ``ValueError``.
         validate_touch_fields(fields)
+    if op is Op.ASKED:
+        # First, for the reason the four gates above are first: a spend that
+        # names no question must refuse as a ``TrustError`` rather than as the
+        # generic type check's bare ``ValueError``.
+        validate_asked_fields(fields)
     for name, expected in _TYPED_FIELDS.items():
         if name not in fields or fields[name] is None:
             continue

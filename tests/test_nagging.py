@@ -45,7 +45,7 @@ from half.loops.timescale import (
     Timescale,
 )
 from half.schedule.clock import stamp
-from half.store.ops import TOUCH_ORIGINS, TOUCH_TENSION, Op
+from half.store.ops import SCHEMA_VERSION, TOUCH_ORIGINS, TOUCH_TENSION, Op
 from half.store.records import (
     LOCAL_DAY,
     LOOP,
@@ -474,8 +474,14 @@ def test_erasing_a_loop_erases_every_raise_on_it_and_leaves_no_slug(store):
     assert state.touches == {} and state.spoke is None
     assert "sell-the-flat" in state.expunged_loops
     bodies = [r.data for r in store.log if r.op is Op.TOUCH]
+    # ``v`` is read from the vocabulary rather than written as a literal: the
+    # schema version moves whenever an op is added (story 5b added ``asked``),
+    # and a literal here would make an unrelated bump look like an erasure that
+    # stopped erasing. What this case pins is the *body* — the slug, the origin
+    # and the stamp are gone and the tombstone is not.
     assert bodies == [{"id": "tc_2026-08-02T03:00Z", "op": "touch",
-                       "t": "2026-08-02T03:00Z", "tombstone": True, "v": 7}]
+                       "t": "2026-08-02T03:00Z", "tombstone": True,
+                       "v": SCHEMA_VERSION}]
 
 
 def test_the_bare_expunge_op_also_erases_the_raises(store):

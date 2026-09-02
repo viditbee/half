@@ -244,6 +244,27 @@ def tier_change_log(tmp_path):
                      "swim-weekly",
                      origin=touch_module.Origin(kind=TOUCH_TENSION, id="x_1"),
                  ))
+        # The spend half of the trust balance (story 5b, CAP-4). Here for the
+        # reason every record above is — the replay test is what proves a new op
+        # folds, round-trips through SQLite and reproduces byte-identically —
+        # and with one difference worth stating, because it looks like an
+        # omission and is not: **an ``asked`` record materializes nothing.**
+        #
+        # The balance is *computed from the log* rather than counted into a
+        # field, so there is deliberately no derived state for this record to
+        # produce. What this fixture proves is therefore the other half: that a
+        # spend folds without raising, survives the round-trip, and does not
+        # disturb anything else — and that the balance read off this log is the
+        # same before and after a rebuild, which is asserted in
+        # ``tests/test_replay.py``. A counter on ``State`` would round-trip
+        # perfectly and still be wrong; nothing here can hold one.
+        #
+        # Two spends and two delivered favours, so the arithmetic in the replay
+        # assertion is not zero on both sides.
+        s.record(Op.ASKED, "qa_2026-08-16T09:00Z", "2026-08-16T09:00Z",
+                 question="q_farmland_intent", about="b_2")
+        s.record(Op.ASKED, "qa_2026-08-19T09:00Z", "2026-08-19T09:00Z",
+                 question="q_swim_register", about="b_1")
         s.record(Op.ASSERT, "p_tiered", "2026-08-21T18:31Z",
                  **safetyplan.held_fields([
                      "When I start pacing at two in the morning, that is the sign.",

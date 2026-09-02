@@ -182,6 +182,33 @@ class TouchError(HalfError, ValueError):
     store operation raises a non-``HalfError``* still holds.
     """
 
+class TrustError(HalfError, ValueError):
+    """A spend of the trust balance the append gate refuses (CAP-4, story 5b).
+
+    Raised by ``records.validate_asked_fields`` for an ``asked`` record naming
+    no question or no subject, and by ``ActorRegistry.note_ask`` for a spend
+    whose stamp nothing can read.
+
+    Loud on purpose, on the same terms as ``TouchError`` and for a sharper
+    version of the same reason. The balance is **computed from the log**, not
+    kept in a counter, so a spend the log cannot express is not a missing field
+    — it is a question that was asked and never paid for, permanently, in a
+    ledger nothing can correct. *The favour buys the question* is a rule about
+    a number nobody stores; the only way to keep it true is to refuse a record
+    that would make the number wrong.
+
+    The *reading* half never raises. Computing a balance happens on the turn's
+    own path, and an exception there would cost the main their reply over an
+    arithmetic question whose safe answer — ask nothing — already exists.
+
+    A ``ValueError`` as well, for the reason ``LoopError``, ``ScheduleError``,
+    ``TensionError`` and ``TouchError`` are: the conventions say no public store
+    operation raises a non-``HalfError``, while ``validate_fields`` has raised a
+    bare ``ValueError`` for every malformed field since story 1, and one refusal
+    must answer to both names rather than one of them silently winning.
+    """
+
+
 class RetrievalError(HalfError):
     """A fault in the retrieval layer (CAP-9)."""
 

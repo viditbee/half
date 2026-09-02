@@ -28,7 +28,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from half.errors import StoreError, TensionError, TouchError
+from half.errors import StoreError, TensionError, TouchError, TrustError
 from half.governance.aftercare import FLOOR_DAYS, answered, at_least, entered_at
 from half.governance.ladder import (
     TOP,
@@ -51,7 +51,10 @@ from half.store.ops import (
     Op,
 )
 from half.store.records import (
+    ABOUT,
+    ASKED_FIELDS,
     NEXT_PASS_AT,
+    QUESTION,
     TOUCH_FIELDS,
     handoff_projection,
     handoff_record,
@@ -61,6 +64,7 @@ from half.store.records import (
     zone_projection,
     zone_record,
 )
+from half.store.fold import fold as fold_records
 from half.store.store import Store
 from half.surface.touch import spoken_on
 from half.surface.view import (
@@ -71,6 +75,14 @@ from half.surface.view import (
     narrowed,
 )
 from half.tensions.states import STATE as TENSION_STATE
+from half.trust.balance import balance as trust_balance
+from half.trust.unasked import (
+    ASK_CRISIS,
+    ASK_RECORDED,
+    ASK_UNAFFORDABLE,
+    TrustView,
+    narrowed_for_trust,
+)
 
 #: A main_id becomes a directory name, so it is validated before it can reach
 #: the filesystem. It arrives from configuration, which is operator input, and
@@ -848,6 +860,111 @@ class ActorRegistry:
                     ):
                         raise
             return CLAIMED
+
+    # -- the unasked queue's doors (CAP-4, story 5b) --------------------------
+    #
+    # Two more, and they follow ``surface_view`` / ``claim_day`` exactly: one
+    # narrowed read under the mutex, and one serialized check-and-append that
+    # goes through it. The queue is consulted on the main's own turn, so it
+    # needs the shape the surface needed — and it must not get a second,
+    # private route to a main's log, because the single writer is what lets the
+    # store skip a journal (AD-1).
+
+    async def trust_view(self, main_id: str) -> TrustView:
+        """This main's state, **narrowed** to what the unasked queue may see.
+
+        **Narrowed, not the fold** — story 10's lesson, applied a second time.
+        Handing back ``State`` would put the crisis, aftercare and schedule
+        records inside reach of the queue, and ``if state.aftercare is not
+        None: return ()`` is one line, needs no new import, and would leave a
+        main who never gets asked anything again with the whole suite green.
+        ``half.trust.unasked.VISIBLE`` is the allowlist; what is not on it is
+        unreachable rather than merely unread.
+
+        **The balance is folded out of the log, not out of the fold.** Two
+        passes over one read: ``fold`` builds the beliefs and loops, and
+        ``half.trust.balance`` counts delivered favours against questions
+        asked. That is the whole of AD-30 for this story — there is no counter
+        on ``State`` to go stale, and none in SQLite either, so a rebuilt store
+        and a fresh one give the same number because neither is consulted.
+
+        **From the log rather than from SQLite**, for the reason
+        ``surface_view`` reads from the log: ``Store.append`` writes the line
+        and *then* rebuilds, so a crash between the two leaves the derived view
+        behind — and a balance read from a stale view is a favour spent twice.
+        The ceiling comes out of the same records for the same reason: a cap
+        read from a stale view is a capped main reading as uncapped, which is
+        the one window AD-28 exists to close.
+
+        Held only for the read. The spend is recorded afterwards, under its own
+        acquire, which re-reads precisely because this one was released.
+        """
+        async with self.acquire(main_id) as actor:
+            # One read of the log, two folds over it. Materialized rather than
+            # streamed twice because the log is read from disk: iterating it
+            # twice would be two reads that a concurrent append could land
+            # between, and the beliefs and the balance would then describe two
+            # different moments.
+            records = list(actor.store.log)
+            state = fold_records(records)
+            return narrowed_for_trust(
+                state, Ceiling(state.ceiling), balance=trust_balance(records)
+            )
+
+    async def note_ask(
+        self, main_id: str, *, t: str, question: str, about: str
+    ) -> str:
+        """Spend one favour on ``question``, or refuse. One of ``ASK_OUTCOMES``.
+
+        **One serialized operation, and that is the point** — the same shape
+        ``claim_day`` has, for the same reason and against the same failure.
+        The check and the append happen inside a single ``acquire``: a caller
+        that read the balance under one mutex and appended under a later one
+        would let two overlapping turns both find the favour unspent and both
+        ask, which is *the same favour buying two questions* arriving through
+        concurrency rather than through arithmetic. Nothing else in this class
+        has that shape, because nothing else in this class spends a currency.
+
+        **The mode is re-asserted here**, not only where the question was
+        chosen. A main who enters crisis while their question is being composed
+        must not receive it, and this is the last point at which that is still
+        true — the currency is void in the mode (constitution).
+
+        **The balance is re-read from the log**, for the reason ``claim_day``
+        re-reads the day marker from the log: a derived view that lags a crash
+        would report a favour as unspent.
+
+        **Refused rather than recorded when it cannot be paid for.** The
+        alternative — append anyway and let the balance go negative — would
+        make *the favour buys the question* a thing the log merely reports on
+        rather than a thing that is true. The caller's remedy is to ask
+        nothing, which is a first-class outcome (AD-27).
+        """
+        if civil.instant(t) is None:
+            # Refused before the append, on the same terms as a raise whose
+            # stamp nothing can read: the log is append-only, and a spend
+            # stamped with a value no build can order is one nothing can ever
+            # place against the favour that paid for it.
+            raise TrustError(
+                f"note_ask: {t!r} is not an instant this build can read; a "
+                f"spend with no readable time cannot be placed against the "
+                f"favour that paid for it"
+            )
+        fields = {QUESTION: question, ABOUT: about}
+        stray = sorted(set(fields) - ASKED_FIELDS)
+        if stray:  # pragma: no cover - the dict above is built from the set
+            raise TrustError(
+                f"a spend carries the question's id and what it was about; "
+                f"refusing {stray}"
+            )
+        async with self.acquire(main_id) as actor:
+            records = list(actor.store.log)
+            if mode_is_open(fold_records(records).crisis):
+                return ASK_CRISIS
+            if not trust_balance(records).spendable:
+                return ASK_UNAFFORDABLE
+            actor.store.record(Op.ASKED, f"qa_{t}", t, **fields)
+            return ASK_RECORDED
 
     async def suspend_for_crisis(
         self, main_id: str, *, t: str, tier: str, score: int, fresh: bool = True

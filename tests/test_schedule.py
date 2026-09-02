@@ -1074,18 +1074,22 @@ def test_the_schema_version_moved_with_the_op(store):
     main as never scheduled.
 
     The literal, because the incidental pin — a ``"v":5`` inside a JSON string
-    in another case — is not the deliberate one.
+    in another case — is not the deliberate one. It moves when an op is added
+    and only then: ``schedule`` took it to 5, ``touch`` to 6, story 10's review
+    reshaped ``touch`` to 7, and ``asked`` took it to 8 (story 5b). Each step is
+    a line in this test, which is the point of pinning it at all.
     """
     from half.errors import SchemaVersionError
     from half.store.records import decode
 
-    assert SCHEMA_VERSION == 7
+    assert SCHEMA_VERSION == 8
     store.record(Op.SCHEDULE, "sc_1", "2026-09-01T12:00Z",
                  next_pass_at="2026-09-02T03:41:00Z", zone="UTC", told_zone=False)
-    assert store.fold().schedule["v"] == 7
+    assert store.fold().schedule["v"] == SCHEMA_VERSION
     with pytest.raises(SchemaVersionError):
         decode('{"t":"2026-09-01T12:00Z","op":"schedule","id":"sc_1",'
-               '"next_pass_at":"2026-09-02T03:00:00Z","zone":"UTC","v":8}',
+               '"next_pass_at":"2026-09-02T03:00:00Z","zone":"UTC","v":%d}'
+               % (SCHEMA_VERSION + 1),
                path="t", lineno=1)
 
 

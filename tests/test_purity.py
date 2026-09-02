@@ -85,6 +85,25 @@ PURE_MODULES = (
     # a view that read a clock, an environment variable or a store of its own
     # would be a second, un-replayable answer to *what may this main be told*.
     "half/surface/view.py",
+    # The trust currency and the unasked queue (CAP-4, story 5b). The balance is
+    # *delivered favours minus questions asked*, folded out of the log — so a
+    # clock, an environment variable or a store of its own reaching any of these
+    # would be a number two builds reading one log disagree about, and the whole
+    # reason it is computed rather than counted is that two builds folding one
+    # log must agree.
+    #
+    # ``unasked.py`` is here even though it carries a *composition*
+    # (``UnaskedQueue``) alongside the pure gates — unlike
+    # ``half/surface/morning.py``, which is excluded. The difference is that
+    # every door it uses is injected: it opens no store, reads no channel and
+    # takes no clock, so it genuinely imports nothing impure, and
+    # ``tests/test_unasked.py`` asserts the narrow door separately. None of the
+    # gates is a function of time at all, which is the sharpest form of this
+    # rule: a verdict here changes when the log or the conversation changes and
+    # at no other moment.
+    "half/trust/balance.py",
+    "half/trust/stakes.py",
+    "half/trust/unasked.py",
 )
 
 #: **``half/schedule/due.py`` is deliberately not in that list**, and the reason

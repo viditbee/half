@@ -79,6 +79,15 @@ def test_op_vocabulary_is_closed():
         # answer *may raise* on every pass for ever, and the one-a-day rule
         # would read every day as one on which nothing had been said.
         "touch",
+        # `asked` joined in story 5b, with the schema version bumped again —
+        # and for a reason none of the seven above it had. Every other op says
+        # something the fold materializes, so an older build meeting one drops
+        # a field. This one is half of a quantity computed straight from the
+        # log: the trust balance is delivered favours minus questions asked,
+        # and a build that could not see a spend would count only the earning
+        # half. That is a Half whose balance never falls however many questions
+        # it asks — the currency's one rule inverted, silently, by a rollback.
+        "asked",
     }
 
 
