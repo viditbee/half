@@ -57,12 +57,12 @@ from typing import Final
 from half.civil import DAY
 from half.loops.timescale import moment
 from half.store.ops import Op
-from half.store.records import ABOUT, LEDGER, QUESTION, STATED, Record
+from half.store.records import LEDGER, QUESTION, STATED, Record
 
 __all__ = [
     "ANSWERED", "Answer", "NEVER_ASKED", "NO_PERIOD", "REASONS", "Reask",
-    "TOO_SOON", "UNREADABLE_ASK", "UNREADABLE_NOW", "about_of_record",
-    "history", "reaskable", "responsive", "spend_of",
+    "TOO_SOON", "UNREADABLE_ASK", "UNREADABLE_NOW", "history", "reaskable",
+    "responsive", "spend_of",
 ]
 
 #: The question was put and the main has said something since. Never put again.
@@ -164,17 +164,6 @@ def spend_of(record: Record | None) -> str:
     if not isinstance(data, Mapping):
         return ""
     found = data.get(QUESTION)
-    return found.strip() if isinstance(found, str) else ""
-
-
-def about_of_record(record: Record | None) -> str:
-    """The belief an ``asked`` record was about, or ``""``. Never raises."""
-    if not isinstance(record, Record) or record.op is not Op.ASKED:
-        return ""
-    data = record.data
-    if not isinstance(data, Mapping):
-        return ""
-    found = data.get(ABOUT)
     return found.strip() if isinstance(found, str) else ""
 
 

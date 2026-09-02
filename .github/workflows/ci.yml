@@ -933,16 +933,16 @@ jobs:
         #
         # **A floor on a superset protects nothing small**, which is why there
         # are five sub-gates below rather than a comfortable margin here. This
-        # step's own margin is sized against the sub-gates: 276 selected, 266
+        # step's own margin is sized against the sub-gates: 275 selected, 265
         # required, so the margin is 10 — smaller than the smallest chunk any
         # sub-gate exclusively owns, and far smaller than any sub-gate entire.
         # Deleting a sub-gate's content drops this step beneath its floor *and*
         # fails that sub-gate.
         #
         # **The floor moves with the count so the margin does not grow.** Story
-        # 11 added 94 cases — the bought question is the first thing in the
+        # 11 added 93 cases — the bought question is the first thing in the
         # product that actually spends a favour — so the floor moves from 167 to
-        # 276 - 10 = 266. Leaving it at 167 would have widened the margin to a
+        # 275 - 10 = 265. Leaving it at 167 would have widened the margin to a
         # hundred and two, which is room for every case this story wrote. (The
         # count named in the previous revision of this comment, 177, was stale
         # against a measured 182; the numbers here are measured.)
@@ -951,7 +951,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap4 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-4 cases collected: $collected"
-          if [ "$collected" -lt 266 ]; then
+          if [ "$collected" -lt 265 ]; then
             echo "::error::the CAP-4 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -1136,7 +1136,7 @@ jobs:
         #   it was reviewed with, compared signature for signature against the
         #   registry that satisfies the engine's own protocol.
         #
-        # **Margin zero: 94 selected, 94 required.** Sized against the subset it
+        # **Margin zero: 93 selected, 93 required.** Sized against the subset it
         # protects rather than against a total, which is the correction review
         # forced three stories running — and here every case is the only one
         # asserting its rule, so there is nothing to prune. Story 5b's own
@@ -1149,7 +1149,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap4_bought -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-4 bought-question cases collected: $collected"
-          if [ "$collected" -lt 94 ]; then
+          if [ "$collected" -lt 93 ]; then
             echo "::error::the CAP-4 bought gate collected $collected cases; the questions channel may be free again"
             exit 1
           fi

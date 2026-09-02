@@ -500,10 +500,13 @@ class MorningSurface:
         #    the last moment costs the question and not the morning. Both are
         #    pure functions of the same view (AD-30), so this is arithmetic
         #    rather than a second decision.
-        unbought = self._speech(view, choice=choice, now=now)
         text = self._speech(
             view, choice=choice, now=now,
             bought=offer.question.about if offer is not None else None,
+        )
+        unbought = (
+            self._speech(view, choice=choice, now=now) if offer is not None
+            else text
         )
         if not text:
             return Silence(NOTHING_MAY_BE_SAID)

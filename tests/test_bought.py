@@ -38,7 +38,6 @@ from __future__ import annotations
 import ast
 import asyncio
 import inspect
-import pathlib
 from pathlib import Path
 
 import pytest
@@ -1187,23 +1186,3 @@ def test_the_questions_package_writes_through_no_store_of_its_own():
         if name.startswith(("half.store.store", "half.store.log", "half.actor"))
     )
     assert not forbidden, f"the questions package opens a store: {forbidden}"
-
-
-def test_pathlib_is_not_reachable_from_the_pure_halves():
-    """A guard for the two pure modules that ``tests/test_purity.py`` also
-    covers, kept here so a reader of this file sees the boundary."""
-    assert pathlib is not None  # the import above is the test's own, not half's
-    for name in ("mint", "answered"):
-        source = (ROOT / "half" / "questions" / f"{name}.py").read_text("utf-8")
-        tree = ast.parse(source)
-        roots = {
-            alias.name.split(".")[0]
-            for node in ast.walk(tree) if isinstance(node, ast.Import)
-            for alias in node.names
-        } | {
-            node.module.split(".")[0]
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module
-        }
-        assert roots <= {"__future__", "collections", "dataclasses", "typing",
-                         "half"}, f"{name}.py imports {sorted(roots)}"
