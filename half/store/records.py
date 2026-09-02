@@ -1065,7 +1065,7 @@ def validate_correction_fields(fields: Mapping[str, Any], *, op: Op) -> None:
     if instant(fields[stamp]) is None:
         raise CorrectionError(
             f"field {stamp!r} must be a UTC stamp this build can read "
-            f"(YYYY-MM-DD or YYYY-MM-DDThh:mm[:ss]Z), got "
+            f"(YYYY-MM-DDThh:mm[:ss]Z), got "
             f"{type(fields[stamp]).__name__}; an attribution nothing can parse "
             f"reads as present and says nothing, which silently takes the "
             f"not-yet-known state away from a main who is owed it"

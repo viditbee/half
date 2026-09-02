@@ -485,12 +485,20 @@ jobs:
         # silently dropping every later transition on it for ever. A wanting
         # that can never advance, be achieved, or change at all has been demoted
         # under another name.
+        #
+        # **Story 12 added four, and the floor moved from 9 to 15 with it** —
+        # eleven that were already here plus one per correction shape reaching
+        # the fold from the *inbound path*, which is a route that did not exist
+        # before story 12. The cases above prove the firewall against a raw op;
+        # these prove it against a main typing "that's wrong" into a message,
+        # which is the only way a correction will ever actually arrive. Margin
+        # is zero now where it was two, so removing any of the fifteen fails.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap6_firewall -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-6 firewall cases collected: $collected"
-          if [ "$collected" -lt 9 ]; then
+          if [ "$collected" -lt 15 ]; then
             echo "::error::the firewall gate collected $collected cases; a loop may now be refutable"
             exit 1
           fi
@@ -792,6 +800,151 @@ jobs:
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap7_neutrality
+
+      - name: 'CAP-11: a correction removes the belief, and never on inference alone'
+        # The gate for the capability that lets a main disagree with Half. The
+        # ops have been in the closed vocabulary since story 1 and the fold has
+        # removed a belief for any of them since story 1 — and **nothing on the
+        # inbound path appended one**, so every rule below was uncovered until
+        # story 12 and would go quiet the same way if it were removed.
+        #
+        # Marker-selected rather than file-selected, for the reason every other
+        # gate here is: it must not go green because another step happened to
+        # run one of the same files. The cases live in tests/test_correction.py,
+        # tests/test_attribution.py and tests/test_replay.py.
+        #
+        # What it covers, and each of these is a rule with no second case:
+        #
+        #   that an explicit correction **appends and removes** — revise with
+        #   the system-was-wrong stamp, retract with the world-changed one, and
+        #   the third state with neither, asserted as two absences so that a
+        #   build defaulting in either direction fails and one recording both
+        #   fails twice;
+        #   that the attribution is read off the **stamps and never the op**,
+        #   swept over every correction op crossed with every stamp
+        #   combination — the crossing is the boundary, and without it a fixture
+        #   where the two always agree would pass on an implementation reading
+        #   either;
+        #   that a record may not carry both stamps, a stamp on an op that
+        #   contradicts it, a stamp on an erasure, or a stamp nothing can parse
+        #   — each refused before it is durable, because the log is append-only;
+        #   and that a correction with **no** stamp is perfectly valid, which is
+        #   the case an over-strict gate would break;
+        #   that a message only the classifier reads as a correction produces a
+        #   **candidate and no append**, asserted three ways: the function that
+        #   builds removals raises on one, the widening module can name no op
+        #   and no way to append, and a turn end to end leaves the log empty of
+        #   corrections;
+        #   that nine ways of not getting a label — four failures, a raise,
+        #   nothing, prose, an unknown label, and a holder past its bound —
+        #   each leave the table's answer standing and invent no correction;
+        #   that a widening with no holder, and a runtime with none at all,
+        #   still recognise and act on every explicit correction, because the
+        #   table is offline and the model only widens;
+        #   that the wanting stands when its only support is corrected, over all
+        #   four correction shapes, through the route this story adds;
+        #   that a correction inside the crisis mode is not processed;
+        #   that a correction turn spends **no favour and attaches no bought
+        #   question** — with a companion case proving the same fixture still
+        #   buys one on an ordinary turn, so the rule is not passing because
+        #   nobody is ever asked anything;
+        #   that what Half shows is the claim **as recorded**, byte for byte,
+        #   against a claim carrying punctuation and a second script;
+        #   that a removal happens in eight scripts and no table or fixture
+        #   makes one language the default, with the sweep's own coverage
+        #   asserted so that narrowing it fails rather than passing;
+        #   that the table fires on no ordinary message, including two negations
+        #   about something other than Half;
+        #   and that all three attributions read the same after the derived view
+        #   is deleted and replayed (AD-4).
+        #
+        # **Margin zero: 163 selected, 163 required.** Sized against the subset
+        # it protects rather than against a total, and every case here is the
+        # only one asserting its rule.
+        #
+        # Two blocks of it are sweeps rather than single cases — twelve
+        # op-by-stamp crossings and eight scripts — and that is fine *here* in a
+        # way it was not in the AD-18 and AD-28 gates, because this gate is
+        # about corrections: a floor dominated by corrections in many scripts
+        # reports what it protects.
+        #
+        # **The number is file-coupled** for tests/test_correction.py and
+        # tests/test_attribution.py, which carry the marker at module scope
+        # because every case in them is a story-12 rule; tests/test_replay.py
+        # marks the one case. Adding a case to any of them is therefore a
+        # deliberate edit to this number, which is what a zero margin means.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap11 -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-11 correction cases collected: $collected"
+          if [ "$collected" -lt 163 ]; then
+            echo "::error::the CAP-11 gate collected $collected cases; a main may not be able to tell Half it is wrong"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap11
+
+      - name: 'CAP-11: the structural rules correction rests on'
+        # A second gate over a **subset** of the one above, for the reason
+        # ``cap4_structure``, ``cap6_structure`` and ``cap8_structure`` exist: a
+        # floor on the superset cannot protect a handful of single cases inside
+        # it, and every case here is the only one asserting its rule.
+        #
+        # What it covers, and none of it is behavioural:
+        #
+        #   that ``apply.plan`` raises on an inferred correction the main has
+        #   not answered, for **every** meaning, so a new inference route cannot
+        #   pick the one that was left open;
+        #   that the widening module can name no op, no store and no way to
+        #   append — an AST scan, because *"it does not append today"* decays
+        #   the first time somebody reaches for one and the reach is invisible;
+        #   that no label may do more than ask, that the enum has exactly two
+        #   members, and that a fallback which asks is unrepresentable;
+        #   that a holder which is not a classifier, is callable, or can also
+        #   generate is refused — an allowlist, because the denylist this
+        #   pattern replaced let ``classify`` plus ``chat`` walk through;
+        #   that the widening is sealed, so a wider holder cannot be assigned
+        #   after the check;
+        #   that only the message leaves the machine — no claim, no belief id,
+        #   no main_id in the payload;
+        #   that every string constant in the module that builds what Half says
+        #   is punctuation, a field name or an enum value, so the op's own name
+        #   is the whole vocabulary and nothing is composed;
+        #   that the proposal and the removal are **one rendering read two
+        #   ways**, differing by one character;
+        #   that the package reaches no channel, no ``half.crisis`` — the
+        #   spine's layer rule, and the reason there are two tokenizers in the
+        #   tree — and no clock;
+        #   that exactly one module in it may name a model, may name only the
+        #   port, and that the rest of ``UNREACHABLE`` still stands over the
+        #   whole package;
+        #   that ``attribution_of`` names no op inside its own body, with a
+        #   bypass case run against the mutation it forbids — the plausible one,
+        #   falling back to the op when no stamp is there;
+        #   that graphiti's other two timestamps are fields of no record;
+        #   that the bound and both caps are the ones story 6d settled;
+        #   and that the widening reaches the shipped product, asserted **by
+        #   value** off the composition root, because story 6d's identical claim
+        #   once passed with the value set to ``None``.
+        #
+        # 19 selected, 19 required. Zero margin: every case is a rule.
+        #
+        # *"The package opens no store of its own"* is deliberately **not** here.
+        # It is asserted in tests/test_unasked.py, where one predicate sweeps
+        # every package the rule covers, and it is counted by the CAP-4
+        # structural gate that has always owned it. A copy here would be a
+        # weaker copy: story 11 shipped exactly such a copy and both of story
+        # 5b's known bypasses walked past it.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap11_structure -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-11 structural cases collected: $collected"
+          if [ "$collected" -lt 19 ]; then
+            echo "::error::the CAP-11 structure gate collected $collected cases; a rule with one case has lost it"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap11_structure
 
       - name: 'CAP-8: the morning surface — one a day, traceable, or silence'
         # Nothing else in the product speaks first, so every rule here is one
@@ -1243,12 +1396,22 @@ jobs:
         # - because story 11's first build copied this guard into its own file
         # as a string-prefix denylist and both of 5b's known bypasses walked
         # past the copy. A predicate worth having twice is worth having once.
+        #
+        # **Story 12 added two, and the floor moved from 35 to 37 with it.**
+        # half/correction joined the same two parametrized sweeps rather than
+        # carrying a third copy of them, with an **empty** door - it has no
+        # ledger at all, because its append happens where the main's mutex is
+        # already held - and with the model root lifted from the outward rule
+        # and only that root, because its recall instrument is a model by design
+        # (CAP-11). Both cases assert the rule this gate has always protected,
+        # for a third package, so the two are coverage of it rather than a
+        # different story's cases parked under this name.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap4_structure -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-4 structural cases collected: $collected"
-          if [ "$collected" -lt 35 ]; then
+          if [ "$collected" -lt 37 ]; then
             echo "::error::the CAP-4 structure gate collected $collected cases; a rule with one case has lost it"
             exit 1
           fi

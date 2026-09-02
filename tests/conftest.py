@@ -11,6 +11,7 @@ from half.governance import ladder
 from half.governance.ladder import License
 from half.loops import ledger
 from half.store.ops import TOUCH_TENSION, Op
+from half.store.records import EXPIRED_AT, INVALID_AT
 from half.surface import touch as touch_module
 from half.store.store import Store
 
@@ -278,6 +279,41 @@ def tier_change_log(tmp_path):
                  question="q_farmland_intent", about="b_2")
         s.record(Op.ASKED, "qa_2026-08-19T09:00Z", "2026-08-19T09:00Z",
                  question="q_swim_register", about="b_1")
+        # Corrections carrying an attribution (CAP-11, story 12). Here for the
+        # reason every record above is — the replay test is what proves a new
+        # field folds, round-trips through SQLite and reproduces
+        # byte-identically — and with the difference that looks like an
+        # omission and is not: **an attribution materializes nothing.**
+        #
+        # It is folded from the log, like the trust balance, because the belief
+        # it describes has *left* the fold and there is nowhere in the derived
+        # view for a cause to hang on. So what this fixture proves is the other
+        # half: that the two stamps survive a rebuild verbatim, and that the
+        # three states read the same before and after — which
+        # ``tests/test_replay.py`` asserts by value, because a build that
+        # defaulted an unstated cause would replay perfectly and still be wrong.
+        #
+        # Three beliefs, one per state, and none of them a side of any tension
+        # above: what a correction does to a *tension* is already fixed by
+        # ``x_3`` and must not be restated here from a second place.
+        seed_belief(s, "b_c1", "2026-08-22T08:00Z", subject="self",
+                    claim="rides to the office on a Tuesday", ledger="revealed",
+                    independent=2, model_tier="frontier")
+        seed_belief(s, "b_c2", "2026-08-22T08:01Z", subject="self",
+                    claim="keeps the good knives in the second drawer",
+                    ledger="stated", independent=1, model_tier="frontier")
+        seed_belief(s, "b_c3", "2026-08-22T08:02Z", subject="self",
+                    claim="reads two books at once", ledger="revealed",
+                    independent=2, model_tier="frontier")
+        s.record(Op.REVISE, "co_2026-08-23T09:00Z", "2026-08-23T09:00Z",
+                 target="b_c1", **{EXPIRED_AT: "2026-08-23T09:00Z"})
+        s.record(Op.RETRACT, "co_2026-08-23T09:01Z", "2026-08-23T09:01Z",
+                 target="b_c2", **{INVALID_AT: "2026-08-23T09:01Z"})
+        # The third state, and the one a default would silently overwrite: the
+        # main said it was wrong and did not say which, so the record says
+        # nothing about the cause and must still say nothing after a rebuild.
+        s.record(Op.RETRACT, "co_2026-08-23T09:02Z", "2026-08-23T09:02Z",
+                 target="b_c3")
         s.record(Op.ASSERT, "p_tiered", "2026-08-21T18:31Z",
                  **safetyplan.held_fields([
                      "When I start pacing at two in the morning, that is the sign.",
@@ -345,6 +381,35 @@ UNREACHABLE: Final[tuple[str, ...]] = (
     "half.model", "half.channel", "anthropic", "httpx", "socket", "urllib",
     "http", "requests",
 )
+
+#: Roots lifted for one package, named beside the rule they are lifted from
+#: rather than dropped from it — so the exemption is one line somebody has to
+#: read, and everything else in ``UNREACHABLE`` still stands over that package.
+#:
+#: ``half/correction`` is the one entry, and the reason is the difference
+#: between the two questions. ``half/trust`` and ``half/questions`` decide
+#: whether to *ask*, and a model there would be a question composed by a model —
+#: the thing their Never lists forbid. ``half/correction``'s recall instrument
+#: **is** a model by design (CAP-11): the ways a person says *"that's wrong"* are
+#: not enumerable, so a phrase table cannot be the whole of it.
+#:
+#: The exemption is paid for with a stricter rule in
+#: ``tests/test_correction.py``: exactly one module in that package may name the
+#: model, it may name only the port, and what it holds is the port's narrow
+#: classifier — an object with no method that returns text.
+LIFTED: Final[dict[str, tuple[str, ...]]] = {
+    "half/correction": ("half.model",),
+}
+
+
+def outward(package: str) -> tuple[str, ...]:
+    """What ``package`` may not reach. ``UNREACHABLE`` minus its own lift.
+
+    Derived rather than restated, so there is one list of forbidden roots in the
+    tree and a package's exemption is visible as an exemption.
+    """
+    lifted = LIFTED.get(package, ())
+    return tuple(root for root in UNREACHABLE if root not in lifted)
 
 
 def resolved_imports(path: Path) -> set[str]:

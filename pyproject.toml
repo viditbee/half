@@ -78,5 +78,7 @@ markers = [
     "cap8_silence: silence is the ordinary outcome and not a degraded one — every gate, in every order, and the ceiling that makes aftercare silent with no aftercare branch",
     "cap8_nagging: a loop is never touched faster than its own timescale — the bound derived per loop, the record it reads, and its separation from both movement and a spent day",
     "cap8_structure: the single-case structural rules the surface rests on — the narrowed view, the ceiling that cannot be bypassed, and the walls between a raise, a movement and a day",
+    "cap11: correction — an explicit correction recognised offline and acted on, a candidate that never acts alone, three attributions and never a guess, and the removed claim shown as recorded",
+    "cap11_structure: the single-case structural rules correction rests on — no store in the package, no op read for an attribution, no inference route to an append, and nothing composed",
     "offline: the suite reaches no network, asserted at the socket rather than by convention",
 ]

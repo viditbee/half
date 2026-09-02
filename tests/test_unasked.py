@@ -87,8 +87,10 @@ from half.trust.unasked import (
 
 from tests.conftest import (
     CLOSED,
+    LIFTED,
     UNREACHABLE,
     door_of,
+    outward,
     ledger_reach,
     reaches,
     resolved_imports,
@@ -1309,14 +1311,22 @@ def test_nothing_in_the_trust_package_can_reach_a_channel():
         )
 
 
-#: Every package that reaches a main's log through an injected door, with the
-#: door it is allowed. **Both are swept by one rule**, which is the correction
-#: story 11's review forced: its first build copied this guard into its own file
-#: as a string-prefix denylist, and both of 5b's known bypasses walked straight
-#: past the copy. A predicate worth having twice is worth having once.
-GUARDED: Final[tuple[tuple[str, object], ...]] = (
+#: Every package that may not open a store of its own, with the door it is
+#: allowed. **All three are swept by one rule**, which is the correction story
+#: 11's review forced: its first build copied this guard into its own file as a
+#: string-prefix denylist, and both of 5b's known bypasses walked straight past
+#: the copy. A predicate worth having twice is worth having once, so story 12
+#: joined the sweep rather than writing a third copy.
+#:
+#: ``half/correction``'s door is ``None``, and that is **stricter** rather than
+#: an exemption: it has no ledger at all. The append happens where the main's
+#: mutex is already held, so the package is pure functions over values and the
+#: rule for it is that it asks a ledger for *nothing* — see the case below,
+#: which turns ``None`` into the empty door and compares against that.
+GUARDED: Final[tuple[tuple[str, object | None], ...]] = (
     ("half/trust", TrustLedger),
     ("half/questions", QuestionLedger),
+    ("half/correction", None),
 )
 
 
@@ -1339,8 +1349,13 @@ def test_the_package_reaches_a_log_only_through_the_narrow_door(package, protoco
     ``from half.store import store as _second`` and ``self.ledger.acquire(...)``
     both passed it.
     """
-    door = door_of(protocol)
-    assert {"crisis_open", "trust_view", "note_ask"} <= door, sorted(door)
+    door = door_of(protocol) if protocol is not None else set()
+    if protocol is None:
+        # No ledger at all, which is a stronger statement than a narrow one: a
+        # package with an empty door reaching for any name on one fails below.
+        assert door == set()
+    else:
+        assert {"crisis_open", "trust_view", "note_ask"} <= door, sorted(door)
 
     for path in sorted((ROOT / package).rglob("*.py")):
         offending = reaches(path, CLOSED)
@@ -1358,7 +1373,7 @@ def test_the_package_reaches_a_log_only_through_the_narrow_door(package, protoco
 @pytest.mark.parametrize(
     "package", [name for name, _ in GUARDED], ids=[name for name, _ in GUARDED]
 )
-def test_no_package_that_decides_whether_to_ask_can_reach_outward(package):
+def test_no_guarded_package_can_reach_outward(package):
     """*"No model call, no generated prose"*, and no channel to say it on.
 
     Asserted structurally, because *"it does not call a model today"* decays the
@@ -1367,9 +1382,17 @@ def test_no_package_that_decides_whether_to_ask_can_reach_outward(package):
     resolved dotted roots for the reason the store rule is: story 11's first
     version compared string prefixes, which ``from half import model`` walks
     past.
+
+    ``outward`` is ``UNREACHABLE`` minus whatever that package lifts, which for
+    two of the three is nothing at all. ``half/correction`` lifts the model root
+    and only that one, because its recall instrument is a model by design
+    (CAP-11) — and pays for the lift with a stricter rule in
+    ``tests/test_correction.py``: one module may name it, only through the port,
+    holding an object that cannot produce text. The channel and the network are
+    still closed to it here, which is the half that would otherwise go quiet.
     """
     for path in sorted((ROOT / package).rglob("*.py")):
-        offending = reaches(path, UNREACHABLE)
+        offending = reaches(path, outward(package))
         assert not offending, f"{path.name} can reach outward: {offending}"
 
 
