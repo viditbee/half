@@ -707,6 +707,43 @@ def test_the_aim_needs_a_weight_it_can_read():
 # ═════════════════════════════════════════════════════════════════════════════
 
 
+def test_a_proposal_turn_carries_the_composed_prose_and_not_only_the_line(
+    registry, tmp_path
+):
+    """The prose on a proposal turn, which nothing asserted.
+
+    The prose carries no question mark: a proposal turn bought no favour, so
+    the judge's question budget is zero and a question would be refused. That
+    is the currency working, and it is why this case's fixture is a statement.
+
+    ``_pipeline`` returns ``f"{turned.text}\n{asked}"`` on a proposal, and every
+    case here looked only for the ``retract?[...]`` line — so ``return asked``
+    left the suite green while the main received the internal serialization
+    alone, which is the launch blocker story 13b exists to close.
+
+    The proposal line itself is deliberately still a serialization and is
+    recorded as deferred in ``half.correction.apply.proposed``; what this case
+    pins is that it never arrives *alone*.
+    """
+    seed(tmp_path)
+    voice, holder = a_voice("that field has been on your mind.")
+
+    transport = corrects(
+        registry, "hm, i dont think that is me these days",
+        corrections=widening(labelled(CORRECTION)), voice=voice,
+    )
+
+    body = last(transport)
+    assert holder.calls, "the composer was never reached on a proposal turn"
+    assert "that field has been on your mind." in body, body
+    assert f"{Op.RETRACT.value}?[{BELIEF}]" in body, body
+    # The prose comes first and the line is the tail, so a main reads a
+    # sentence rather than an identifier.
+    assert body.index("that field has") < body.index(f"{Op.RETRACT.value}?")
+    # And the proposal still withholds the claim (AD-18).
+    assert CLAIM not in body
+
+
 def test_an_inferred_correction_asks_and_appends_nothing(registry, tmp_path):
     """Matrix: *inferred, not explicit*. **The story's central rule.**
 
