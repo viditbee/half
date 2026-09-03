@@ -881,8 +881,15 @@ def test_the_pass_reads_the_log_and_never_writes_one_by_itself(
 
     source = inspect.getsource(TensionPass)
     assert "Store(" not in source
-    assert set(TensionPass.__dataclass_fields__) == {"ledger"}
-    assert set(dir(Ledger)) >= {"tension_view", "note_transition"}
+    # Story 9d adds the judgement seam and nothing else. Pinned as an equality
+    # rather than a superset, because the field that would arrive next is a
+    # store, a clock or a provider — each of which is a second writer, a second
+    # clock reader or a model on the nightly path.
+    assert set(TensionPass.__dataclass_fields__) == {"ledger", "judge"}
+    assert TensionPass.__dataclass_fields__["judge"].default is None
+    assert set(dir(Ledger)) >= {
+        "tension_view", "note_transition", "mint_view", "note_mint",
+    }
 
 
 def test_no_log_line_on_this_path_can_carry_content(registry, tmp_path):

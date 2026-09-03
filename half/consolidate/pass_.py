@@ -1,9 +1,17 @@
-"""The pass the scheduler runs: tensions, re-evaluated (CAP-7, AD-9, AD-27).
+"""The pass the scheduler runs: tensions, minted and re-evaluated (CAP-7, AD-9).
 
-One main, one instant, one job. The tick hands this an injected ``now``; it
-reads that main's tensions and the support each side of each one cites, asks
-``half.tensions.ledger`` what the log computes to, and appends the transitions
-that differ from what is already recorded.
+One main, one instant, two jobs. The tick hands this an injected ``now``; it
+mints what CAP-7's bound produced (story 9d), then reads that main's tensions
+and the support each side of each one cites, asks ``half.tensions.ledger`` what
+the log computes to, and appends the transitions that differ from what is
+already recorded.
+
+**Mint first, then re-evaluate**, so a tension minted tonight is evaluated
+tonight rather than waiting a day for its first state. The whole of the minting
+lives in ``half.consolidate.mint`` and the whole of the judgement lives behind
+``half.consolidate.port``, which this build wires to nothing: what this module
+adds is the ordering and the isolation, and a minting failure never costs the
+re-evaluation.
 
 **Idempotent, and pure at its core.** The deciding is
 ``half.tensions.ledger.plan`` — a pure function of the tension table, the
@@ -16,7 +24,12 @@ neither of them decides anything.
 **It costs nothing to *decide*, and it is not free to *write*.** No model call,
 no network, no batch submission — every answer is arithmetic over the log, which
 is why ``tests/test_pass.py`` asserts the module reaches no model port at all
-rather than trusting that it does not. The arithmetic runs behind
+rather than trusting that it does not. That stays true through story 9d: the
+disagreement judgement is a **port with no implementation**, wired to ``None``
+in the shipped composition, so the minting half exercises its bound, its filter
+and its budget on every pass and consults nobody. When 9e supplies a judge, the
+only thing that can cost anything is ``JUDGEMENTS`` consultations per main per
+night, decided before the first one is bought. The arithmetic runs behind
 ``asyncio.to_thread``, because ``half.schedule.tick``'s own notes say a pass
 doing real CPU work stalls the loop it shares with the inbound path — and
 because ``asyncio.wait_for`` cannot cancel a coroutine that is not yielding, so
@@ -72,6 +85,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from half.consolidate import mint as minting
+from half.consolidate.candidates import MintView
+from half.consolidate.port import Disagreement
 from half.errors import HalfError
 from half.schedule.clock import Now
 from half.store.ops import TOUCH_TENSION
@@ -84,11 +100,11 @@ logger = logging.getLogger(__name__)
 
 
 class Ledger(Protocol):
-    """The two doors the pass needs into a main's durable state.
+    """The four doors the pass needs into a main's durable state.
 
     A protocol rather than the concrete ``ActorRegistry`` for the reason
-    ``half.schedule.tick.Registry`` is one: one narrowed read and one write,
-    both through the per-main mutex, is the whole dependency. Nothing here opens
+    ``half.schedule.tick.Registry`` is one: two narrowed reads and two writes,
+    all through the per-main mutex, is the whole dependency. Nothing here opens
     a store, and that is deliberate — a pass with its own path to the log would
     be a second writer, and the single writer is what lets the store skip a
     journal (AD-1).
@@ -96,6 +112,16 @@ class Ledger(Protocol):
     It was three doors, and the reads were two: the tension table came from the
     SQLite view and the history from the log file, unsynchronised, with an
     inbound turn free to land between them. One door now returns both.
+
+    Story 9d adds the second pair, and they are a pair rather than a widening of
+    the first for a reason worth stating. The two halves of the pass read
+    *different projections of the same records* — the widening half sees an id,
+    a stamp and a support set, the minting half sees what an entry is about —
+    and one door returning the union would hand each half the other's fields.
+    The two writes are separate for the sharper version of the same reason:
+    ``note_mint`` refuses a tension the fold already holds and
+    ``note_transition`` refuses one it does not, so neither door can do the
+    other's job even by accident.
     """
 
     async def tension_view(
@@ -111,6 +137,19 @@ class Ledger(Protocol):
         t: str,
         fields: Mapping[str, Any],
         was: object = None,
+    ) -> None:
+        ...
+
+    async def mint_view(self, main_id: str) -> MintView:
+        ...
+
+    async def note_mint(
+        self,
+        main_id: str,
+        *,
+        tension_id: str,
+        t: str,
+        fields: Mapping[str, Any],
     ) -> None:
         ...
 
@@ -157,6 +196,18 @@ class PassResult:
     #: it cannot see a belief's loop and must not be widened until it can.
     #: ``half.surface.choose`` attaches it from the fold.
     candidates: tuple[Candidate, ...] = ()
+    #: What the minting half of this pass did (CAP-7, story 9d). Counts and ids
+    #: only, and empty when no judge is wired — which is every pass this build
+    #: ships, since the port has no implementation until 9e.
+    #:
+    #: **Deliberately absent from ``quiet`` and from ``seen``.** Both answer
+    #: questions about the *re-evaluation*: ``seen`` is how many tensions were
+    #: looked at, and ``quiet`` is *"nothing moved and nothing failed"*, which
+    #: story 10 does not read and the tick does not either. A mint is not a
+    #: movement — a tension born `fresh` and evaluated to `fresh` in the same
+    #: pass has not moved — and folding minting into either would change what
+    #: two existing sentences mean rather than add a third.
+    minted: minting.MintResult = field(default_factory=minting.MintResult)
 
     @property
     def seen(self) -> int:
@@ -186,9 +237,28 @@ class TensionPass:
     no clock of its own — ``now`` is the instant the tick read once, inside its
     file lock, so every main in one tick is judged against the same moment and
     everything below the scheduler stays replayable (AD-30).
+
+    **Mint first, then re-evaluate** (story 9d). A tension minted tonight gets
+    its first state tonight rather than waiting a day, and the re-evaluation
+    tolerates a tension whose stamp is ``now`` because 9c already does: a
+    `fresh` tension at zero elapsed time is its ordinary starting case, and
+    ``ledger.plan`` computes it to `fresh` and reports it unchanged.
+
+    The order also means the two halves cannot be confused for each other in
+    the log. Minting appends a record with a pair and a state; transitioning
+    appends a record with a state alone, through a different door that refuses
+    a tension the fold has never seen. Neither door can do the other's job.
     """
 
     ledger: Ledger
+    #: Who decides whether two entries disagree, or ``None``.
+    #:
+    #: **``None`` is what this build ships**, and it is the ordinary case rather
+    #: than a degraded one: the port has no implementation until 9e, so the
+    #: bound, the cheap filter and the budget run on every pass and nothing is
+    #: consulted and nothing is minted. A pass with no judge completes, is never
+    #: fatal, and is not a failure to report.
+    judge: Disagreement | None = None
 
     async def run(self, main_id: str, now: Now) -> None:
         """The ``Pass`` protocol's method. Returns ``None``; raises when a
@@ -226,7 +296,16 @@ class TensionPass:
         pass: ``plan`` walks a main's whole narrowed log. It also makes the
         scheduler's timeout mean something — ``asyncio.wait_for`` cannot cancel
         a coroutine that is not yielding.
+
+        **Minting happens first, and its read is its own.** It has to be a
+        second read rather than a widening of the first: the mint appends, so a
+        re-evaluation computed against a view taken before it would be planning
+        over a tension table the log no longer has. Each half gets one
+        consistent view, and the second one is taken after the first has
+        finished writing.
         """
+        minted = await self._mint(main_id, now)
+
         table, history = await self.ledger.tension_view(main_id)
         found, premise, pairs = await asyncio.to_thread(
             _decide, table=table, history=history, at=now.stamp
@@ -289,7 +368,41 @@ class TensionPass:
             incomputable=dict(found.incomputable),
             unrecorded=tuple(unrecorded),
             candidates=tuple(candidates),
+            minted=minted,
         )
+
+    async def _mint(self, main_id: str, now: Now) -> minting.MintResult:
+        """The minting half: what CAP-7 creates, inside CAP-7's bound.
+
+        **Never fatal, and that is the whole of its error handling.** A view
+        this build cannot read, a judge that is not there, one that refuses and
+        one that throws are all ordinary nights on which nothing is minted —
+        ``mint.consider`` isolates each couple, and this isolates the read. The
+        re-evaluation below runs either way, because a main whose minting failed
+        still has tensions whose states the log has already computed.
+
+        The failure this catches is the read; every failure inside the minting
+        is counted on the result rather than raised, which is why nothing here
+        inspects what came back.
+        """
+        try:
+            view = await self.ledger.mint_view(main_id)
+            return await minting.consider(
+                view,
+                judge=self.judge,
+                ledger=self.ledger,
+                main_id=main_id,
+                now=now.stamp,
+            )
+        except Exception as exc:  # noqa: BLE001 - minting, not the pass
+            # The *type* and nothing else (AD-22): an exception message
+            # routinely quotes the value that caused it, and here that value is
+            # a claim out of the main's own ledger.
+            logger.error(
+                "minting failed for main=%s (%s); the re-evaluation still runs",
+                main_id, type(exc).__name__,
+            )
+            return minting.MintResult()
 
 
 class TensionPassIncomplete(HalfError):

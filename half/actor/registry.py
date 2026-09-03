@@ -59,11 +59,13 @@ from half.store.records import (
     handoff_projection,
     handoff_record,
     history_projection,
+    mint_projection,
     plan_projection,
     plan_record,
     zone_projection,
     zone_record,
 )
+from half.consolidate.candidates import MintView
 from half.store.fold import fold as fold_records
 from half.store.store import Store
 from half.surface.touch import spoken_on
@@ -766,6 +768,111 @@ class ActorRegistry:
                     f"the state {tension_id!r} was planned from is not the state "
                     f"it is in; the log moved under the plan and this pass will "
                     f"compute the answer again"
+                )
+            actor.store.record(Op.TENSION, tension_id, t, **dict(fields))
+
+    # -- the minter's doors (CAP-7, story 9d) --------------------------------
+    #
+    # Two more, following ``tension_view`` / ``note_transition`` exactly: one
+    # read under the mutex and one write that goes through it. The minter runs
+    # inside the same pass and must not get a second, private route to a main's
+    # log, because the single writer is what lets the store skip a journal
+    # (AD-1).
+
+    async def mint_view(self, main_id: str) -> MintView:
+        """This main's state, **narrowed** to what a mint may consult (CAP-7).
+
+        One read under one mutex, for the reason ``tension_view`` is one: the
+        belief table, the tension table, the loop slugs and the schedule stamps
+        go to two different authorities — the fold and the log file — and an
+        inbound turn landing between them would hand the minter a candidate set
+        and a tension table that disagreed, which is a duplicate tension.
+
+        **Narrowed, not the fold**, on the same terms as ``surface_view``. It
+        would have been one line to return ``State`` and let the minter take
+        what it wanted; what that costs is a package in which
+        ``if state.aftercare is not None`` can be written with no new import and
+        no new door. What passes this line is:
+
+        * **beliefs**, through ``records.mint_projection`` — an id, a stamp, a
+          claim, a subject, a ledger and a loop. Not the license: whether a
+          tension may be *said* is the governance layer's question, asked at
+          delivery. Not the support set: what an entry cites decides *widening*,
+          which is story 9c's half and reads its own narrowing.
+        * **tensions**, entire — a state, a pair and a license, and no claim
+          text anywhere in one. There is nothing here to narrow away, which is
+          the same finding ``tension_table`` records.
+        * **loop slugs, and nothing else about a loop.** Not the state, not the
+          timescale, not the last movement. A tension is a link between two
+          entries and never demotes, freezes or refutes a wanting (CAP-6), and
+          the way that rule breaks is a minter that could see enough of a loop
+          to have an opinion about it.
+        * **the stamp of every schedule record** — when each pass marked itself
+          as having run, which is what *"new or changed since this main's last
+          pass"* is measured against. Stamps only: a schedule record also
+          carries a zone and whether the main told Half one, and neither is any
+          of the minter's business (AD-22).
+        * **the erased set**, so an erasure stays an erasure.
+        """
+        async with self.acquire(main_id) as actor:
+            state = actor.store.state()
+            view = MintView(
+                beliefs={
+                    ident: mint_projection(record)
+                    for ident, record in state.beliefs.items()
+                },
+                tensions={
+                    ident: dict(record)
+                    for ident, record in state.tensions.items()
+                },
+                loops=tuple(state.loops),
+                passes=tuple(
+                    record.t for record in actor.store.log
+                    if record.op is Op.SCHEDULE
+                ),
+                gone=frozenset(state.expunged),
+            )
+        return view
+
+    async def note_mint(
+        self,
+        main_id: str,
+        *,
+        tension_id: str,
+        t: str,
+        fields: Mapping[str, Any],
+    ) -> None:
+        """Mint one tension, under the mutex (AD-1, AD-3).
+
+        **Takes the fields, never the parts.** ``half.consolidate.mint``
+        composes them, so the registry does not know what `fresh` means, does
+        not know which entries are being linked, and must not start deciding.
+
+        **A mint is a mint and never a transition.** Refused when the fold
+        already holds this tension: story 9c owns every state change and
+        computes widening from the stamp on the record that set the current
+        state, so a second record arriving through *this* door would move a
+        tension's stamp without moving its state — a silent widening reset that
+        no test of the transition path could ever see. ``note_transition`` is
+        the other door and it refuses the inverse.
+
+        Refused too when the tension id is one the main **erased**. The append
+        gate treats an expunged id as already seen and the fold drops the
+        record, so without this the mint would look like it had landed and be
+        an erasure quietly undone.
+        """
+        async with self.acquire(main_id) as actor:
+            state = actor.store.state()
+            if tension_id in state.tensions:
+                raise TensionError(
+                    f"a tension {tension_id!r} is already in this log: minting "
+                    f"is what creates one, and a second mint over the same pair "
+                    f"would move its stamp without moving its state"
+                )
+            if tension_id in state.expunged:
+                raise TensionError(
+                    f"the tension {tension_id!r} was erased; a mint that landed "
+                    f"on it would be an erasure undone"
                 )
             actor.store.record(Op.TENSION, tension_id, t, **dict(fields))
 
