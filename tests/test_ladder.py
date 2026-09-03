@@ -49,7 +49,7 @@ from half.retrieval.prefix import build_prefix
 from half.store.ops import Op
 from half.store.records import RESERVED
 from half.store.store import Store
-from tests.conftest import FakeTransport, msg, seed_belief
+from tests.conftest import FakeTransport, msg, seed_belief, stub_voice
 
 #: Deliberately no file-wide ``pytestmark``. The AD-28 marker is applied case
 #: by case in the ceiling sections below, so the CI gate's collected count
@@ -838,12 +838,20 @@ def seeded(root, main="vidit"):
 
 def run_turn(root, text="xyzzy plugh", *, registry=None, main="vidit",
              address="123", message_id="1"):
-    """One real turn, end to end, on a registry the caller may pre-configure."""
+    """One real turn, end to end, on a registry the caller may pre-configure.
+
+    **The composer is wired**, because since story 13b the reply is prose. A
+    runtime with none answers with the claim alone, which is exactly the
+    quantity a ceiling removes — so a capped turn would be silent for want of a
+    composer rather than for want of a permission, and the case below would pass
+    on a build where the ceiling did nothing.
+    """
     transport = FakeTransport([msg(text=text, message_id=message_id,
                                    chat_id=address)])
     channel = TelegramChannel(transport=transport, mains={address: main})
     registry = registry or ActorRegistry(root)
-    asyncio.run(Runtime(channel=channel, registry=registry).run())
+    asyncio.run(Runtime(channel=channel, registry=registry,
+                        voice=stub_voice(mains=(main,))).run())
     registry.close()
     return "".join(sent for _, sent in transport.sent)
 
@@ -882,24 +890,18 @@ def test_only_the_ceiling_decides_whether_the_claim_reaches_the_wire(tmp_path):
 
     assert SAID in uncapped, "the positive control must reach the wire"
     assert SAID not in capped
+    assert capped, "a capped ceiling must not cost the main a reply (AD-27)"
 
-    # **And the capped main gets nothing at all**, which is story 13b's
-    # consequence and is recorded here rather than left to be discovered. This
-    # line used to read *"a capped ceiling must not cost the main a reply
-    # (AD-27)"*, and that was true only while the reply was the ``noted.``
-    # template. With no template in any language and every claim capped to
-    # `behave`, there is nothing quotable and nothing to fall back to.
-    #
-    # The consequence reaches further than this case: AD-28's ceiling is what
-    # crisis **aftercare** lowers, for a minimum of thirty days, so a main who
-    # has just come out of the mode now receives silence for every message they
-    # send. CAP-12 says Half *stays present*. Story 13b's frozen matrix says
-    # silence when there is no claim. The two disagree, and closing that needs a
-    # turn reply that does not depend on quotable material — which is a story
-    # that does not exist yet.
-    assert capped == "", (
-        "there is no claim under a `behave` ceiling, and never a template"
-    )
+    # **What the ceiling removes is the claim, not the reply**, and for one
+    # revision of story 13b it removed both. The fallback was the *quotable*
+    # claim, so a main capped at `behave` had nothing to say and nothing to fall
+    # back to — and AD-28's ceiling is what crisis aftercare lowers for a
+    # minimum of thirty days, so a main coming out of the mode met silence on
+    # every message for a month while CAP-12 says Half stays present. The
+    # composer is now reached with the directive channel alone and writes a
+    # reply that quotes none of it, which is AD-18 working rather than a hole in
+    # it. ``tests/test_turn_words.py`` drives the aftercare cap directly.
+    assert SAID.split()[0] not in capped, "no fragment of it either"
 
 
 @pytest.mark.ad28

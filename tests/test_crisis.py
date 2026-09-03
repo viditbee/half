@@ -67,7 +67,8 @@ from half.governance.ladder import TOP, License
 from half.retrieval.rank import Retriever
 from half.retrieval.strands import Strands
 from half.store.store import Store
-from tests.conftest import FakeTransport, msg, seed_belief
+from half.retrieval.prefix import build_prefix
+from tests.conftest import FakeTransport, msg, seed_belief, stub_voice
 
 pytestmark = pytest.mark.cap12
 
@@ -188,8 +189,15 @@ def handled(one: CrisisGate, text: str, **kw) -> str | None:
 DEFAULT_AT = 1_788_256_800   # 2026-09-01T10:00:00Z
 
 
-def run_turns(root, texts, *, mains=None, registry=None, at=DEFAULT_AT):
-    """Drive the real runtime over ``texts``; return the transport and registry."""
+def run_turns(root, texts, *, mains=None, registry=None, at=DEFAULT_AT,
+              voice=False):
+    """Drive the real runtime over ``texts``; return the transport and registry.
+
+    ``voice`` wires the composer. Off by default, because most cases here are
+    about the crisis path, whose replies are reviewed templates a composer never
+    touches. On, a turn is answered the way the product answers one — which is
+    what a case about *whether a reply is sent at all* has to drive.
+    """
     mains = mains or {"123": "vidit"}
     transport = FakeTransport([
         msg(text=text, message_id=str(i + 1), chat_id=chat, date=at)
@@ -197,7 +205,10 @@ def run_turns(root, texts, *, mains=None, registry=None, at=DEFAULT_AT):
     ])
     channel = TelegramChannel(transport=transport, mains=mains)
     registry = registry or ActorRegistry(root)
-    asyncio.run(Runtime(channel=channel, registry=registry).run())
+    asyncio.run(Runtime(
+        channel=channel, registry=registry,
+        voice=stub_voice(mains=tuple(mains.values())) if voice else None,
+    ).run())
     return transport, registry
 
 
@@ -870,22 +881,25 @@ def test_a_reply_is_always_sent(tmp_path, text):
     """Matrix: silence. Going quiet is a failure here, not an outcome — the
     omission headline is *'Half didn't respond when it was most required'*.
 
-    **The ordinary control is seeded with something sayable, and that is not a
-    convenience** (story 13b). A turn whose material is all `behave` now has
-    nothing quotable and no template to fall back to, so it is silent. Seeding
-    one `assert` claim keeps this case asserting what it was written to assert —
-    that the gate answers every turn it takes — instead of quietly becoming a
-    case about an empty wire. The crisis replies are reviewed templates and are
-    untouched by any of this.
+    **The seeded belief is `behave`, and that is the point** (story 13b, review
+    loop 1). An earlier revision seeded an `assert` claim, because the reply was
+    the *quotable* claim and a turn whose material was all `behave` had nothing
+    to fall back to — the defect that would have met a main under crisis
+    aftercare with a month of silence. A `behave` seed is the case that rule now
+    has to answer: there is material, none of it may be quoted, and a reply is
+    still owed. The crisis replies are reviewed templates, untouched by any of
+    this.
+
+    An empty ledger is a different scenario and is deliberately not this one:
+    with nothing quotable *and* nothing shaping a reply, silence is what the
+    amended block specifies.
     """
     root = tmp_path / "mains"
-    from half.governance.ladder import License
-    from half.retrieval.prefix import build_prefix
     with Store(root / "vidit", prefix=build_prefix) as store:
-        seed_belief(store, "b_say", "2026-06-01T00:00:00Z", subject="self",
+        seed_belief(store, "b_shape", "2026-06-01T00:00:00Z", subject="self",
                     claim="swims on an ordinary tuesday", ledger="revealed",
-                    rung=License.ASSERT, support=["s_1"])
-    transport, registry = run_turns(root, [("123", text)])
+                    support=["s_1"])
+    transport, registry = run_turns(root, [("123", text)], voice=True)
     registry.close()
     assert transport.sent, text
     assert transport.sent[0][1].strip(), text
