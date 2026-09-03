@@ -1225,6 +1225,59 @@ def test_the_wire_carries_prose_and_no_part_of_the_serialization(
     assert WITHHELD not in body
 
 
+def test_the_reply_is_asked_not_to_echo_the_main_and_never_forced_not_to(
+    registry, tmp_path
+):
+    """``respond`` promised from story 4 until this review that *the reply never
+    echoes the main's own words*. Nothing checked it and nothing could; the
+    promise is gone from that docstring, and the two facts that replaced it are
+    pinned here because a docstring that argues is not an assertion.
+
+    **Told.** The one instruction that names the language-sample block is the
+    one that says not to repeat it back — one block, one rule about it, so the
+    rule cannot drift onto a different block while both go on reading true.
+
+    **Not enforced, and the cost of enforcing it is the second half.** Enforcing
+    would mean putting this turn's inbound text into the withheld set, and the
+    tripwire's unit is the **adjacent word pair** — so an ordinary reply that
+    reuses two consecutive words of a message written in the same language would
+    be refused loudly and fall back. Not an edge: two words is a preposition and
+    an article in most of the languages that have them. So the case builds
+    exactly that reply, sends it, and asserts the tripwire stayed quiet.
+
+    A later story that decides to enforce it after all has to come here and
+    change this case, which is the point of writing it down as one.
+    """
+    from half.context.build import fragments, leaks
+    from half.voice.compose import INSTRUCTIONS, LANGUAGE_SAMPLE
+
+    named = [
+        line for line in INSTRUCTIONS if LANGUAGE_SAMPLE.rstrip(":") in line
+    ]
+    assert len(named) == 1, f"the block is named {len(named)} times: {named}"
+    assert "repeat" in named[0], (
+        "the only instruction naming the language sample does not tell the "
+        "model to leave it alone, and nothing else in the tree does"
+    )
+
+    message = "thinking about the farmland again"
+    reply = "thinking about that plot, and what it is waiting for"
+    assert leaks(reply, fragments(message)), (
+        "the fixture reply shares no word pair with the message, so it would "
+        "pass whether the sample were withheld or not"
+    )
+
+    root = tmp_path / "mains"
+    a_main(root)
+    voice, holder = a_voice(reply)
+
+    transport = turns(registry, [message], voice=voice)
+
+    assert holder.calls == 1
+    assert wire(transport) == reply, "the echo was refused and the claim sent"
+    assert voice.tally.leaked == 0, "the main's own message armed the tripwire"
+
+
 def test_a_provider_that_is_absent_costs_the_main_nothing_but_the_prose(
     registry, tmp_path
 ):

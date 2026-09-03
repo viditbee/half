@@ -1319,7 +1319,7 @@ jobs:
         # it**, and that is deliberate. That gate protects the morning: its
         # margin is zero and every case in it is the only one asserting its
         # rule, so folding this gate's turn cases into it would take its floor
-        # from 324 to 462 and leave a later reader unable to tell which half of
+        # from 324 to 463 and leave a later reader unable to tell which half of
         # the number protected which surface. (An earlier revision did that
         # addition against stale counts on both sides and got 395, which is
         # neither the sum then nor the sum now — a gate that cannot add up the
@@ -1379,7 +1379,7 @@ jobs:
         # the fallback reading the last quotable claim rather than the top-ranked
         # one; and the model-free branch, which needed a structural case.
         #
-        # **Margin zero: 138 selected, 138 required.** Every case is the only one
+        # **Margin zero: 139 selected, 139 required.** Every case is the only one
         # asserting its rule, including each of the fourteen scripts — a script
         # pruned is a script nobody checks, which is how story 12 shipped a
         # correction path that deleted beliefs on ordinary Thai and Japanese
@@ -1387,7 +1387,7 @@ jobs:
         # here to prune, so there is no room left for pruning one. Adding cases
         # moves this number with them; nothing else may.
         #
-        # It moved 95 -> 100 -> 138 across this story's review loop, and the
+        # It moved 95 -> 100 -> 139 across this story's review loop, and the
         # middle step lagged the cases: the gate collected 138 against a floor
         # of 100 while this comment said the margin was zero.
         # `tests/test_turn_words.py` carries `pytestmark = [cap1_turn]`, so every
@@ -1398,7 +1398,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap1_turn -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-1 turn wire-text cases collected: $collected"
-          if [ "$collected" -lt 138 ]; then
+          if [ "$collected" -lt 139 ]; then
             echo "::error::the turn wire-text gate collected $collected cases; a main may be receiving Half's internals again"
             exit 1
           fi
