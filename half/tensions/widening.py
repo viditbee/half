@@ -190,10 +190,18 @@ def ranks_a_side(name: object) -> bool:
     return bool(chosen) and len(found & (SELECTOR_WORDS | SIDE_WORDS)) >= 2
 
 
-def ranked_names(names: object) -> tuple[str, ...]:
-    """Every name in ``names`` that ranks a side, sorted. Never raises."""
+def ranked_names(offered: object) -> tuple[str, ...]:
+    """Every name in ``offered`` that ranks a side, sorted. Never raises.
+
+    The argument is ``offered`` rather than ``names`` because ``names`` is one
+    of the words a tension's *pair* travels under, and the positional guard
+    reads the vocabulary rather than the type: ``sorted(... for ... in names)``
+    here is a sort of record field names and looks exactly like a sort of the
+    two entries. Renaming is cheaper than an exemption, and an exemption is a
+    hole somebody later walks through.
+    """
     try:
-        return tuple(sorted(name for name in names if ranks_a_side(name)))
+        return tuple(sorted(name for name in offered if ranks_a_side(name)))
     except TypeError:  # pragma: no cover - a caller handing a non-iterable
         return ()
 

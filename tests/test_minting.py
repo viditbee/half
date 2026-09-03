@@ -245,6 +245,72 @@ def test_the_mint_is_the_same_record_whichever_way_round_the_couple_is_built():
     assert Couple(both=(one, other)).id == Couple(both=(other, one)).id
 
 
+def _mint_rows(*rows):
+    """A belief table in the order given — which is the order ``couples``
+    builds each pair in, and therefore which half lands in ``both[0]``."""
+    return {
+        ident: {"t": STIRRED, "claim": claim, "subject": "farmland",
+                "ledger": ledger}
+        for ident, claim, ledger in rows
+    }
+
+
+#: Four beliefs built so that **no two halves weigh the same**: ``b_said``
+#: carries a term nothing else does and ``b_did`` carries only terms the rest
+#: of the ledger repeats, so a couple of the two is 1.3219 + 0.3219 and a
+#: positional read of it is one number or the other rather than the sum.
+_SIDES = (
+    ("b_said", "means to buy the farmland this year", "stated"),
+    ("b_did", "listing march", "revealed"),
+    ("b_flew", "the paraglider listing goes out every march", "stated"),
+    ("b_grounded", "no flight plan listing filed in march", "revealed"),
+)
+
+
+@pytest.mark.cap7_minting
+@pytest.mark.cap7_neutrality
+def test_the_weight_and_the_order_are_the_same_whichever_way_a_couple_is_built():
+    """Matrix: *no winner* — the behavioural half of the positional guard.
+
+    The AST scan catches the *spelling*; this catches the *arithmetic*, and the
+    two are not the same test. Review replaced ``filter.weight``'s body with
+    ``return surprisal(couple.both[0], ...)`` — the pair read positionally, one
+    side ranked over the other, in the function the budget's ordering runs
+    through — and the whole suite stayed green, because the guard's vocabulary
+    did not know the name ``both``.
+
+    So: build the same ledger in two orders, which is the only thing that
+    decides which half of a couple arrives first, and assert the weight and the
+    whole priority order are identical. The two halves are asserted to have
+    *different* surprisals first, because an equality between two numbers that
+    were always going to match is the assertion-identical-either-way shape this
+    project has shipped once.
+    """
+    counts, total = relevance.corpus(minting.read(_mint_rows(*_SIDES)))
+    one = Entry(id="b_said", claim=_SIDES[0][1], ledger="stated")
+    other = Entry(id="b_did", claim=_SIDES[1][1], ledger="revealed")
+
+    # The fixture can fail: the two halves are not interchangeable.
+    apart = {relevance.surprisal(item, counts=counts, total=total)
+             for item in (one, other)}
+    assert len(apart) == 2, "a couple whose halves weigh the same asserts nothing"
+
+    forward = relevance.weight(Couple(both=(one, other)), counts=counts,
+                               total=total)
+    backward = relevance.weight(Couple(both=(other, one)), counts=counts,
+                                total=total)
+    assert forward == backward
+
+    # And the order the budget spends in does not move either. The belief table
+    # is reversed, so every couple is built the other way round.
+    def order(rows):
+        view = MintView(beliefs=_mint_rows(*rows))
+        return [couple.id for couple in minting.slate(view, now=stamp(NOON)).within]
+
+    assert order(_SIDES) == order(tuple(reversed(_SIDES)))
+    assert len(order(_SIDES)) > 1, "one couple cannot have an order"
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # matrix: the four ways nothing is minted, each asserted apart from the others
 # ═════════════════════════════════════════════════════════════════════════════

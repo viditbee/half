@@ -131,13 +131,45 @@ SURFACE = ("half/tensions", "half/consolidate")
 #: forbids, and neither that nor the crisis mode's ``score`` has anything to do
 #: with a tension. ``_guarded_trees`` asserts each name still exists, so a
 #: rename drops coverage loudly rather than silently.
+#: ``mint_view`` and ``note_mint`` are here because story 9d added two doors
+#: and registered neither, so none of the four neutrality scans, the resolution
+#: scan or the clock scan read the one function that creates every tension
+#: record. Review sorted the pair inside ``note_mint`` and the whole suite
+#: stayed green, while the identical line in ``note_transition`` — its sibling,
+#: one entry up this dict — was caught.
 OUTPOSTS: dict[str, tuple[str, ...]] = {
     "half/store/fold.py": ("fold", "_resolve_tensions"),
-    "half/store/records.py": ("validate_tension_fields",),
+    # ``mint_projection`` is the third door story 9d left unscanned, and the
+    # strengthened coverage assertion below is what found it: it is the
+    # narrowing every belief passes through on its way into the minter, so a
+    # field added to it is a field the minter can rank on.
+    "half/store/records.py": ("validate_tension_fields", "mint_projection"),
     "half/actor/registry.py": (
         "tension_table", "belief_history", "tension_view", "note_transition",
+        "mint_view", "note_mint",
     ),
 }
+
+#: How a *new* tension function in an outpost file is found before a reviewer
+#: has to notice it. Any function whose name says it is about a tension or a
+#: mint must be registered above; the coverage case turns this into the
+#: assertion the old subset one could not make.
+TENSION_WORDS = ("tension", "mint")
+
+
+def _tension_functions(relative: str) -> set[str]:
+    """Every function in ``relative`` whose *name* says it handles a tension.
+
+    Read off the file rather than listed, so a door added next year is a red
+    test on the day it is written rather than a hole a reviewer finds later.
+    """
+    tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"),
+                     filename=relative)
+    return {
+        node.name for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(word in node.name.lower() for word in TENSION_WORDS)
+    }
 
 #: The vocabulary of the guard itself. ``half/tensions/widening.py`` owns the
 #: denylist and is exempt from the name scan for that reason; a *caller*
@@ -1668,6 +1700,17 @@ def test_the_guards_cover_the_tension_code_outside_the_two_packages():
     injecting ``held["winner"] = pair[0]`` into the fold's own merge branch —
     the one route into the tension table the append gate never sees — and
     watching the whole suite pass.
+
+    **The assertion used to be a subset, and a subset is not coverage.** Story
+    9d added ``mint_view`` and ``note_mint`` to the registry, registered
+    neither, and this case stayed green — because ``<=`` asks whether the
+    listed names are covered and never whether anything unlisted is not.
+    Review sorted the pair inside ``note_mint``, the one function that creates
+    every tension record, and the whole suite passed; the identical line in
+    ``note_transition`` was caught. So the rule is now the other way round:
+    every function in an outpost file whose *name* says it handles a tension or
+    a mint must be registered, which is red on the day such a function is
+    written rather than on the day somebody notices.
     """
     labels = {label for label, _ in _guarded_trees()}
     assert {
@@ -1676,9 +1719,21 @@ def test_the_guards_cover_the_tension_code_outside_the_two_packages():
         "half/store/records.py:validate_tension_fields",
         "half/actor/registry.py:tension_view",
         "half/actor/registry.py:note_transition",
+        "half/actor/registry.py:mint_view",
+        "half/actor/registry.py:note_mint",
     } <= labels
     assert any(label.startswith("half/tensions/") for label in labels)
     assert any(label.startswith("half/consolidate/") for label in labels)
+
+    unregistered: list[str] = []
+    for relative, registered in sorted(OUTPOSTS.items()):
+        for name in sorted(_tension_functions(relative) - set(registered)):
+            unregistered.append(f"{relative}:{name}")
+    assert not unregistered, (
+        f"tension code the guards never read: {unregistered}. Add each to "
+        f"OUTPOSTS — a scan that does not parse a function cannot fail on it, "
+        f"and this is how story 9d's two doors went unscanned"
+    )
 
 
 @pytest.mark.cap7_neutrality
@@ -1712,10 +1767,39 @@ def test_the_name_scan_catches_a_ranked_function_the_package_merely_offers():
 
 #: Names that hold a tension's pair. Any positional read of one is a first and
 #: a second, which is one short step from a winner and a loser.
-_PAIR_NAMES = {"between", "sides", "pair", "ids", "entries"}
+#:
+#: ``both`` and ``names`` are here because story 9d gave the pair two new names
+#: and did not tell the guard. ``half.consolidate.candidates.Couple`` travels
+#: as ``both`` and offers ``names``, so every line in the minting half was
+#: outside this vocabulary: review replaced ``filter.weight``'s body with
+#: ``return surprisal(couple.both[0], ...)`` — the pair read positionally, one
+#: side ranked over the other, in the function the budget's ordering runs
+#: through — and the whole suite stayed green. That is the guard-catches-a-
+#: spelling shape, in the story that introduced the spelling.
+_PAIR_NAMES = {"between", "sides", "pair", "ids", "entries", "both", "names"}
 
 #: Ways one of two things is chosen over the other.
 _CHOOSERS = {"sorted", "max", "min", "sort", "nlargest", "nsmallest"}
+
+
+def _holds_the_pair(node: ast.AST) -> bool:
+    """Whether ``node`` is an expression that evaluates to a tension's pair.
+
+    Three spellings, and the third was found by probing this guard rather than
+    by reading it: ``between``, ``couple.both`` — and ``fields["between"]``,
+    which the registry's doors and the append gate reach the pair through and
+    which named no pair at all as far as the scan was concerned.
+    ``sorted(fields["between"])`` inside ``note_mint`` passed a green suite.
+    """
+    if isinstance(node, ast.Name):
+        return node.id in _PAIR_NAMES
+    if isinstance(node, ast.Attribute):
+        return node.attr in _PAIR_NAMES
+    if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+        # ``fields["between"]`` and ``fields[BETWEEN]`` alike: the key is the
+        # name, whether it was spelled or came through a constant.
+        return str(node.slice.value) in _PAIR_NAMES
+    return False
 
 
 def _ranks_the_pair(tree: ast.AST) -> list[int]:
@@ -1723,12 +1807,10 @@ def _ranks_the_pair(tree: ast.AST) -> list[int]:
     found: list[int] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Subscript):
-            base = node.value
-            name = (base.id if isinstance(base, ast.Name)
-                    else base.attr if isinstance(base, ast.Attribute) else "")
-            if name in _PAIR_NAMES and isinstance(node.slice, ast.Constant):
-                if isinstance(node.slice.value, int):
-                    found.append(node.lineno)
+            if (_holds_the_pair(node.value)
+                    and isinstance(node.slice, ast.Constant)
+                    and isinstance(node.slice.value, int)):
+                found.append(node.lineno)
         if isinstance(node, ast.Call):
             callee = (node.func.id if isinstance(node.func, ast.Name)
                       else node.func.attr if isinstance(node.func, ast.Attribute)
@@ -1736,12 +1818,7 @@ def _ranks_the_pair(tree: ast.AST) -> list[int]:
             if callee not in _CHOOSERS:
                 continue
             for argument in node.args:
-                if any(
-                    isinstance(inner, ast.Name) and inner.id in _PAIR_NAMES
-                    or isinstance(inner, ast.Attribute)
-                    and inner.attr in _PAIR_NAMES
-                    for inner in ast.walk(argument)
-                ):
+                if any(_holds_the_pair(inner) for inner in ast.walk(argument)):
                     found.append(node.lineno)
     return found
 
@@ -1766,8 +1843,20 @@ def test_nothing_in_the_tension_surface_reads_the_pair_positionally():
      "def f(self):\n    return self.between[0]\n",
      "def f(sides):\n    return sorted(sides, key=lambda s: s.now)\n",
      "def f(sides):\n    return max(sides, key=lambda s: s.now)\n",
-     "def f(pair):\n    return min(pair)\n"],
-    ids=["index-0", "index-1", "attribute-index", "sorted", "max", "min"],
+     "def f(pair):\n    return min(pair)\n",
+     # The exact mutation review ran against a green suite: the couple's own
+     # spelling of its pair, read positionally, in the function the budget's
+     # ordering runs through.
+     "def weight(couple):\n    return surprisal(couple.both[0])\n",
+     "def f(couple):\n    return couple.names[1]\n",
+     "def f(both):\n    return sorted(both, key=lambda s: s.at)\n",
+     # Found by probing this guard: the pair reached through the field name,
+     # which is how every door in the registry and the append gate holds it.
+     "def f(fields):\n    return sorted(fields['between'])\n",
+     "def f(fields):\n    return fields['sides'][0]\n"],
+    ids=["index-0", "index-1", "attribute-index", "sorted", "max", "min",
+         "couple-both-index", "couple-names-index", "both-sorted",
+         "field-key-sorted", "field-key-index"],
 )
 def test_the_positional_scan_catches_every_way_a_side_is_chosen(bypass):
     """Non-vacuity, one shape at a time. A scan that knew only the subscript
