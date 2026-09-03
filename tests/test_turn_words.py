@@ -50,6 +50,7 @@ from typing import Final
 import pytest
 
 from half.actor.registry import ActorRegistry
+from half.actor import runtime as runtime_module
 from half.actor.runtime import Runtime
 from half.channel.telegram import TelegramChannel
 from half.context.build import build as build_context
@@ -1012,6 +1013,82 @@ def test_the_composition_does_not_hold_the_mains_mutex(registry, tmp_path):
     transport = asyncio.run(drive())
     assert "still here" in wire(transport), wire(transport)
     assert holder.calls == 1
+
+
+def test_a_context_build_that_raises_keeps_a_correction_and_is_loud(
+    registry, tmp_path, monkeypatch, caplog
+):
+    """``respond``'s handler, driven — and the one place a reply is still lost.
+
+    Building the context folds arbitrary text out of a main's ledger and
+    resolves a ladder over it, so it can raise. The handler answers with
+    *whatever the turn already held*, which on a correction turn is the removed
+    claim and on an ordinary turn is nothing at all.
+
+    **So an ordinary turn whose context cannot be built is silent.** That is
+    not the degraded-retrieval case the story's amendment covers — a disable or
+    a refused query yields an empty ranked set and still composes — it is a
+    fault in the builder itself, and there is genuinely nothing in hand to say.
+    This case pins both halves so the asymmetry is a decision on the record
+    rather than a surprise, and it is recorded as deferred.
+    """
+    a_main(tmp_path)
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("the builder is broken")
+
+    monkeypatch.setattr(runtime_module, "split_context", explode)
+    with caplog.at_level("ERROR"):
+        transport = turns(registry, ["thinking about the farmland again"],
+                          voice=a_voice("prose")[0])
+
+    assert wire(transport) == "", "an ordinary turn has nothing in hand"
+    # **The handler's own line, not merely some line.** An empty wire is what
+    # you get either way — with the handler gone the exception reaches
+    # ``_isolated``, the turn is abandoned, and nothing is sent. Asserting the
+    # outcome alone cannot tell a caught fault from a lost turn, which is the
+    # shape that made 13a's unreachable-main case inert.
+    assert any(
+        "could not be built" in record.getMessage() for record in caplog.records
+    ), [record.getMessage() for record in caplog.records]
+    assert not any(
+        SAYABLE in record.getMessage() or WITHHELD in record.getMessage()
+        for record in caplog.records
+    ), "a claim reached a log line (AD-22)"
+
+
+def test_a_composer_that_raises_costs_the_prose_and_never_the_reply(caplog):
+    """``words``'s handler, driven.
+
+    ``compose`` answers with a value rather than raising, so this is only
+    reachable through a double — which is exactly why the handler had never
+    been run. Its cost if it were ever lost is not one turn's prose: the main's
+    message is already recorded by then, so the idempotency check suppresses
+    the redelivery and the turn is gone for good.
+
+    Driven at ``words`` rather than end to end, like every sibling in this
+    section, because the fallback is a property of the context the gate is
+    handed and not of what a store happens to rank.
+    """
+    class Raises(Voice):
+        # A subclass, because ``words`` checks ``isinstance(voice, Voice)``
+        # before composing — a plain double is refused at that guard and never
+        # reaches the handler this case exists to drive.
+        def holds(self, main_id):
+            return True
+
+        async def compose(self, *args, **kwargs):
+            raise RuntimeError("the gate is broken")
+
+    with caplog.at_level("ERROR"):
+        turned = spoke(Raises())
+
+    assert turned.text == SAYABLE
+    assert not turned.composed
+    assert caplog.records, "a raise inside the gate must be loud"
+    assert not any(
+        SAYABLE in record.getMessage() for record in caplog.records
+    ), "a claim reached a log line (AD-22)"
 
 
 def test_no_composition_in_the_tree_sits_under_an_acquire(registry):
