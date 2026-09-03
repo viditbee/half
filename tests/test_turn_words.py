@@ -553,6 +553,25 @@ def test_the_removed_claim_travels_word_for_word_in_every_script(script):
     assert claim in turned.text
 
 
+@pytest.mark.parametrize(
+    "label", [ASK_ABOUT, MAY_BE_SAID, WORD_FOR_WORD], ids=["ask", "said", "verbatim"]
+)
+def test_a_candidate_echoing_a_block_label_is_refused_by_the_judge(label):
+    """Every prompt label is scaffolding, including the one 13b adds.
+
+    ``half.voice.gate.scaffolding`` reads the labels from
+    ``half.voice.compose`` rather than respelling them, so adding a block
+    without adding it there would put ``word-for-word:`` on somebody's wire and
+    nothing would say so. The judge refuses the candidate, the attempt is
+    regenerated, and the second one is sent.
+    """
+    voice, holder = a_voice(f"{label} {SAYABLE}", SAYABLE)
+    turned = spoke(voice)
+    assert turned.text == SAYABLE
+    assert holder.calls == 2, "the first candidate was not refused"
+    assert voice.tally.refusals.get("scaffolding") == 1
+
+
 def test_no_word_for_word_block_reaches_a_prompt_that_is_not_a_correction():
     """Every other turn, and every morning, carries no such block."""
     voice, holder = a_voice("that plot has been waiting")

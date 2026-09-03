@@ -1327,9 +1327,13 @@ jobs:
         #   with the positive control beside it, because the negative half alone
         #   passes on a build that never asks anybody anything;
         #   that a generated `behave` claim stops the send loudly and the claim
-        #   goes instead, that no generated string reaches the log or a
-        #   projection in any script, that a crisis turn reaches no model at
-        #   all, and that a blank message and a redelivery reach none either.
+        #   goes instead, that a candidate echoing **any** of the prompt's block
+        #   labels is refused by the judge — including the one story 13b adds,
+        #   because a block added without adding it to the scaffolding set puts
+        #   ``word-for-word:`` on somebody's wire and nothing says so — that no
+        #   generated string reaches the log or a projection in any script, that
+        #   a crisis turn reaches no model at all, and that a blank message and
+        #   a redelivery reach none either.
         #
         # **Every "never called" is a counter asserted to be zero**, not a
         # double that raises: ``Voice._attempt_all`` catches ``Exception`` and
@@ -1347,7 +1351,7 @@ jobs:
         # the fallback reading the last quotable claim rather than the top-ranked
         # one; and the model-free branch, which needed a structural case.
         #
-        # **Margin zero: 95 selected, 95 required.** Every case is the only one
+        # **Margin zero: 98 selected, 98 required.** Every case is the only one
         # asserting its rule, including each of the fourteen scripts — a script
         # pruned is a script nobody checks, which is how story 12 shipped a
         # correction path that deleted beliefs on ordinary Thai and Japanese
@@ -1359,7 +1363,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap1_turn -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-1 turn wire-text cases collected: $collected"
-          if [ "$collected" -lt 95 ]; then
+          if [ "$collected" -lt 98 ]; then
             echo "::error::the turn wire-text gate collected $collected cases; a main may be receiving Half's internals again"
             exit 1
           fi

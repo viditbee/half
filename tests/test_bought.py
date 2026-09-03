@@ -50,7 +50,7 @@ from pathlib import Path
 import pytest
 
 from half.actor.registry import ActorRegistry
-from half.actor.runtime import Runtime, respond
+from half.actor.runtime import Runtime
 from half.channel.telegram import TelegramChannel
 from half.civil import DAY
 from half.context.build import build as build_context

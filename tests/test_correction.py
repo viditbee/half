@@ -44,7 +44,6 @@ from pathlib import Path
 import pytest
 
 from half.actor.registry import ActorRegistry
-from half.actor import runtime as runtime_module
 from half.actor.runtime import Runtime
 from half.channel.telegram import TelegramChannel
 from half.context.channels import Content, sanitize
