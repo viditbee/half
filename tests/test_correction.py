@@ -47,6 +47,7 @@ from half.actor.registry import ActorRegistry
 from half.actor import runtime as runtime_module
 from half.actor.runtime import Runtime
 from half.channel.telegram import TelegramChannel
+from half.context.channels import Content, sanitize
 from half.correction import apply as correction
 from half.correction.apply import Removal, Source
 from half.correction.attribute import Attribution, attribution_for
@@ -346,6 +347,13 @@ def test_half_was_wrong_appends_a_revise_and_shows_the_claim(registry, tmp_path)
     A ``revise`` is appended, the belief is gone from the fold, the record says
     the system had it wrong, and the reply carries the claim Half removed — as
     recorded, byte for byte, rather than a description of it.
+
+    **Story 13b moved where the distinction lives.** It used to be on the wire,
+    as ``revise[b_land]: ...`` against ``retract[b_land]: ...``, which is the
+    internal serialization reaching a person. It is now in the log — the op
+    itself and the attribution stamps, both asserted above — and the wire
+    carries the claim and no op name at all, because an op name is not a word in
+    anybody's language.
     """
     seed(tmp_path)
 
@@ -361,7 +369,9 @@ def test_half_was_wrong_appends_a_revise_and_shows_the_claim(registry, tmp_path)
         Attribution.HALF_WAS_WRONG
     )
     body = sent(transport)
-    assert f"{Op.REVISE.value}[{BELIEF}]: {CLAIM}" in body
+    assert CLAIM in body
+    assert Op.REVISE.value not in body and Op.RETRACT.value not in body
+    assert BELIEF not in body
 
 
 def test_the_main_changed_appends_a_retract_and_owes_no_apology(
@@ -370,8 +380,10 @@ def test_the_main_changed_appends_a_retract_and_owes_no_apology(
     """Matrix: *the main changed*.
 
     A ``retract``, the world-changed stamp, and — the half that is easy to lose
-    — **no ``revise`` anywhere**, in the log or on the wire. The distinction
-    CAP-11 asks to preserve is only preserved if the wrong one is absent.
+    — **no ``revise`` anywhere**. The distinction CAP-11 asks to preserve is
+    only preserved if the wrong one is absent, and since story 13b the place it
+    is preserved is the log: the wire carries the claim and neither op name,
+    because neither is a word a main can read.
     """
     seed(tmp_path)
 
@@ -385,8 +397,8 @@ def test_the_main_changed_appends_a_retract_and_owes_no_apology(
         Attribution.MAIN_CHANGED
     )
     body = sent(transport)
-    assert f"{Op.RETRACT.value}[{BELIEF}]: {CLAIM}" in body
-    assert Op.REVISE.value not in body
+    assert CLAIM in body
+    assert Op.REVISE.value not in body and Op.RETRACT.value not in body
 
 
 def test_a_correction_that_settles_no_cause_records_neither(registry, tmp_path):
@@ -476,9 +488,17 @@ def test_an_erasure_tombstones_the_body_and_says_something_different(
     is *never act on inference alone*; this is the same rule one step further.
 
     So two turns: Half shows what it would erase, and the erasure happens on the
-    yes. Three things then hold at once, and the second is what makes it an
-    erasure rather than a removal: the op is ``expunge``, the claim is **gone
-    from the log on disk**, and what Half says names no claim.
+    yes. Three things then hold at once: the op is ``expunge``, the claim is
+    **gone from the log on disk**, and the reply on the confirming turn
+    **carries the claim** — read off the fold before ``Store.expunge``
+    tombstones the body.
+
+    **That last one reverses story 12, on story 13b's frozen matrix** (*the
+    claim is shown before the body is gone*). An erasure is the only removal
+    that cannot be undone by correcting the correction, so the confirmation turn
+    is the last moment a mis-aimed one can be caught — and under story 12 that
+    moment carried no words at all, so a main destroyed a belief they were never
+    shown.
     """
     seed(tmp_path)
 
@@ -490,11 +510,11 @@ def test_an_erasure_tombstones_the_body_and_says_something_different(
     shard = (tmp_path / MAIN / "beliefs").glob("*.jsonl")
     on_disk = "".join(path.read_text(encoding="utf-8") for path in shard)
     assert CLAIM not in on_disk
-    body = sent(transport)
-    assert f"{Op.EXPUNGE.value}?[{BELIEF}]" in body, "Half asked first"
-    assert f"{Op.EXPUNGE.value}[{BELIEF}]" in body
-    assert CLAIM not in body
-    assert Op.RETRACT.value not in body and Op.REVISE.value not in body
+    assert f"{Op.EXPUNGE.value}?[{BELIEF}]" in sent(transport), "Half asked first"
+    confirming = last(transport)
+    assert CLAIM in confirming, "the claim is shown before the body is gone"
+    assert Op.EXPUNGE.value not in confirming
+    assert BELIEF not in confirming
 
 
 def test_a_correction_naming_nothing_half_holds_removes_nothing_and_says_so_gently(
@@ -1162,25 +1182,27 @@ def test_what_half_shows_is_the_claim_as_recorded_and_not_a_paraphrase(
 
     transport = corrects(registry, "thats wrong")
 
-    assert f"{Op.RETRACT.value}[{BELIEF}]: {odd}" in sent(transport)
+    assert odd in sent(transport)
 
 
-def test_a_claim_carrying_a_line_break_cannot_forge_a_second_marker(
+def test_a_claim_carrying_a_line_break_is_shown_whole_and_on_one_line(
     registry, tmp_path
 ):
-    """The marker is the only thing that distinguishes a real removal from an
-    invented one, and a claim is **attacker-influenced**: it comes from the
-    main's own messages and, from story 3 on, from ingested sources.
+    """A claim is **attacker-influenced**: it comes from the main's own messages
+    and, from story 3 on, from ingested sources.
 
-    A claim containing a newline would occupy two lines and forge the second:
+    Story 12 folded its line breaks because the claim travelled after a marker
+    — ``retract[b_x]: ...`` — and a newline forged a second marker line. Story
+    13b took the marker off the wire, so there is nothing left to forge; the
+    folding stays for two other reasons and both are load-bearing.
 
-        noted.
-        retract[b_x]: line one
-        retract[b_fake]: totally made up
-
-    Every line break is folded to a space before the claim is shown — the whole
-    claim, no truncation and no escaping scheme to get wrong — so one claim can
-    never be two lines.
+    A removal is **one message**, and a claim occupying two lines is a reply
+    that reads as two. And the fold is
+    ``half.context.channels.sanitize``, shared rather than approximated, so that
+    ``shown`` is a fixed point of the function a ``Content`` applies at
+    construction — without which the inclusion check would look for a string the
+    composed reply can never contain and every correction would fall back for
+    ever, with nothing failing.
     """
     forged = f"line one\n{Op.RETRACT.value}[b_fake]: totally made up"
     seed(tmp_path, beliefs=((BELIEF, forged),))
@@ -1189,8 +1211,8 @@ def test_a_claim_carrying_a_line_break_cannot_forge_a_second_marker(
 
     body = last(transport)
     assert "b_fake" in body, "the claim itself is still shown whole"
-    assert body.count("\n") == 1, body
-    assert body.splitlines()[1].startswith(f"{Op.RETRACT.value}[{BELIEF}]: ")
+    assert sanitize(forged) in body
+    assert body.splitlines()[-1] == sanitize(forged), "one claim, one line"
 
 
 def test_a_behave_claim_reaches_the_wire_on_a_correction_turn_and_no_other(
@@ -1903,7 +1925,7 @@ def test_a_removal_is_shown_even_when_the_turn_has_no_reply_of_its_own(
     transport = corrects(registry, "thats wrong")
 
     assert [r.op for r in corrections_in(tmp_path)] == [Op.RETRACT]
-    assert last(transport) == f"{Op.RETRACT.value}[{BELIEF}]: {CLAIM}"
+    assert last(transport) == CLAIM
 
 
 def test_two_corrections_inside_one_second_are_two_records(registry, tmp_path):
@@ -2128,13 +2150,14 @@ def test_only_the_message_leaves_the_machine():
 
 
 @pytest.mark.cap11_structure
-def test_the_line_half_shows_is_made_of_the_op_and_the_claim_and_nothing_else():
+def test_what_half_shows_is_made_of_the_claim_and_nothing_this_module_wrote():
     """*"No generated prose"* as a property of the module, not of its output.
 
     Every string constant in ``apply.py`` outside a docstring and outside a
     ``raise`` is either punctuation, a field name, or an enum value — there is
-    no word here a main could read that Half composed. The op's own name is the
-    whole vocabulary, and it comes from ``half.store.ops``.
+    no word here a main could read that Half composed. Since story 13b a
+    removal is the claim alone, so even the op's own name no longer reaches a
+    main; what is left is the proposal's brackets and the record-field names.
 
     Docstrings and refusal messages are excluded because neither can reach a
     main: one is prose about the code and the other is a ``CorrectionError``
@@ -2158,34 +2181,101 @@ def test_the_line_half_shows_is_made_of_the_op_and_the_claim_and_nothing_else():
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
         and id(node) not in unread
     ]
-    # Punctuation, the id separator, the two enum values, and the record-field
-    # names ``aim`` reads off a ranked candidate. Not one of them is a word a
-    # main could read: the op's own name is the whole vocabulary.
-    allowed = {"[", "]", ": ", "?", "", " ", "_", "co_", "table", "inferred",
-               "claim", "belief", "weights", "strand", "id", "t",
-               "\n\r\u2028\u2029\u0085\v\f"}
+    # Punctuation, the two enum values, and the record-field names ``aim``
+    # reads off a ranked candidate. Not one of them is a word a main could read.
+    #
+    # **Tightened by story 13b rather than left where it was.** The join and the
+    # line-break table are gone with the marker they served, and an ``allowed``
+    # set kept wider than the module needs is room for a word to arrive in
+    # without anything failing.
+    allowed = {"[", "]", "?", "", "_", "co_", "table", "inferred",
+               "claim", "belief", "weights", "strand", "id", "t"}
     assert set(literals) <= allowed, sorted(set(literals) - allowed)
 
 
 @pytest.mark.cap11_structure
-def test_the_shown_line_is_built_once_and_read_two_ways():
-    """A proposal and a removal are one function, and differ only in the claim.
+def test_the_removal_is_the_claim_alone_and_the_proposal_names_no_claim():
+    """The two renderings, and what each of them may carry (13b).
 
-    Two renderings of one item is how a guard that scans one string ends up
-    admitting a different one — so the candidate Half shows and the removal it
-    performs cannot name different beliefs.
+    A **removal** is the claim and nothing else: no op name, no id, no bracket,
+    no framing word, in any language. Until story 13b it was
+    ``retract[b_land]: ...`` and that string went to a person.
+
+    A **proposal** is still the op with a question mark and the id, and
+    deliberately not the claim — a proposal is Half asking about a belief it may
+    not be licensed to quote. That line is the one piece of the serialization
+    story 13b leaves on the wire, and ``half.correction.apply.proposed`` records
+    why: there is nothing to compose prose from and dropping it would silence
+    the question that stands between an inference and a destroyed body.
     """
     removal = Removal(target=BELIEF, op=Op.RETRACT,
                       attribution=Attribution.NOT_YET_KNOWN, claim=CLAIM)
-    assert correction.shown(removal) == f"retract[{BELIEF}]: {CLAIM}"
+    assert correction.shown(removal) == CLAIM
+    assert BELIEF not in correction.shown(removal)
+    assert Op.RETRACT.value not in correction.shown(removal)
     assert correction.proposed(removal) == f"retract?[{BELIEF}]"
-    # **One rendering, read two ways, and the claim is the difference.** The
-    # head is identical byte for byte; a proposal stops there because it is Half
-    # asking, and a removal continues because the main needs the words to catch
-    # a mis-aim.
-    assert correction.shown(removal).startswith(
-        correction.proposed(removal).replace("?", "")
-    )
+    assert CLAIM not in correction.proposed(removal)
+
+
+@pytest.mark.cap11_structure
+def test_the_inclusion_check_is_defined_over_the_fallback_it_falls_back_to():
+    """The property that stops CAP-11's check becoming a permanent silence.
+
+    ``shows`` is defined over ``shown``'s own output, so the fallback satisfies
+    it **by construction**: there is no claim for which the check refuses
+    everything the turn is able to send. A check and a fallback that could
+    disagree is a check that silences a main every time it fires.
+
+    Swept over claims a second normalization would damage — a line break, a
+    control character, leading space, a Devanagari matra, a Khmer dependent
+    vowel — because a check that folded or trimmed before comparing would hold
+    for Latin prose and fail for the scripts this product exists to reach.
+    """
+    for claim in (
+        CLAIM,
+        "line one\nline two",
+        "  padded  ",
+        "\u0645\u0627\u0631\u0633 \u0645\u0646\u0630 \u0627\u0644\u0623\u0631\u0636 \u062a\u0644\u0643 \u064a\u0632\u0631 \u0644\u0645",
+        "\u092e\u093e\u0930\u094d\u091a \u0938\u0947 \u0909\u0938 \u0916\u0947\u0924 \u092a\u0930 \u0928\u0939\u0940\u0902 \u0917\u092f\u093e",
+        "\u1798\u17b7\u1793\u1794\u17b6\u1793\u1791\u17c5\u1785\u1798\u17d2\u1780\u17b6\u179a\u1793\u17c4\u17c7",
+        "one\x07two",
+    ):
+        removal = Removal(target=BELIEF, op=Op.RETRACT,
+                          attribution=Attribution.NOT_YET_KNOWN, claim=claim)
+        spare = correction.shown(removal)
+        assert spare, claim
+        assert correction.shows(spare, removal), claim
+        # And the fixed point the check rests on: what a ``Content`` does to the
+        # claim on its way to the model is what ``shown`` already did.
+        assert Content(id=BELIEF, claim=spare).claim == spare, claim
+        assert not correction.shows("nothing of the sort", removal), claim
+        # **Verbatim means verbatim.** A check that folded case, or stripped
+        # punctuation, or normalized before comparing would accept prose that
+        # does not carry the main's own words — which is the whole thing being
+        # checked, and it would pass every Latin case while silently accepting
+        # a re-cased Cyrillic or Greek claim.
+        if spare.lower() != spare:
+            assert not correction.shows(spare.lower(), removal), claim
+        if spare.upper() != spare:
+            assert not correction.shows(spare.upper(), removal), claim
+
+
+@pytest.mark.cap11_structure
+def test_a_removal_with_no_readable_claim_shows_nothing_and_refuses_nothing():
+    """The one case where a waiting main is answered with silence.
+
+    A record whose claim this build cannot read removes nothing anybody can be
+    shown. ``shown`` answers ``""``, which the turn reads as *no claim to fall
+    back to*; ``shows`` answers ``True``, because refusing every possible reply
+    would answer a main's correction with nothing at all on top of it.
+    """
+    for claim in ("", None, 7):
+        removal = Removal(target=BELIEF, op=Op.RETRACT,
+                          attribution=Attribution.NOT_YET_KNOWN, claim=claim)
+        assert correction.shown(removal) == ""
+        assert correction.shows("anything", removal)
+    assert correction.shown(None) == ""
+    assert correction.shows("anything", None)
 
 
 @pytest.mark.cap11_structure

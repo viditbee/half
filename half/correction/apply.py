@@ -27,12 +27,31 @@ The alternative is a Half that answers *"that's wrong"* with a clarifying
 question before doing anything, which leaves a known-wrong belief shaping
 contexts while the exchange resolves.
 
-**What Half shows is the removed claim, quoted.** ``shown`` renders one line:
-the op's own name from the closed vocabulary, the belief's id, and the claim
-**exactly as the record holds it**. There is no sentence here, no template and
-no language — the same shape ``half.context.channels.render_line`` already puts
-on the wire, and for the same reason. Composing prose about a correction is
-where an apology gets invented for a main who simply changed.
+**What Half shows is the removed claim, and nothing around it.** ``shown``
+renders the claim **exactly as the record holds it** and not one character more:
+no op name, no belief id, no bracket, no framing word, in any language. Until
+story 13b it rendered ``retract[b_land]: has not walked that plot since March``
+— the internal serialization, on the wire, to a person — and that was the
+launch blocker 13b closes. It is now the **fallback** rather than the primary
+rendering: the turn composes prose around the claim
+(``half.voice.turn``), and where generation fails this is what goes out. The
+claim alone degrades to *Half echoes what it knows*, which is honest; a written
+sentence would be one language's phrasing shipped worldwide, and silence would
+read as broken to somebody who has just written.
+
+**``shows`` is the requirement the composed replacement must satisfy** (CAP-11).
+A composed reply must contain the removed claim verbatim, checked before it is
+sent, because CAP-11's success criterion is that the main can *see the belief
+actually change* — and story 12's aim, the top-ranked belief above a relevance
+floor, can mis-target. The main is the only one who can catch that and they can
+only catch it if they are shown the words. Prose that says *"I've taken that
+out"* without saying *what* sounds better than the claim and verifies nothing.
+
+**The check and the fallback are one function apart, deliberately.** ``shows``
+is defined over ``shown``'s own output, so the fallback satisfies the check by
+construction: there is no claim for which the check can refuse everything the
+turn is able to send. A check and a fallback that could disagree is a check that
+silences a main every time it fires.
 
 **Why quoting the claim is not the AD-18 hole it resembles.** AD-18 forbids
 `behave` text inside a *constructed context* — the thing a model is handed and
@@ -43,10 +62,24 @@ and it is also the one thing that makes a mis-aimed correction visible: the main
 sees what left and can correct the correction. Withholding it would trade an
 audit the main can perform for a rule that was written about a different object.
 
-**An erasure shows no claim.** ``expunge`` tombstones the body, and echoing the
-text back on the turn the main asked for it to be gone is the one place quoting
-would be wrong. The line names the op and the id, which is the *distinct in what
-Half says* the glossary asks for.
+**An erasure shows the claim too, and this reverses story 12.** That story
+argued that echoing the text back on the turn the main asked for it to be gone
+was the one place quoting would be wrong, and rendered the op and the id
+instead. Story 13b's matrix says otherwise — *the claim is shown before the
+body is gone* — and the argument for the reversal is the one CAP-11 rests on
+everywhere else, holding here with more force rather than less. An erasure is
+the **only** removal that cannot be corrected by correcting the correction: the
+body is tombstoned and there is nothing left to reverse and nothing left to
+show. So the confirmation turn is the last moment at which a mis-aimed erasure
+can be caught, and under story 12 that moment carried no words at all —
+``expunge?[b_x]`` on the asking turn and ``expunge[b_x]`` on the confirming
+one, so a main destroyed a belief they were never shown. The claim is read off
+the fold *before* ``Store.expunge`` runs, which is why it can be shown at all.
+
+What stays distinct between the three ops is what the log records — the op
+itself, and the attribution stamps ``half.correction.attribute`` folds — rather
+than a marker on the wire. The wire carries prose or the claim, and neither has
+a place for an op name that is not a word in anybody's language.
 
 Pure. No clock, no store, no model, no network — ``fields`` and ``record_id``
 take the caller's ``t``, and the append itself happens where the main's mutex is
@@ -60,6 +93,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
 
+from half.context.channels import sanitize
 from half.correction.attribute import Attribution, fields_for, op_for
 from half.correction.signals import Meaning
 from half.errors import CorrectionError
@@ -76,20 +110,22 @@ CLAIM: Final[str] = "claim"
 #: cannot land in the belief namespace.
 ID_PREFIX: Final[str] = "co_"
 
-#: What ``shown`` puts around an id, and what marks a line as a **proposal**
-#: rather than a removal. Punctuation, deliberately: this module contains no
-#: word a main could read that is not either the op's own name from the closed
-#: vocabulary or the claim as the record holds it.
+#: What ``proposed`` puts around an id, and what marks its line as a
+#: **proposal**. Punctuation, deliberately: this module contains no word a main
+#: could read that is not either the op's own name from the closed vocabulary or
+#: the claim as the record holds it.
+#:
+#: **Nothing in ``shown`` uses them any more** (story 13b). A removal is now the
+#: claim and nothing else, because a bracket and an op name on the wire are the
+#: internal serialization reaching a person. The proposal still renders one, and
+#: that is recorded as **deferred** rather than fixed: a proposal deliberately
+#: withholds the claim (see ``proposed``), so there is nothing to compose prose
+#: around and nothing to fall back to — dropping the line would silence the one
+#: question that stands between an inference and a destroyed body. It needs its
+#: own story, not a commit inside this one.
 _OPEN: Final[str] = "["
 _CLOSE: Final[str] = "]"
-_JOIN: Final[str] = ": "
 _ASKING: Final[str] = "?"
-
-#: Every character that starts a new line somewhere. Folded out of a claim
-#: before it is shown — see ``_flattened``.
-_LINE_BREAKS: Final[frozenset[str]] = frozenset(
-    "\n\r\u2028\u2029\u0085\v\f"
-)
 
 
 class Source(StrEnum):
@@ -141,8 +177,14 @@ class Removal:
     #: message that no longer exists — an erasure the main confirmed has to
     #: erase, not retract.
     meaning: Meaning = Meaning.WRONG
-    #: The belief's claim exactly as the record holds it, or ``""`` for an
-    #: erasure, whose body is tombstoned.
+    #: The belief's claim exactly as the record holds it, or ``""`` when the
+    #: record has none this build can read.
+    #:
+    #: **An erasure carries it too** (story 13b), and it is read off the fold
+    #: *before* ``Store.expunge`` tombstones the body — which is the whole of
+    #: why the ordering matters. The confirmation turn is the last moment a
+    #: mis-aimed erasure can be caught, and it is the one removal that cannot be
+    #: undone by correcting the correction.
     claim: str = ""
     source: Source = Source.TABLE
 
@@ -268,7 +310,7 @@ def plan(
         op=op,
         attribution=attribution,
         meaning=meaning,
-        claim="" if op is Op.EXPUNGE or not isinstance(claim, str) else claim,
+        claim=claim if isinstance(claim, str) else "",
         source=source,
     )
 
@@ -305,7 +347,7 @@ def proposal(
         op=op,
         attribution=attribution,
         meaning=meaning,
-        claim="" if op is Op.EXPUNGE or not isinstance(claim, str) else claim,
+        claim=claim if isinstance(claim, str) else "",
         source=source,
     )
 
@@ -337,27 +379,70 @@ def record_id(removal: Removal, *, t: str) -> str:
 
 
 def shown(removal: Removal | None) -> str:
-    """The one line Half says about a removal, or ``""``.
+    """The claim Half shows for a removal, or ``""``. **The fallback** (13b).
 
-    ``op[target]: claim`` — the op's name from the closed vocabulary, the id,
-    and the claim as the record holds it. An erasure shows no claim.
+    The claim as the record holds it and nothing around it: no op name, no
+    belief id, no bracket, no framing word, in any language. Until story 13b
+    this rendered ``retract[b_land]: has not walked that plot since March`` and
+    that string went to a person, which is the launch blocker 13b closes.
 
-    The three ops stay distinct in what Half says because the op's own name is
-    what the line is built from: there is no branch here that could render a
-    ``revise`` and a ``retract`` identically, and no sentence either could be
-    dressed in.
+    It is the fallback rather than the primary rendering. ``half.voice.turn``
+    composes prose around the claim and sends this when it cannot — the claim
+    is already in the main's own language, because it came from them, so it
+    needs no template and belongs to no locale.
+
+    ``""`` is the answer for a record whose claim this build cannot read, and it
+    is the one case where a waiting main is answered with silence rather than
+    with a word of Half's own.
+
+    **Flattened, and the flattening is a fixed point of
+    ``half.context.channels.sanitize``.** That is not tidiness and it is not the
+    forgery guard it used to be — with the marker gone there is no second line
+    to forge. It is what keeps ``shows`` and the composed reply from disagreeing:
+    the claim reaches the model through a ``Content``, which sanitizes at
+    construction, and a check looking for an unsanitized string against text
+    built from a sanitized one would refuse every composed correction reply ever
+    written, for ever, with a green suite. Sharing the function rather than
+    approximating it is the same choice ``half.voice.leak`` makes about the
+    withheld rule.
     """
     if removal is None:
         return ""
-    return _line(removal, asking=False)
+    return _flattened(removal.claim)
+
+
+def shows(text: object, removal: Removal | None) -> bool:
+    """Whether ``text`` shows what ``removal`` removed (CAP-11).
+
+    **The requirement a composed correction reply must satisfy, checked before
+    it is sent** — a property of what goes on the wire rather than a hope about
+    what was generated. CAP-11 exists so the main can *see the belief actually
+    change*; story 12 aims at the top-ranked belief above a relevance floor and
+    can mis-target; the main is the only one who can catch that, and only if
+    they are shown the words. *"I've taken that out"* sounds better than the
+    claim and verifies nothing.
+
+    Defined over ``shown``'s own output, so **the fallback satisfies it by
+    construction**. There is deliberately no second normalization here: a check
+    that folded, trimmed or re-cased before comparing would accept prose that
+    does not actually contain the main's words, which is the whole thing being
+    checked.
+
+    ``True`` when there is nothing to show — a record with no readable claim
+    removes nothing anybody can be shown, and refusing every possible reply for
+    it would answer a main's correction with silence.
+    """
+    claim = shown(removal)
+    if not claim:
+        return True
+    return isinstance(text, str) and claim in text
 
 
 def proposed(removal: Removal | None) -> str:
     """The one line Half says when it is **asking**, or ``""``.
 
-    The same rendering with a question mark on the op, and **without the
-    claim** — which is the one asymmetry between the two, and it is the bound on
-    the route this story opens through AD-18.
+    The op's name with a question mark on it and the belief's id, and **not the
+    claim** — which is the bound on the route story 12 opens through AD-18.
 
     A *removal* shows the claim because the main needs the words to catch a
     mis-aim: the belief is gone, and seeing what went is the only audit they
@@ -365,44 +450,43 @@ def proposed(removal: Removal | None) -> str:
     the main may have said nothing corrective at all — a classifier reading an
     ordinary message would otherwise put a `behave` claim on the wire. The id is
     enough to ask about.
+
+    **This line is still the internal serialization, and story 13b does not fix
+    it.** Recorded here rather than discovered later: 13b's Never list forbids a
+    label or a belief id on the wire, and this is one. It is left because
+    neither available answer is right inside this story. Composing prose needs
+    something to compose *from*, and a proposal withholds the claim by design,
+    so the material is an op name and an opaque id; and dropping the line
+    silences the one question that stands between an inference and a destroyed
+    body (``NEEDS_ANSWER``). What it needs is a story that decides what Half may
+    show when it is asking about a belief it may not quote — which is a licence
+    question, not a wording one, and belongs beside CAP-10's quarantine rule
+    rather than inside a story about prose.
     """
     if removal is None:
         return ""
-    return _line(removal, asking=True)
-
-
-def _line(removal: Removal, *, asking: bool) -> str:
-    """The single serialization, shared by both callers.
-
-    One function for the reason ``half.actor.runtime.question_line`` gives:
-    two renderings of one item is how a guard that scans one string ends up
-    admitting a different one.
-    """
-    mark = _ASKING if asking else ""
-    head = f"{removal.op.value}{mark}{_OPEN}{removal.target}{_CLOSE}"
-    if asking or not removal.claim:
-        return head
-    return f"{head}{_JOIN}{_flattened(removal.claim)}"
+    mark = _ASKING
+    return f"{removal.op.value}{mark}{_OPEN}{removal.target}{_CLOSE}"
 
 
 def _flattened(claim: str) -> str:
-    """``claim`` with every line break folded to a space.
+    """``claim`` with everything that could start a line folded to a space.
 
-    **The one thing done to the claim, and it is a forgery guard rather than
-    tidiness.** The marker is what distinguishes a real removal from an invented
-    one, and a claim carrying a newline forges a second marker line:
+    ``half.context.channels.sanitize``, imported rather than approximated. It
+    replaces every breaking character — the control characters, the line and
+    paragraph separators — with one space and trims the ends, keeping every
+    printable character in order: no truncation, and no escaping scheme to get
+    wrong.
 
-        noted.
-        retract[b_x]: line one
-        retract[b_fake]: totally made up
+    **Sharing it is what makes the inclusion check possible at all.** The claim
+    reaches the model as a ``Content``, which sanitizes at construction, so a
+    fallback normalized any other way would be a string the composed reply can
+    never contain — the check would refuse everything and every correction
+    would fall back, for ever, with nothing failing.
 
-    Claims come from the main's own messages *and* from ingested sources, so the
-    text is attacker-influenced. Folding the breaks keeps the whole claim — no
-    truncation, no escaping scheme to get wrong — while making it structurally
-    impossible for one claim to occupy two lines.
-
-    The same characters ``half.text`` treats as invisible are folded here, for
-    the reason ``half.crisis.signals`` folds them: a line separator that is not
-    ``\n`` is still a line break to whatever renders the message.
+    A claim with a line break in it is still folded to one line, which is what
+    keeps a removal one message rather than two. What it no longer guards
+    against is a forged marker line, because story 13b took the marker off the
+    wire: there is nothing left to forge.
     """
-    return "".join(" " if char in _LINE_BREAKS else char for char in claim)
+    return sanitize(claim) if isinstance(claim, str) else ""
