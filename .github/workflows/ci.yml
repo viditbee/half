@@ -1056,12 +1056,12 @@ jobs:
         # wiring and the determinism guarantees among them — fitted inside its
         # own margin.
         #
-        # 482 selected, 472 required. The margin is 10, and it is deliberately
+        # 485 selected, 475 required. The margin is 10, and it is deliberately
         # smaller than every protected subset: silence (82), nagging (72),
-        # structure (13), the wire text (297) and the cases held by this gate
+        # structure (13), the wire text (300) and the cases held by this gate
         # alone. Deleting any one of them drops this gate beneath its floor
         # **and** fails whichever sub-gate names it. Story 11 added one and story
-        # 13a added 297; the floor moves with them, so the margin does not grow.
+        # 13a added 300; the floor moves with them, so the margin does not grow.
         #
         # The silence figure read 83 for one revision and the gate collects 82.
         # A number in a comment that the gate does not support is the same defect
@@ -1072,7 +1072,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap8 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-8 cases collected: $collected"
-          if [ "$collected" -lt 472 ]; then
+          if [ "$collected" -lt 475 ]; then
             echo "::error::the CAP-8 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -1229,12 +1229,13 @@ jobs:
         # with them; nothing else may.
         #
         # **A superset floor cannot protect this, and the reason is not the one
-        # an earlier revision gave.** That revision said all 297 could be deleted
-        # with `cap8` green, which is false — deleting them leaves 185 against a
-        # floor of 472, so the superset gate is stronger than the sentence
+        # an earlier revision gave.** That revision said all of these could be
+        # deleted with `cap8` green, which is false — deleting them leaves 185
+        # against a floor of 475, so the superset gate is stronger than the
+        # sentence
         # claimed. What `cap8` cannot do is protect any *subset*: its margin is
         # 10, so deleting the fourteen script cases, or the twenty question-mark
-        # cases, or every case review round 1 added, passes it comfortably. That
+        # cases, or the three cluster-boundary cases, passes it comfortably. That
         # is what this gate is for, and it is why its own margin is zero.
         #
         # **Two of these cases exist because a mutation survived without them**,
@@ -1257,13 +1258,13 @@ jobs:
         # sample depending on fold order, a hardcoded tier, the price of a real
         # morning on both tiers, and the flush at shutdown.
         #
-        # 297 selected, 297 required.
+        # 300 selected, 300 required.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap8_voice -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-8 wire-text cases collected: $collected"
-          if [ "$collected" -lt 297 ]; then
+          if [ "$collected" -lt 300 ]; then
             echo "::error::the wire-text gate collected $collected cases; Half may have stopped speaking, or started speaking scaffolding"
             exit 1
           fi

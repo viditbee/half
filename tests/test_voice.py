@@ -812,6 +812,58 @@ def test_the_sample_is_bounded_and_the_bound_is_not_a_script_rule():
         assert Sample(text).present
 
 
+#: Clusters whose length does not divide ``MAX_SAMPLE_CHARS``, so a codepoint
+#: slice at the bound lands **inside** one. Three scripts, because the joiner
+#: differs: a Devanagari conjunct binds through a virama, a Khmer one through a
+#: coeng, a Bengali one through its own virama.
+#:
+#: Precomposed Hangul is deliberately absent: ``각`` is a single codepoint, so a
+#: slice cannot land inside it and a case built on it would pass whatever the
+#: implementation did. A fixture that cannot fail is what the first version of
+#: this case had.
+SPLITTABLE: Final[dict[str, str]] = {
+    "bengali": "ক্ষ",
+    "devanagari": "क्ष",
+    "khmer": "ស្ត",
+}
+
+
+@pytest.mark.cap8_voice
+@pytest.mark.parametrize("script", sorted(SPLITTABLE), ids=sorted(SPLITTABLE))
+def test_the_sample_is_cut_on_a_cluster_boundary_and_never_inside_one(script):
+    """Review round 1's finding, and the exact class of failure this package
+    goes to lengths to avoid one function over.
+
+    A slice at a codepoint offset separates a Devanagari matra, a Khmer
+    dependent vowel or a Hangul jamo from the letter it belongs to, so the
+    sample ends in a fragment that is not a character anybody typed — and the
+    fragment is the *last* thing a model reads before being told to write in
+    that language. ``half.text.clusters`` already solves this; the point of the
+    case is that the bound uses it.
+
+    Asserted as a property — the result is a whole number of clusters and is a
+    prefix of the input — rather than against an expected string, and the raw
+    slice is shown to differ so the case cannot pass vacuously.
+    """
+    from half.text import clusters
+
+    unit = SPLITTABLE[script]
+    text = unit * (MAX_SAMPLE_CHARS * 2)
+    trimmed = Sample(text).text
+
+    assert len(text[:MAX_SAMPLE_CHARS]) != len(trimmed), (
+        "the fixture does not actually split a cluster at the bound"
+    )
+    assert len(trimmed) <= MAX_SAMPLE_CHARS
+    assert text.startswith(trimmed)
+    assert "".join(clusters(trimmed)) == trimmed
+    assert len(trimmed) % len(unit) == 0, (
+        f"the sample ends inside a cluster: {trimmed[-len(unit):]!r}"
+    )
+    # And it loses at most one cluster, so a bound is still a bound.
+    assert len(trimmed) > MAX_SAMPLE_CHARS - len(unit)
+
+
 @pytest.mark.cap8_voice
 def test_the_sample_cannot_forge_a_block_label():
     """A main who writes ``may-be-said:`` does not thereby open the quotable
