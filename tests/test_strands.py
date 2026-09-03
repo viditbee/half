@@ -71,6 +71,29 @@ def seed(store):
     return store
 
 
+#: One claim Half is licensed to *state*, seeded beside the three it is not.
+#:
+#: **Story 13b made this necessary.** With no template in any language, a turn
+#: whose material is all `behave` has nothing to fall back to and is silent — so
+#: a case that asserted *"no withheld claim reached the wire"* over an empty
+#: wire would pass having proved nothing. Seeding one sayable claim keeps the
+#: byte-wise AD-18 assertion running against a reply that actually exists.
+SAYABLE = "swam twice this month"
+
+#: The same thing, worded so an ordinary garden question retrieves it.
+WATERS = "waters the garden beds before dawn every second day"
+
+
+def seed_a_sayable(store, ident="b_say", *, claim=SAYABLE):
+    from half.governance.ladder import License
+    from tests.conftest import seed_belief
+
+    seed_belief(store, ident, "2026-06-01T00:00:00Z", subject="self",
+                claim=claim, ledger="revealed", rung=License.ASSERT,
+                support=["s_1"])
+    return store
+
+
 @pytest.fixture
 def store(tmp_path):
     with Store(tmp_path / "main", prefix=build_prefix) as s:
@@ -250,7 +273,11 @@ def test_retrieval_actually_runs_on_the_live_turn(tmp_path):
                                reranker=recorder)
     reg.close()
 
-    assert transport.sent, "the turn produced no reply at all"
+    # **The signal is the recorder and not the wire** (story 13b). A turn whose
+    # material is all `behave` has nothing to say and nothing to fall back to,
+    # so *"something was sent"* stopped being evidence that retrieval ran the
+    # moment the ``noted.`` template went. What a mutation has to survive is the
+    # reranker seeing the candidate set.
     assert recorder.seen, "the live turn never ranked anything"
     # The query's words match b_zfarm through its indexed loop prefix, and only
     # that one — reachable means findable by a matching query, not present in
@@ -311,6 +338,13 @@ def test_one_mains_crisis_does_not_disable_another_mains_retrieval(tmp_path):
         with Store(root / main_id, prefix=build_prefix) as s:
             s.record(Op.ASSERT, f"{prefix_id}_1", "2026-06-01T00:00:00Z",
                      subject="self", claim="keeps a garden", ledger="revealed")
+            # Asha may be answered; vidit's ledger is switched off. The whole
+            # point of the case is that one main's crisis does not silence
+            # another, so the main who is *not* in crisis needs something
+            # sayable — which since story 13b is what a reply is made of — and
+            # it has to *match* the message, or the silence would come from
+            # retrieval rather than from the switch.
+            seed_a_sayable(s, f"{prefix_id}_say", claim=WATERS)
 
     reg = ActorRegistry(root)
     reg.retrieval_switch("vidit").disable()  # as the crisis gate would
@@ -322,14 +356,25 @@ def test_one_mains_crisis_does_not_disable_another_mains_retrieval(tmp_path):
     )
     reg.close()
 
-    assert len(transport.sent) == 2, "both mains must be answered"
-    assert recorder.every_id == {"b_a_1"}, (
+    assert transport.sent == [("456", WATERS)], (
+        "the main who is not in crisis must still be answered, and only them"
+    )
+    assert recorder.every_id == {"b_a_1", "b_a_say"}, (
         "asha's retrieval must be untouched, and vidit's must be off"
     )
 
 
-def test_a_turn_after_a_disable_still_replies_and_keeps_the_message(tmp_path):
-    """A disable degrades what Half knows, never whether Half replies."""
+def test_a_turn_after_a_disable_keeps_the_message_and_never_raises(tmp_path):
+    """A disable degrades what Half knows, and — since story 13b — what Half
+    can say.
+
+    ``_retrieve`` used to be able to claim that a disable *never* costs the main
+    a reply, and that was true only while the reply was ``noted.``. With no
+    template in any language and an empty ranked set there is no claim to fall
+    back to, so the turn is silent. What must still hold is that it **completes**
+    — no raise, and the main's message recorded — because a disabled ledger
+    losing somebody's message is the failure this case was written for.
+    """
     root = tmp_path / "mains"
     with Store(root / "vidit", prefix=build_prefix) as s:
         seed(s)
@@ -338,7 +383,7 @@ def test_a_turn_after_a_disable_still_replies_and_keeps_the_message(tmp_path):
     reg.retrieval_switch("vidit").disable()
     transport, _ = run_turns(root, [("123", "still here?")], registry=reg)
 
-    assert transport.sent, "a disabled ledger must not cost the main a reply"
+    assert transport.sent == [], "there is no claim, and never a template"
 
     async def read():
         async with reg.acquire("vidit") as actor:
@@ -387,9 +432,14 @@ def test_a_failing_turn_never_swallows_the_mains_message(tmp_path, monkeypatch):
     )
 
     monkeypatch.undo()
-    retried, _ = run_turns(root, [("123", "please remember this")], registry=reg)
+    run_turns(root, [("123", "please remember this")], registry=reg)
+
+    async def again():
+        async with reg.acquire("vidit") as actor:
+            return set(actor.store.state().beliefs)
+    kept = asyncio.run(again())
     reg.close()
-    assert retried.sent, "the redelivery must be answered"
+    assert "b_1" in kept, "the redelivery must land, message and all"
 
 
 # -- no behave belief text may leave -----------------------------------------
@@ -403,6 +453,7 @@ def test_a_turn_that_retrieved_behave_beliefs_says_none_of_them(tmp_path):
     root = tmp_path / "mains"
     with Store(root / "vidit", prefix=build_prefix) as s:
         seed(s)
+        seed_a_sayable(s)
 
     # A message whose words match no claim and no prefix, so the backstop puts
     # all three distinctive claims in front of the responder.
@@ -411,7 +462,9 @@ def test_a_turn_that_retrieved_behave_beliefs_says_none_of_them(tmp_path):
     reg.close()
 
     assert recorder.every_id >= set(CLAIMS), "the turn had beliefs to retrieve"
-    assert transport.sent, "the turn must actually have produced a reply"
+    assert transport.sent == [("123", SAYABLE)], (
+        "the turn must actually have produced a reply, or this proves nothing"
+    )
     sent = "".join(text for _, text in transport.sent).encode("utf-8")
     for claim in CLAIMS.values():
         assert claim.encode("utf-8") not in sent
@@ -422,12 +475,22 @@ def test_a_turn_that_retrieved_behave_beliefs_says_none_of_them(tmp_path):
 
 @pytest.mark.ad18
 def test_the_responder_is_given_a_behave_belief_and_quotes_none_of_it():
+    """The seam, without the store — and with something sayable beside it, so
+    the assertion runs against a reply rather than against an empty string."""
+    from half.retrieval.port import Candidate, Ranked
+
     ranked = _ranked_with(CLAIMS["b_afly"])
-    reply = respond(inbound("hello"), ranked, ceiling=None)
-    assert reply is not None
+    sayable = Candidate(
+        id="b_say", claim=SAYABLE, prefix="", bm25=None,
+        belief={"license": "assert", "support": ["s_1"], "known_to_main": True,
+                "claim": SAYABLE},
+    )
+    ranked = Ranked(beliefs=(*ranked.beliefs, sayable))
+    turned = asyncio.run(respond(inbound("hello"), ranked, ceiling=None))
+    assert turned.text == SAYABLE
     for word in CLAIMS["b_afly"].split():
         if len(word) > 6:
-            assert word not in reply
+            assert word not in turned.text
 
 
 @pytest.mark.ad18

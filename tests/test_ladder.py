@@ -881,8 +881,25 @@ def test_only_the_ceiling_decides_whether_the_claim_reaches_the_wire(tmp_path):
     capped = run_turn(capped_root, registry=registry)
 
     assert SAID in uncapped, "the positive control must reach the wire"
-    assert capped, "a capped ceiling must not cost the main a reply (AD-27)"
     assert SAID not in capped
+
+    # **And the capped main gets nothing at all**, which is story 13b's
+    # consequence and is recorded here rather than left to be discovered. This
+    # line used to read *"a capped ceiling must not cost the main a reply
+    # (AD-27)"*, and that was true only while the reply was the ``noted.``
+    # template. With no template in any language and every claim capped to
+    # `behave`, there is nothing quotable and nothing to fall back to.
+    #
+    # The consequence reaches further than this case: AD-28's ceiling is what
+    # crisis **aftercare** lowers, for a minimum of thirty days, so a main who
+    # has just come out of the mode now receives silence for every message they
+    # send. CAP-12 says Half *stays present*. Story 13b's frozen matrix says
+    # silence when there is no claim. The two disagree, and closing that needs a
+    # turn reply that does not depend on quotable material — which is a story
+    # that does not exist yet.
+    assert capped == "", (
+        "there is no claim under a `behave` ceiling, and never a template"
+    )
 
 
 @pytest.mark.ad28

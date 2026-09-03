@@ -868,8 +868,24 @@ def test_the_machine_statement_redirects_toward_a_human():
 )
 def test_a_reply_is_always_sent(tmp_path, text):
     """Matrix: silence. Going quiet is a failure here, not an outcome — the
-    omission headline is *'Half didn't respond when it was most required'*."""
-    transport, registry = run_turns(tmp_path / "mains", [("123", text)])
+    omission headline is *'Half didn't respond when it was most required'*.
+
+    **The ordinary control is seeded with something sayable, and that is not a
+    convenience** (story 13b). A turn whose material is all `behave` now has
+    nothing quotable and no template to fall back to, so it is silent. Seeding
+    one `assert` claim keeps this case asserting what it was written to assert —
+    that the gate answers every turn it takes — instead of quietly becoming a
+    case about an empty wire. The crisis replies are reviewed templates and are
+    untouched by any of this.
+    """
+    root = tmp_path / "mains"
+    from half.governance.ladder import License
+    from half.retrieval.prefix import build_prefix
+    with Store(root / "vidit", prefix=build_prefix) as store:
+        seed_belief(store, "b_say", "2026-06-01T00:00:00Z", subject="self",
+                    claim="swims on an ordinary tuesday", ledger="revealed",
+                    rung=License.ASSERT, support=["s_1"])
+    transport, registry = run_turns(root, [("123", text)])
     registry.close()
     assert transport.sent, text
     assert transport.sent[0][1].strip(), text

@@ -12,8 +12,27 @@ from half.actor.runtime import Runtime, respond
 from half.channel.telegram import TelegramChannel
 from half.crisis.gate import CrisisGate
 from half.errors import StoreError
+from half.governance.ladder import License
+from half.retrieval.prefix import build_prefix
 from half.store.ops import Op
-from tests.conftest import FakeTransport, msg
+from half.store.store import Store
+from tests.conftest import FakeTransport, msg, seed_belief
+
+#: One `assert` claim, so a turn has something to say.
+#:
+#: **Story 13b made this necessary and that is the point of it.** A turn with
+#: nothing quotable and no model wired is answered with silence: the Never list
+#: forbids a template in any language, and there is no claim to echo. The cases
+#: below are about the *send* — retries, isolation, idempotency — rather than
+#: about the words, so they seed the one thing that makes a reply exist at all.
+SAYABLE = "wants to fly a paraglider again"
+
+
+def a_reply_to_give(root, main_id="vidit", *, claim=SAYABLE):
+    with Store(root / main_id, prefix=build_prefix) as store:
+        seed_belief(store, "b_fly", "2026-07-01T00:00:00Z", subject="self",
+                    claim=claim, rung=License.ASSERT, support=["s_1"],
+                    ledger="revealed")
 
 
 @pytest.fixture
@@ -136,16 +155,23 @@ def test_the_runtime_never_imports_the_network_transport(tmp_path):
     assert not any("transport" in (m or "") for m in reached)
 
 
-def test_an_inbound_message_is_stored_and_answered(tmp_path):
+def test_an_inbound_message_is_stored_and_the_reply_is_never_a_template(tmp_path):
+    """The message is durable; the wire carries prose, the claim, or nothing.
+
+    **Nothing is what a main with nothing quotable now gets** (story 13b). This
+    used to answer ``noted.`` — one English word, on a product that ships
+    worldwide, carrying no information — and the Never list forbids a template
+    in any language. A main whose ledger holds nothing Half is licensed to
+    state, and who has no model wired, gets silence, which AD-27 makes
+    first-class. What must not happen is scaffolding, and what must not be lost
+    is the message.
+    """
     transport = FakeTransport([msg(text="i want to fly again")])
     channel = TelegramChannel(transport=transport, mains={"123": "vidit"})
     reg = ActorRegistry(tmp_path / "mains")
     asyncio.run(Runtime(channel=channel, registry=reg).run())
 
-    # The reply carries no belief text — not even the main's own words back,
-    # which are now a stored claim. Licenses are enforced at context
-    # construction (AD-18) and that construction is story 5.
-    assert transport.sent == [("123", "noted.")]
+    assert transport.sent == []
 
     async def read():
         async with reg.acquire("vidit") as actor:
@@ -161,7 +187,7 @@ def test_silence_sends_nothing_and_is_not_an_error(tmp_path):
     reg = ActorRegistry(tmp_path / "mains")
     asyncio.run(Runtime(channel=channel, registry=reg).run())
     assert transport.sent == []
-    assert respond(_inbound("   "), ceiling=None) is None
+    assert asyncio.run(respond(_inbound("   "), ceiling=None)).silent
     reg.close()
 
 
@@ -291,6 +317,7 @@ def test_close_refuses_while_a_turn_is_running(tmp_path):
 def test_one_failed_send_does_not_stop_the_loop_for_anyone(tmp_path):
     """An uncaught SendFailed used to propagate out of run() and end polling
     for every main — Half stayed up and silently stopped receiving."""
+    a_reply_to_give(tmp_path / "mains")
     transport = FakeTransport(
         [msg(text="first", message_id="1"), msg(text="second", message_id="2")],
         fail=RuntimeError("Bad Request: chat not found"),
@@ -300,30 +327,32 @@ def test_one_failed_send_does_not_stop_the_loop_for_anyone(tmp_path):
     reg = ActorRegistry(tmp_path / "mains")
     asyncio.run(Runtime(channel=channel, registry=reg).run())
 
-    assert transport.sent == [("123", "noted.")]
+    assert transport.sent == [("123", SAYABLE)]
 
     async def read():
         async with reg.acquire("vidit") as actor:
             return sorted(actor.store.state().beliefs)
-    assert asyncio.run(read()) == ["b_1", "b_2"]  # both stored
+    assert asyncio.run(read()) == ["b_1", "b_2", "b_fly"]  # both stored
     reg.close()
 
 
 def test_a_retryable_send_is_retried_and_succeeds(tmp_path, monkeypatch):
     """SendFailed.retryable previously had no reader anywhere."""
     monkeypatch.setattr("half.actor.runtime.RETRY_DELAYS", (0.0, 0.0, 0.0))
+    a_reply_to_give(tmp_path / "mains")
     transport = FakeTransport(
         [msg(text="hello")], fail=TimeoutError("timed out"), fail_times=2
     )
     channel = TelegramChannel(transport=transport, mains={"123": "vidit"})
     reg = ActorRegistry(tmp_path / "mains")
     asyncio.run(Runtime(channel=channel, registry=reg).run())
-    assert transport.sent == [("123", "noted.")]
+    assert transport.sent == [("123", SAYABLE)]
     assert transport.attempts == 3
     reg.close()
 
 
 def test_a_permanent_send_failure_is_not_retried(tmp_path):
+    a_reply_to_give(tmp_path / "mains")
     transport = FakeTransport(
         [msg(text="hello")], fail=RuntimeError("Forbidden: bot was blocked")
     )
@@ -337,6 +366,7 @@ def test_a_permanent_send_failure_is_not_retried(tmp_path):
 def test_a_redelivered_message_is_not_recorded_twice(tmp_path):
     """At-least-once delivery makes redelivery routine, so the turn is
     idempotent."""
+    a_reply_to_give(tmp_path / "mains")
     same = msg(text="i want to fly again", message_id="42")
     transport = FakeTransport([same, dict(same)])
     channel = TelegramChannel(transport=transport, mains={"123": "vidit"})
@@ -345,8 +375,8 @@ def test_a_redelivered_message_is_not_recorded_twice(tmp_path):
 
     async def read():
         async with reg.acquire("vidit") as actor:
-            return list(actor.store.state().beliefs)
-    assert asyncio.run(read()) == ["b_42"]
+            return sorted(actor.store.state().beliefs)
+    assert asyncio.run(read()) == ["b_42", "b_fly"]
     assert len(transport.sent) == 1  # the duplicate produced no second reply
     reg.close()
 

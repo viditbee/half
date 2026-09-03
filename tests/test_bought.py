@@ -50,12 +50,12 @@ from pathlib import Path
 import pytest
 
 from half.actor.registry import ActorRegistry
-from half.actor.runtime import Runtime, question_line, respond
+from half.actor.runtime import Runtime, respond
 from half.channel.telegram import TelegramChannel
 from half.civil import DAY
 from half.context.build import build as build_context
 from half.context.build import bought_question, resolve
-from half.context.channels import CHANNELS, Context, Question, Topic
+from half.context.channels import CHANNELS, Context, Question, Topic, render_line
 from half.errors import SendFailed
 from half.governance import ladder
 from half.governance.ladder import RUNGS, Ceiling, License
@@ -78,7 +78,16 @@ from half.surface import touch as touch_module
 from half.surface.touch import Origin
 from half.trust.balance import balance
 from half.trust.unasked import ASK_UNAFFORDABLE, TrustLedger
-from tests.conftest import FakeTransport, msg, reaches, resolved_imports
+from tests.conftest import (
+    COMPOSED,
+    FakeTransport,
+    GeneratorDouble,
+    msg,
+    quotable_of,
+    reaches,
+    resolved_imports,
+    stub_voice,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -124,6 +133,12 @@ ON_TOPIC = "farmland again please"
 #: so the case passed with the topic gate removed entirely.
 OFF_TOPIC = "that plot of the novel was good"
 
+#: One claim Half may **state**, seeded beside the `ask`-rung ones where a case
+#: needs the reply to exist at all (story 13b). It shares a word with both
+#: messages above so retrieval finds it, and no adjacent pair with any withheld
+#: claim so the builder admits it.
+SAYABLE = "reads a plot summary before every farmland auction"
+
 
 # ── the harness ──────────────────────────────────────────────────────────────
 
@@ -151,6 +166,7 @@ def seed(
     asks=(),
     replies=(),
     extra=(),
+    sayable=None,
 ):
     """One main, with wantings, `ask`-rung beliefs on them, and favours.
 
@@ -161,6 +177,12 @@ def seed(
     ``favours`` are delivered morning messages — a ``touch`` that marks a day
     *and* says a message was sent, which is the only thing that earns. They are
     dated **before** the turn, because a favour must precede it.
+
+    ``sayable`` seeds one `assert`-rung claim beside the `ask`-rung ones, and it
+    exists because of story 13b. An unbought `ask` belief becomes a *directive*,
+    so a turn that asks nothing has nothing quotable — and with no template in
+    any language, nothing to say at all. A case whose point is *"the reply still
+    goes out and carries no question"* has to have a reply for that to be about.
     """
     scales = dict({FARMLAND: Timescale.YEARS, PASSPORT: Timescale.MONTHS}
                   if scales is None else scales)
@@ -172,6 +194,12 @@ def seed(
                                last_movement="2026-01-04",
                                loops=store.state().loops),
             )
+        if sayable is not None:
+            from tests.conftest import seed_belief
+
+            seed_belief(store, "b_sayable", "2026-08-01T00:00Z", subject="self",
+                        claim=sayable, ledger="revealed",
+                        rung=License.ASSERT, support=["s_sayable"])
         for ident in beliefs:
             claim, slug, topics = CLAIMS[ident]
             store.record(
@@ -226,11 +254,19 @@ def a_turn(
     at=NOON,
     message_id="m1",
     transport=None,
+    voice=None,
 ):
     """One real inbound turn, through the real runtime and the real gate.
 
     ``engine`` is what makes a runtime an asker. ``None`` is the fail-closed
     default and is what every caller that predates story 11 gets.
+
+    ``voice`` is what makes a runtime able to *speak* (story 13b). The question
+    is composed **into** the prose now rather than appended as a line, so a
+    runtime with no composer sends the fallback — the claim alone, which asks
+    nothing — and the favour is deliberately not spent for it. The stub is
+    therefore not a convenience: without it every case below would be asserting
+    the *unasked* path while looking like it asserted the asked one.
     """
     transport = transport or FakeTransport(
         [msg(text=text, message_id=message_id, chat_id="123", date=int(at))]
@@ -239,9 +275,41 @@ def a_turn(
     runtime = Runtime(
         channel=channel, registry=registry,
         questions=QuestionEngine(ledger=registry) if engine else None,
+        voice=stub_voice(mains=(main_id,)) if voice is None else voice,
     )
     asyncio.run(runtime.run())
     return transport
+
+
+def a_voice(main_id="vidit"):
+    """A composer and the holder inside it, so a case can read the prompt."""
+    from half.voice.gate import Voice
+
+    def echo(work):
+        return f"{COMPOSED} {quotable_of(work)}".strip()
+
+    holder = GeneratorDouble(echo)
+    return Voice({main_id: holder}, bound_seconds=1.0), holder
+
+
+def asked_about(holder):
+    """The ``ask-about`` block of every prompt this holder was handed.
+
+    **The signal that a question was actually put**, replacing the
+    ``question[b_land]`` line story 13b takes off the wire. What the main
+    receives is one message with the question inside it, in their own language,
+    so there is nothing on the wire to grep for — and grepping the prose for a
+    question mark is the rule ``half.voice.gate.judge`` refuses to write,
+    because Japanese, Thai and Chinese routinely ask without one.
+    """
+    from half.voice.compose import ASK_ABOUT
+
+    found = []
+    for work in holder.requests:
+        for block in work.prompt.turns[0].text.split("\n\n"):
+            if block.startswith(ASK_ABOUT):
+                found.append(block[len(ASK_ABOUT):].strip())
+    return found
 
 
 def sent(transport):
@@ -277,12 +345,17 @@ def test_the_ordinary_buy_spends_a_favour_and_puts_one_question_on_the_wire(
     attached to the reply they were owed anyway, having been paid for.
     """
     seed(tmp_path, favours=1)
+    voice, holder = a_voice()
 
-    transport = a_turn(registry)
+    transport = a_turn(registry, voice=voice)
 
-    body = sent(transport)
-    assert "question[b_land]" in body
-    assert body.count("question[") == 1
+    # **The question is in the prose, so the wire has no line to grep for**
+    # (story 13b). What is asserted instead is the pair that actually matters:
+    # the question reached the generator as the one ``ask-about`` block, and the
+    # favour was spent for it.
+    assert asked_about(holder) == ["loop: buy-farmland; topic: farmland"]
+    assert "question[" not in sent(transport)
+    assert "b_land" not in sent(transport)
     recorded = spends(tmp_path)
     assert [r.data[QUESTION] for r in recorded] == [question_id("b_land")]
     assert [r.data[ABOUT] for r in recorded] == ["b_land"]
@@ -300,11 +373,13 @@ def test_with_nothing_given_no_question_is_asked_and_nothing_is_spent(
     The reply still goes out — the main asked something — and carries no
     question. Nothing is spent and no record is written.
     """
-    seed(tmp_path, favours=0)
+    seed(tmp_path, favours=0, sayable=SAYABLE)
+    voice, holder = a_voice()
 
-    transport = a_turn(registry)
+    transport = a_turn(registry, voice=voice)
 
     assert transport.sent, "the main is still owed an answer"
+    assert asked_about(holder) == [], "no favour, no question in the prompt"
     assert "question[" not in sent(transport)
     assert spends(tmp_path) == []
     assert balance_of(tmp_path).spent == 0
@@ -362,14 +437,15 @@ def test_two_affordable_questions_and_one_favour_buy_the_costlier_mistake(
     # one word per wanting does both jobs. A message naming only one of them
     # would leave the other out of the ranked set entirely, and this case would
     # then be about a set of one.
-    transport = a_turn(registry, text="farmland passport again please")
+    voice, holder = a_voice()
+    a_turn(registry, text="farmland passport again please", voice=voice)
 
     assert [r.data[ABOUT] for r in spends(tmp_path)] == ["b_trip"], (
         "the costlier mistake is the years-long wanting, not the lower id"
     )
-    body = sent(transport)
-    assert body.count("question[") == 1
-    assert "question[b_trip]" in body
+    assert asked_about(holder) == ["loop: renew-passport; topic: travel"], (
+        "one question, and b_trip's"
+    )
 
 
 @pytest.mark.cap4
@@ -380,10 +456,11 @@ def test_two_favours_do_not_buy_two_questions_in_one_send(registry, tmp_path):
     one: with two favours unspent both beliefs are affordable, and the reply
     still carries one."""
     seed(tmp_path, beliefs=("b_land", "b_trip"), favours=2)
+    voice, holder = a_voice()
 
-    transport = a_turn(registry, text="farmland passport again please")
+    a_turn(registry, text="farmland passport again please", voice=voice)
 
-    assert sent(transport).count("question[") == 1
+    assert len(asked_about(holder)) == 1, "one ask-about block, not two"
     assert len(spends(tmp_path)) == 1
 
 
@@ -454,12 +531,13 @@ def test_a_message_that_raises_no_topic_is_answered_without_a_question(
     against the strands **this message** moved. It is also the case the morning
     surface could never have supplied: a scheduler tick has no message.
     """
-    seed(tmp_path, favours=1)
+    seed(tmp_path, favours=1, sayable=SAYABLE)
+    voice, holder = a_voice()
 
-    transport = a_turn(registry, text=OFF_TOPIC)
+    transport = a_turn(registry, text=OFF_TOPIC, voice=voice)
 
     assert transport.sent, "an off-topic message is still answered"
-    assert "question[" not in sent(transport)
+    assert asked_about(holder) == [], "the topic gate refused before the prompt"
     assert spends(tmp_path) == []
     # Non-vacuity: the belief **is** in the ranked set, so the refusal is the
     # topic gate's and not retrieval's. Without this the case passes with the
@@ -573,16 +651,22 @@ def test_a_belief_whose_topic_echoes_its_claim_is_never_paid_for(
 
 @pytest.mark.cap4
 @pytest.mark.cap4_bought
-def test_the_question_line_is_the_one_signal_that_a_question_was_built():
-    """``question_line`` is what *"no line, no spend"* is measured with, and it
-    is empty in exactly the two ways a bought belief fails to become one."""
-    assert question_line(None) == ""
-    assert question_line(Context(now=NOW)) == ""
+def test_the_built_question_is_the_one_signal_that_a_question_was_built():
+    """``Context.question`` is what *"no question, no spend"* is measured with,
+    and it is empty in exactly the two ways a bought belief fails to become one.
+
+    **It used to be measured with ``question_line``**, the rendering that went
+    on the wire. Story 13b took that rendering off the wire — the question is
+    composed into the prose, never appended as a line — so the signal is now the
+    structure rather than a string, which is where it should always have been:
+    the two facts *"a question exists"* and *"here is how it is written"* are
+    different questions, and only the first one decides a spend.
+    """
+    assert Context(now=NOW).question is None
     carried = Context(
         now=NOW, question=Question(id="b_1", topics=(Topic(kind="loop", name="x"),))
     )
-    assert question_line(carried) == "question[b_1] loop: x"
-    assert question_line(carried) in carried.render()
+    assert carried.question is not None
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -633,10 +717,11 @@ def test_a_question_ignored_a_full_period_later_may_be_put_again_for_a_favour(
     a year for farmland — and it costs a second favour."""
     seed(tmp_path, favours=2,
          asks=(("b_land", ago(PERIOD_DAYS[Timescale.YEARS] + 1)),))
+    voice, holder = a_voice()
 
-    transport = a_turn(registry)
+    a_turn(registry, voice=voice)
 
-    assert "question[b_land]" in sent(transport)
+    assert asked_about(holder) == ["loop: buy-farmland; topic: farmland"]
     assert [r.data[ABOUT] for r in spends(tmp_path)] == ["b_land", "b_land"]
     assert balance_of(tmp_path).spent == 2
 
@@ -665,9 +750,10 @@ def test_an_unrelated_message_days_later_does_not_retire_the_question(
         replies=(ago(PERIOD_DAYS[Timescale.YEARS] - 6),),
     )
 
-    transport = a_turn(registry)
+    voice, holder = a_voice()
+    a_turn(registry, voice=voice)
 
-    assert "question[b_land]" in sent(transport), (
+    assert asked_about(holder) == ["loop: buy-farmland; topic: farmland"], (
         "an unrelated message retired a question it could not have answered"
     )
     assert len(spends(tmp_path)) == 2
@@ -753,7 +839,7 @@ def test_a_spend_the_gates_refuse_takes_the_question_out_of_the_reply(
     fallback left every other case green while a refused spend still put the
     question on the wire.
     """
-    seed(tmp_path, favours=1)
+    seed(tmp_path, favours=1, sayable=SAYABLE)
 
     class Refusing:
         """Offers honestly and cannot pay. The two halves of a stale purchase."""
@@ -772,10 +858,19 @@ def test_a_spend_the_gates_refuse_takes_the_question_out_of_the_reply(
             return Purchase(outcome=ASK_UNAFFORDABLE)
 
     engine = Refusing(QuestionEngine(ledger=registry))
-    transport = _turn_with(registry, engine)
+    voice, holder = a_voice()
+    transport = _turn_with(registry, engine, voice=voice)
 
     assert engine.attempts == 1, "the spend must have been attempted"
     assert transport.sent, "the main is still owed an answer"
+    # **The prose that carried the question is discarded** (story 13b). The
+    # question is inside it now rather than on a line beneath it, so the reply
+    # cannot be sent with the line taken off — what goes out is the claim alone,
+    # which asks nothing by construction and costs no second model call.
+    assert asked_about(holder) == ["loop: buy-farmland; topic: farmland"], (
+        "the fixture must have composed a question to lose"
+    )
+    assert sent(transport) == SAYABLE
     assert "question[" not in sent(transport), (
         "a question reached the main that no favour paid for"
     )
@@ -794,7 +889,7 @@ def test_a_quarantine_landing_between_the_offer_and_the_spend_refuses(
     ``ActorRegistry.note_ask`` refuses under the main's own mutex — the window
     story 5b's review found open — and the reply goes out without the question.
     """
-    seed(tmp_path, favours=1)
+    seed(tmp_path, favours=1, sayable=SAYABLE)
 
     class Quarantining:
         def __init__(self, inner):
@@ -818,7 +913,7 @@ def test_a_quarantine_landing_between_the_offer_and_the_spend_refuses(
 
     transport = _turn_with(registry, Quarantining(QuestionEngine(ledger=registry)))
 
-    assert transport.sent
+    assert sent(transport) == SAYABLE, "the reply goes out without the question"
     assert "question[" not in sent(transport)
     assert spends(tmp_path) == []
 
@@ -842,7 +937,7 @@ def test_a_send_that_fails_after_the_spend_still_costs_the_favour(
         fail=SendFailed("the platform said no", retryable=False),
     )
 
-    a_turn(registry, transport=transport)
+    a_turn(registry, transport=transport)  # a composer is wired by default
 
     assert transport.sent == []
     assert len(spends(tmp_path)) == 1, "the favour was spent and stays spent"
@@ -860,7 +955,7 @@ def test_an_engine_that_raises_costs_the_question_and_never_the_reply(
     The main asked something and is owed an answer; a bug in the question path
     must cost the question and nothing else.
     """
-    seed(tmp_path, favours=1)
+    seed(tmp_path, favours=1, sayable=SAYABLE)
 
     class Broken:
         async def offer(self, main_id, **kwargs):
@@ -926,7 +1021,7 @@ def _live(registry, main_id="vidit"):
     return asyncio.run(observe())
 
 
-def _turn_with(registry, engine, *, main_id="vidit", text=ON_TOPIC):
+def _turn_with(registry, engine, *, main_id="vidit", text=ON_TOPIC, voice=None):
     """One real turn against a runtime holding ``engine``.
 
     ``Runtime`` is a slots dataclass, so the double is passed at construction
@@ -937,7 +1032,9 @@ def _turn_with(registry, engine, *, main_id="vidit", text=ON_TOPIC):
     )
     channel = TelegramChannel(transport=transport, mains={"123": main_id})
     asyncio.run(
-        Runtime(channel=channel, registry=registry, questions=engine).run()
+        Runtime(channel=channel, registry=registry, questions=engine,
+                voice=stub_voice(mains=(main_id,)) if voice is None else voice
+                ).run()
     )
     return transport
 
@@ -1126,7 +1223,7 @@ def test_the_question_channel_is_exactly_the_rung_and_the_purchase(rung, cap, bo
         now=NOW, ceiling=ceiling, bought=bought,
     )
     assert (context.question is not None) is expected
-    assert (question_line(context) != "") is expected
+    assert (context.question is not None) is expected
 
 
 @pytest.mark.cap4
@@ -1354,32 +1451,47 @@ def test_the_worldwide_scan_catches_the_template_it_forbids():
 
 @pytest.mark.cap4
 @pytest.mark.cap4_bought
-def test_the_reply_carries_the_question_only_as_the_builders_own_line(
+def test_the_question_is_composed_into_the_prose_and_never_appended_to_it(
     registry, tmp_path
 ):
-    """The wire text is the builder's single serialization with the reply in
-    front of it — never a sentence composed here. Asserted on the bytes the
-    transport actually carried."""
-    seed(tmp_path, favours=1)
+    """**The rule story 13b exists for, on the bytes the transport carried.**
 
-    transport = a_turn(registry)
+    Until this story the wire was the reply, a newline, and the builder's own
+    ``question[b_land] loop: buy-farmland; topic: farmland``. A question that
+    arrives as its own labelled line is a questionnaire with one row, which is
+    the CAP-4 failure the whole trust currency exists to prevent — and it is the
+    internal serialization on the wire besides.
+
+    What is asserted here is that the message is **one thing**: no newline, no
+    label, no belief id, no part of the builder's rendering, and no line the
+    reply could have been split from. The question's own topic reached the
+    generator instead (``ask-about``), which is the pair that has to hold
+    together — a message with no question in it and a favour spent for one is
+    the loss this story's matrix names.
+    """
+    seed(tmp_path, favours=1)
+    voice, holder = a_voice()
+
+    transport = a_turn(registry, voice=voice)
 
     body = sent(transport)
-    plain = respond_text(tmp_path)
-    assert body == f"{plain}\nquestion[b_land] loop: buy-farmland; topic: farmland"
+    assert body, "the fixture must have sent something"
+    assert "\n" not in body, "the question is composed in, never a second line"
+    assert "question[" not in body and "b_land" not in body
+    context = build_context(
+        _ranked(tmp_path), now=NOW, ceiling=None, bought="b_land",
+    )
+    assert render_line(context.question) not in body
+    assert asked_about(holder) == ["loop: buy-farmland; topic: farmland"]
+    assert len(spends(tmp_path)) == 1
 
 
-def respond_text(root, main_id="vidit"):
-    """What the reply would have been with no question attached."""
+def _ranked(root, main_id="vidit"):
+    """The ranked set this turn's reply was built from."""
     from half.retrieval.rank import Retriever
 
-    class _Inbound:
-        text = ON_TOPIC
-        t = NOW
-
     with Store(root / main_id, prefix=build_prefix) as store:
-        ranked = Retriever(store=store).retrieve(ON_TOPIC, now=NOW)
-        return respond(_Inbound(), ranked, ceiling=None)
+        return Retriever(store=store).retrieve(ON_TOPIC, now=NOW)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

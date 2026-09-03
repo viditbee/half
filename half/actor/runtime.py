@@ -11,9 +11,19 @@ turn completes, so a crash redelivers rather than loses. That makes redelivery
 routine, so the turn is idempotent: a message already recorded is not recorded
 twice.
 
-The responder is a deterministic stub — no model is called anywhere yet, which
-keeps the suite hermetic. Later stories replace ``respond`` without touching
-the channel or the registry.
+**The reply is prose, composed through the model port** (story 13b). Until this
+story ``respond`` was a deterministic stub and a main received
+``noted. has not walked that plot since March`` — an English word bolted to a
+raw claim — while a bought question arrived as ``question[b_1] topic: farmland``
+and a correction as ``retract[b_land]: has not walked that plot since March``.
+All three were the internal serialization on the wire.
+
+What replaces them is story 13a's composer, unforked: one gate, one judge, one
+tripwire, one tally (``half.voice``). Where generation fails the fallback is
+**the claim alone, unscaffolded** — never a template, in any language, and never
+silence unless there is no claim, because a main who has just written is waiting
+and silence would read as broken. ``half.voice.turn`` holds the ladder and the
+argument for it.
 
 **Retrieval runs on the live turn, and what it returns is governed by license.**
 Story 4 ranked the belief set under an interim ban: nothing retrieved could be
@@ -42,13 +52,24 @@ Three orderings on this path are the rule rather than the arrangement:
   balance counts as *delivered* — that is the morning's ``touch``, and this path
   writes only the main's own message — so the balance a question is paid from can
   only hold favours older than this turn. CAP-4 says *preceded*.
-* **The question is attached after the reply is composed and the turn is
-  recorded**, so nothing about buying one can cost the main their answer. Every
-  step of it is fail-open.
-* **The favour is spent only once the built text carries the question line**,
-  and immediately before that text is sent. A belief the ladder raised above
-  `ask`, or one whose topic echoes its claim, produces no line — and used to
-  spend a favour and write an ``asked`` record for a question nobody was asked.
+* **The question is offered after the turn is recorded**, so nothing about
+  buying one can cost the main their answer. Every step of it is fail-open.
+* **The favour is spent only once the composed prose carrying the question is
+  what goes out**, and immediately before it is sent. A belief the ladder raised
+  above `ask`, or one whose topic echoes its claim, builds no question — and
+  used to spend a favour and write an ``asked`` record for a question nobody was
+  asked. Story 13b adds the second half of the same rule: a generation that
+  failed sends the fallback, the fallback asks nothing, and a favour spent on it
+  would have paid for a question the main never saw.
+
+And one that moved. **The words are composed outside the main's mutex.** The
+reply used to be built inside the acquire, which was free while it was a
+deterministic stub and is not now: a model call under the lock would hold
+eviction and every other operation on that main for the whole bound (AD-33),
+which is the same reason correction recognition already runs before the lock.
+What the acquire produces is values — the ranked set, the ceiling, the live
+strands, the removal — and the append that closes the turn still happens before
+the mutex is released.
 """
 
 from __future__ import annotations
@@ -56,12 +77,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from half.actor.registry import Actor, ActorRegistry
 from half.channel.port import Channel, Inbound
 from half.context.build import build as build_context
-from half.context.channels import Context, render_line
+from half.context.build import split as split_context
+from half.context.channels import Content, Context
 from half.correction import apply as correction
 from half.correction import signals as correction_signals
 from half.correction.apply import Removal, Source
@@ -88,6 +110,10 @@ from half.retrieval.rank import Retriever
 from half.retrieval.strands import known_strands
 from half.store.ops import Op
 from half.store.records import LEDGER, STATED
+from half.voice import turn as voice_turn
+from half.voice.compose import Sample
+from half.voice.gate import Voice
+from half.voice.turn import Turned
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +248,18 @@ class Runtime:
     #: It is never a runtime that *cannot* correct: an explicit correction is
     #: recognised and acted on with no model anywhere on the path.
     corrections: Widening | None = None
+    #: Who writes the sentence (story 13b). **Defaulted to a voice with no
+    #: holders**, which composes for nobody — so a runtime built without one
+    #: answers with the claim alone rather than with the internal serialization
+    #: this story exists to take off the wire. That is the fail-safe direction
+    #: and it is not silence: on a turn a main is waiting, so the fallback is
+    #: what Half knows rather than nothing.
+    #:
+    #: **The same ``Voice`` the morning surface holds**, wired by value at the
+    #: composition root. One composer, one gate, one leak check and one tally:
+    #: two of each is two renderings of one thing, which is how a guard that
+    #: scans one string ends up admitting another.
+    voice: Voice = field(default_factory=Voice)
     _gate: CrisisGate = field(init=False, repr=False)
     #: The widening, or an empty one. **A candidate store is not a model
     #: thing**: an erasure has to be confirmed whether or not a deployment has a
@@ -401,12 +439,13 @@ class Runtime:
 
         Idempotent, because at-least-once delivery makes redelivery routine.
 
-        **Two phases, and the mutex is held for the first only.** The reply is
-        composed and the main's message recorded under this main's own lock, as
-        they have been since story 6d; the bought question is attached
-        afterwards, outside it, because ``ActorRegistry.acquire`` is not
-        reentrant and the spend takes that same lock to make its check and its
-        append one serialized operation.
+        **Two phases, and the mutex is held for the first only.** The main's
+        message is recorded and their correction appended under this main's own
+        lock; the words and the bought question happen afterwards, outside it,
+        because ``ActorRegistry.acquire`` is not reentrant and the spend takes
+        that same lock to make its check and its append one serialized
+        operation — and because composing is a model call, which may not be made
+        under a mutex (AD-33).
 
         **Why releasing between the two is safe, written out because it rests on
         a fact that could change.** Three things hold it:
@@ -500,7 +539,6 @@ class Runtime:
             # into the reply and then subtracted from it (AD-28).
             ranked = self._retrieve(actor, inbound)
             ceiling = actor.ceiling
-            reply = respond(inbound, ranked, ceiling=ceiling)
             # The conversation as *this* turn left it. ``_retrieve`` has just
             # moved the strands against this message, so these are the weights
             # 5b's topic gate must read: a question is attached to the
@@ -515,7 +553,7 @@ class Runtime:
             # already left, which the plan reads as *already corrected* and
             # answers with nothing — the matrix row, arriving from the direction
             # that actually produces it.
-            said, acted = self._correct(
+            asked, removal, acted = self._correct(
                 actor, inbound, ranked, this_turn=belief_id,
                 meaning=meaning, standing=standing, confirmed=confirmed,
                 inferred=inferred,
@@ -543,25 +581,39 @@ class Runtime:
                 **ladder.admitted(),
             )
         # The mutex is released. Nothing below this line can cost the main their
-        # reply: it is already composed, their message is already recorded, and
-        # every step of attaching a question is fail-open.
+        # message, their correction or their removal: all three are already
+        # durable, and every step of composing and of attaching a question is
+        # fail-open.
+        #
+        # **The words are composed here rather than inside the acquire**, and
+        # that is story 13b's one structural change to this method. Composing
+        # takes a model call, and a model call under a main's mutex would hold
+        # eviction and every other operation on that main for the whole bound
+        # (AD-33) — the same reason recognition already runs before the lock.
+        # What the lock produced is *values*: the ranked set, the ceiling, the
+        # live strands and the removal. Nothing below reads the store.
         if acted:
             # A correction acted, or Half put one to the main, or a standing
             # candidate was answered. No question — see this method's docstring
             # for the three reasons, and note that the answer is the same for
             # all three outcomes: the turn is about the correction either way.
-            # **The line goes out even when the reply is empty**, which is the
-            # ordering review found inverted: returning early on ``reply is
-            # None`` left the belief gone durably, the candidate consumed, and
-            # CAP-11's own success criterion — *Half shows what it removed* —
-            # silently not happening.
-            if reply is None:
-                return said or None
-            return f"{reply}\n{said}" if said else reply
-        if reply is None:
-            return None
+            # **The removal is shown even when there is nothing else to say**,
+            # which is the ordering review found inverted: returning early on an
+            # empty reply left the belief gone durably, the candidate consumed,
+            # and CAP-11's own success criterion — *Half shows what it removed*
+            # — silently not happening.
+            turned = await respond(
+                inbound, ranked, ceiling=ceiling, voice=self.voice,
+                removal=removal,
+            )
+            if asked:
+                # A proposal, not a removal: Half is asking. That line is still
+                # the internal serialization and story 13b does not fix it —
+                # see ``half.correction.apply.proposed``, which records why.
+                return f"{turned.text}\n{asked}" if turned.text else asked
+            return turned.text or None
         return await self._attach_question(
-            inbound, ranked, ceiling=ceiling, live=live, reply=reply
+            inbound, ranked, ceiling=ceiling, live=live
         )
 
     async def _attach_question(
@@ -571,40 +623,95 @@ class Runtime:
         *,
         ceiling: Ceiling | None,
         live: Strands | None,
-        reply: str,
-    ) -> str:
-        """``reply`` with one bought question attached, or ``reply`` (CAP-4).
+    ) -> str | None:
+        """The turn's reply, with one bought question **composed into it**
+        (CAP-4).
 
-        The whole of story 11's delivery, and it is four steps with a refusal at
-        each:
+        The whole of story 11's delivery, re-read in story 13b's light, and it
+        is four steps with a refusal at each:
 
         1. **Offer.** Every gate 5b established, in 5b's order, through 5b's own
            door. Most turns stop here: the material is below `ask`, or below the
            stakes bar, or its topic was never raised, or no favour is unspent.
-        2. **Build.** The context is rebuilt with the offered belief handed in as
-           bought. Nothing else changes, so the question is the only difference
-           between the two renderings.
-        3. **Render, then decide.** ``question_line`` is empty whenever the
-           builder emitted no ``Question`` — a belief the ladder raised *above*
-           `ask`, or one whose only topic echoes its own claim (AD-18). **No
-           line, no spend, and no ``asked`` record**: the permission the favour
-           buys is to *ask*, and a question nobody was asked costs nothing.
-           Before review this spent the favour anyway and wrote a phantom record,
-           which then suppressed the real question for one of the wanting's own
-           periods.
-        4. **Spend, then send.** ``buy`` is the last thing before the caller puts
-           this text on the wire (5b's contract). A send that then fails still
-           costs the favour — story 10's asymmetry, inherited deliberately — and
-           is logged where it happens, without content.
+        2. **Build, then decide.** The context is rebuilt with the offered
+           belief handed in as bought, and ``Context.question`` is empty
+           whenever the builder emitted none — a belief the ladder raised
+           *above* `ask`, or one whose only topic echoes its own claim (AD-18).
+           **No question, no spend and no ``asked`` record**: the permission the
+           favour buys is to *ask*, and a question nobody was asked costs
+           nothing. Before review this spent the favour anyway and wrote a
+           phantom record, which then suppressed the real question for one of
+           the wanting's own periods.
+        3. **Compose.** The question goes into the prompt as the ``ask-about``
+           block and comes back inside the prose. **It is never appended as a
+           line**, which is story 13b's rule and not a preference: a question on
+           its own line is a questionnaire with one row, and CAP-4 exists to
+           stop Half becoming one.
+        4. **Spend, then send.** ``buy`` is the last thing before the caller
+           puts this text on the wire (5b's contract). A send that then fails
+           still costs the favour — story 10's asymmetry, inherited
+           deliberately — and is logged where it happens, without content.
 
-        **Never raises, and never returns nothing.** The main asked something and
-        is owed an answer; a bug in the question path must cost the question and
-        not the reply. This is the one handler on this path and it is exercised
-        by a test that makes the engine raise, because a fail-open branch nothing
-        has ever run is a branch nobody knows is open.
+        **The spend now hangs on whether the composed prose is what goes out**,
+        which is story 11's *"no line, no spend"* arriving on a path where there
+        is no line. If generation failed, the fallback goes out — the claim
+        alone, which asks nothing — so the favour would have paid for a question
+        the main never saw. That is the mirror of the defect review found in
+        story 11, where a spend happened before the thing it paid for existed.
+
+        **There is deliberately no *"does the prose actually ask?"* test**, and
+        ``half.voice.turn`` carries the argument: written Japanese asks with か,
+        Thai with ไหม and much spoken-register Chinese with no mark at all, so a
+        rule reading *no question mark* as *no question* would under-spend for
+        exactly those mains and ask them the same thing for ever. What is
+        decidable is whether the text carrying the question is the text being
+        sent.
+
+        **A spend refused after the prose was written discards the prose**, and
+        sends the claim alone instead. It is rare — the balance would have to
+        change between the offer and the buy — and the alternative is worse in
+        both directions: sending prose with an unpaid question in it breaks
+        CAP-4, and composing a second time makes a waiting main pay a second
+        bound for a race.
+
+        **Never raises, and never returns nothing it had.** The main asked
+        something and is owed an answer; a bug in the question path must cost
+        the question and not the reply. Each step has its own handler, so a
+        failure after the prose exists does not throw the prose away.
+        """
+        ask = await self._offered(inbound, ranked, ceiling=ceiling, live=live)
+        turned = await respond(
+            inbound, ranked, ceiling=ceiling, voice=self.voice,
+            bought=ask.question.about if ask is not None else None,
+        )
+        if ask is None or not turned.composed:
+            if ask is not None:
+                logger.debug(
+                    "main=%s: the reply went out as the fallback, which asks "
+                    "nothing; the favour is unspent", inbound.main_id,
+                )
+            return turned.text or None
+        if await self._bought(inbound, ask, live=live):
+            return turned.text or None
+        return self._unasked(inbound, ranked, ceiling=ceiling)
+
+    async def _offered(
+        self,
+        inbound: Inbound,
+        ranked: Ranked,
+        *,
+        ceiling: Ceiling | None,
+        live: Strands | None,
+    ):
+        """The question this turn may carry, or ``None``. Never raises.
+
+        Steps one and two of ``_attach_question``: every gate 5b established,
+        and then the builder's own answer to *"was a question actually built?"*
+        Nothing is spent here, so a refusal at either has nothing to undo and
+        leaves no record to explain later.
         """
         if self.questions is None:
-            return reply
+            return None
         try:
             ask = await self.questions.offer(
                 inbound.main_id,
@@ -613,40 +720,68 @@ class Runtime:
                 now=inbound.t,
             )
             if ask is None:
-                return reply
-            line = question_line(
-                build_context(
-                    ranked, now=inbound.t, ceiling=ceiling,
-                    bought=ask.question.about,
-                )
-            )
-            if not line:
-                # Bought and unrendered. Nothing is spent, so there is nothing
-                # to undo and no record to explain later.
+                return None
+            carried = build_context(
+                ranked, now=inbound.t, ceiling=ceiling,
+                bought=ask.question.about,
+            ).question
+            if carried is None:
+                # Bought and unbuilt. Nothing is spent, so there is nothing to
+                # undo and no record to explain later.
                 logger.debug(
-                    "main=%s: a question passed every gate and produced no "
-                    "line; nothing was spent", inbound.main_id,
+                    "main=%s: a question passed every gate and the builder "
+                    "emitted none; nothing was spent", inbound.main_id,
                 )
-                return reply
-            purchase = await self.questions.buy(
-                inbound.main_id, t=inbound.t, ask=ask, live=live
-            )
-            if not purchase.spent:
-                logger.debug(
-                    "main=%s: the spend was refused (%s); the reply goes out "
-                    "without a question", inbound.main_id, purchase.outcome,
-                )
-                return reply
-            return f"{reply}\n{line}"
+                return None
+            return ask
         except Exception as exc:  # noqa: BLE001 - the question, never the reply
             # The *type* and nothing else (AD-22): an exception message
             # routinely quotes the value that caused it, and here that is a
             # record out of a main's own ledger.
             logger.warning(
-                "could not attach a question for main=%s (%s); the reply goes "
+                "could not offer a question for main=%s (%s); the reply goes "
                 "out without one", inbound.main_id, type(exc).__name__,
             )
-            return reply
+            return None
+
+    async def _bought(self, inbound: Inbound, ask, *, live: Strands | None) -> bool:
+        """Spend the favour this question was offered against. Never raises.
+
+        The last thing that happens before the text goes on the wire, which is
+        5b's own contract. ``False`` is *the question does not go out*, and the
+        caller sends something that asks nothing rather than something the
+        favour did not pay for.
+        """
+        try:
+            purchase = await self.questions.buy(
+                inbound.main_id, t=inbound.t, ask=ask, live=live
+            )
+        except Exception as exc:  # noqa: BLE001 - the question, never the reply
+            logger.warning(
+                "could not spend a favour for main=%s (%s); the reply goes out "
+                "without a question", inbound.main_id, type(exc).__name__,
+            )
+            return False
+        if not purchase.spent:
+            logger.debug(
+                "main=%s: the spend was refused (%s); the reply goes out "
+                "without a question", inbound.main_id, purchase.outcome,
+            )
+        return bool(purchase.spent)
+
+    def _unasked(
+        self, inbound: Inbound, ranked: Ranked, *, ceiling: Ceiling | None
+    ) -> str | None:
+        """What goes out when a question was composed and not paid for.
+
+        The claim alone, with **no second model call**: the main is waiting, and
+        a race at the spend must not cost them a second bound. It asks nothing
+        by construction, which is the property that has to hold — the reply must
+        not carry a question the favour did not buy.
+        """
+        return voice_turn.fallback(
+            build_context(ranked, now=inbound.t, ceiling=ceiling)
+        ) or None
 
     async def _widened(self, inbound: Inbound) -> bool:
         """Whether a model reads this turn as a correction. Never raises.
@@ -693,13 +828,20 @@ class Runtime:
         standing: Removal | None,
         confirmed: bool,
         inferred: bool,
-    ) -> tuple[str, bool]:
+    ) -> tuple[str, Removal | None, bool]:
         """Act on this turn's correction, if there is one (CAP-11).
 
-        Returns the line to append to the reply and whether the correction path
-        did anything at all. The two are different: a **declined** candidate
-        says nothing and still owns the turn, because the main was answering
-        Half's question rather than starting a new topic.
+        Three answers: the **proposal line** to append when Half is asking, the
+        **removal** to compose the reply around when one happened, and whether
+        the correction path did anything at all. The last is separate from the
+        other two: a **declined** candidate says nothing, removes nothing and
+        still owns the turn, because the main was answering Half's question
+        rather than starting a new topic.
+
+        **A removal travels as a value rather than as a rendered line**, which
+        is story 13b's change here. The reply is prose composed around the
+        removed claim, so the caller needs the claim and not a string somebody
+        already decided how to present.
 
         **Never raises.** Every step is inside one broad ``except``, for the
         reason ``CrisisGate._suspend`` is: the main asked something and is owed
@@ -731,7 +873,7 @@ class Runtime:
                 "a correction did not land for main=%s (%s); the reply goes "
                 "out without it", inbound.main_id, type(exc).__name__,
             )
-            return "", False
+            return "", None, False
 
     def _removal(
         self,
@@ -744,7 +886,7 @@ class Runtime:
         standing: Removal | None,
         confirmed: bool,
         inferred: bool,
-    ) -> tuple[str, bool]:
+    ) -> tuple[str, Removal | None, bool]:
         """The five outcomes, in the order they can happen on one message.
 
         An explicit correction acts — **unless it is an erasure**, which is put
@@ -777,8 +919,8 @@ class Runtime:
                 # *maybe*. ``acted`` is False so the turn carries on as the
                 # ordinary turn it also is.
                 self._corrections.answered(inbound.main_id, confirmed=False)
-                return "", False
-            said, acted = self._act(
+                return "", None, False
+            _, removal, acted = self._act(
                 actor, inbound, standing.meaning, standing.target,
                 source=standing.source, confirmed=True,
             )
@@ -788,10 +930,10 @@ class Runtime:
             # deletion would tell an operator the main deleted something they
             # did not.
             self._corrections.answered(inbound.main_id, confirmed=acted)
-            return said, True
+            return "", removal, True
 
         if not inferred:
-            return "", False
+            return "", None, False
         return self._propose(
             actor, inbound, self._aimed(ranked, this_turn=this_turn),
             meaning=correction_signals.Meaning.WRONG, source=Source.INFERRED,
@@ -805,7 +947,7 @@ class Runtime:
         *,
         meaning: correction_signals.Meaning,
         source: Source,
-    ) -> tuple[str, bool]:
+    ) -> tuple[str, Removal | None, bool]:
         """Show what would be removed and ask. Appends nothing.
 
         Two routes arrive here and neither may act: a classifier reading, and an
@@ -820,11 +962,15 @@ class Runtime:
             # There is nothing Half holds for the correction to be about.
             # Nothing is asked and nothing is recorded: a question naming no
             # belief is a question with no answer.
-            return "", False
+            return "", None, False
         self._corrections.propose(
             inbound.main_id, offered, turn=inbound.external_id
         )
-        return correction.proposed(offered), True
+        # **The proposal travels as a line and not as a removal**, and that is
+        # the deferral story 13b records rather than hides: a proposal
+        # deliberately withholds the claim (AD-18), so there is nothing to
+        # compose prose around. See ``half.correction.apply.proposed``.
+        return correction.proposed(offered), None, True
 
     def _act(
         self,
@@ -835,8 +981,8 @@ class Runtime:
         *,
         source: Source = Source.TABLE,
         confirmed: bool = False,
-    ) -> tuple[str, bool]:
-        """Append the correction and return what Half shows.
+    ) -> tuple[str, Removal | None, bool]:
+        """Append the correction and hand back the removal it performed.
 
         ``plan`` answers ``None`` for a correction naming nothing Half holds and
         for one whose belief has already left the fold — two matrix rows, one
@@ -850,7 +996,7 @@ class Runtime:
             confirmed=confirmed,
         )
         if removal is None:
-            return "", False
+            return "", None, False
         if removal.erases:
             # The store's own validate-then-erase: the op *and* the tombstoning
             # of the bodies, which a bare append would not do. An erasure that
@@ -863,7 +1009,11 @@ class Runtime:
                 inbound.t,
                 **correction.fields(removal, t=inbound.t),
             )
-        return correction.shown(removal), True
+        # **The removal is returned after the append, claim and all.** For an
+        # erasure that ordering is the matrix's own row: the claim was read off
+        # the fold by ``plan`` *before* ``Store.expunge`` tombstoned the body,
+        # so it is still here to be shown and the body is already gone.
+        return "", removal, True
 
     @staticmethod
     def _aimed(ranked: Ranked, *, this_turn: str) -> str:
@@ -904,9 +1054,22 @@ class Runtime:
 
         ``RetrievalDisabled`` is caught here and nowhere else. The raise is kept
         deliberately loud inside the retriever — a disable must never be
-        mistakable for an empty ledger — but a main whose retrieval is off is
-        usually a main in aftercare, and they must still get an answer. A
-        disable degrades what Half knows, never whether Half replies.
+        mistakable for an empty ledger — and catching it is what keeps a
+        disabled ledger from *raising* the turn.
+
+        **What it no longer keeps is the reply, and that is worth stating
+        plainly.** This paragraph used to end *"a disable degrades what Half
+        knows, never whether Half replies"*, and that was true only while the
+        reply was the ``noted.`` template. Story 13b's fallback ladder is prose,
+        then the claim alone, then silence — and a disabled ledger has no claim,
+        so the turn now completes, records the message, and sends nothing.
+
+        The same is true wherever the material is all `behave`, which is most
+        turns for most mains, and it includes a main under an aftercare ceiling
+        (AD-28) for at least thirty days. CAP-12 says Half *stays present*.
+        Closing that needs a turn reply that does not depend on quotable
+        material, which is a story this tree does not have; it is recorded here
+        rather than left to be found from a silent product.
 
         A tokenizer refusal is caught for the same reason and on the same terms.
         The ceilings in ``half.text`` exist to stop an unbounded expansion, not
@@ -938,60 +1101,119 @@ class Runtime:
             return Ranked()
 
 
-def question_line(context: Context | None) -> str:
-    """The one line a bought question contributes to a reply, or ``""``.
+def about(
+    removal: Removal,
+    ranked: Ranked | None,
+    *,
+    now: str,
+    ceiling: Ceiling | None,
+) -> tuple[Context, frozenset[str]]:
+    """The context a correction reply is composed from, and what it withholds.
 
-    **The single serialization**, shared with ``Context.render`` rather than
-    written out beside it: two renderings of one item is how the guard that
-    scans one string ends up admitting a different one, which is the argument
-    ``half.context.channels.render_line`` already carries.
+    **The removed claim is the one thing this reply may state**, so it is the
+    whole of the content channel and nothing else is. A correction turn is about
+    the belief that left; letting whatever else this turn's ranking put on top
+    into the quotable channel would let the model answer *"that's wrong"* with
+    an unrelated statement.
 
-    The empty string is the answer to *"was a question actually built?"*, and it
-    is the same answer for both ways one can fail to be: a bought belief the
-    ladder put above `ask`, and one whose only topic echoes its own claim. The
-    caller spends a favour exactly when this is non-empty, so *"no question line,
-    no spend"* is one comparison rather than a flag somebody has to keep true.
+    **And it is not withheld, which is the point.** AD-18 forbids `behave` text
+    inside a constructed context, and the belief a main has just corrected is
+    almost always `behave` — every belief is admitted there. Left in the
+    withheld set, the tripwire would refuse every composed correction reply that
+    did what CAP-11 asks, for ever, and Half would fall back on every single
+    correction with nothing failing. ``half.correction.apply`` already carries
+    the argument for why quoting it is not the AD-18 hole it resembles: CAP-11
+    requires it in as many words, the main has just told Half the claim is
+    wrong, and it is the one thing that makes a mis-aimed correction visible.
+
+    So the withheld set is computed over **the rest** of the ranked material
+    rather than over all of it — an exclusion of one belief by id, not a
+    subtraction of one claim's wordings. Every other `behave` claim is withheld
+    exactly as it was, so the reply cannot leak a *different* belief sideways.
+
+    ``Ranked``'s own annotations (``truncated``, ``rerank``) do not travel,
+    because the material is filtered to a tuple. Nothing on the composing path
+    reads them; the ordinary reply, which does carry them, is built by
+    ``respond`` from ``ranked`` itself.
+
+    Pure. No store, no clock, no model.
     """
-    if not isinstance(context, Context) or context.question is None:
-        return ""
-    return render_line(context.question)
+    others = tuple(
+        candidate for candidate in (ranked or ())
+        if getattr(candidate, "id", "") != removal.target
+    )
+    context, hidden = split_context(others, now=now, ceiling=ceiling)
+    claim = correction.shown(removal)
+    if not claim:
+        # A record whose claim this build cannot read. There is nothing to show
+        # and nothing to fall back to, so this degrades to an ordinary turn over
+        # the rest of the material.
+        return context, hidden
+    return replace(
+        context, content=(Content(id=removal.target, claim=claim),)
+    ), hidden
 
 
-def respond(
+async def respond(
     inbound: Inbound,
     ranked: Ranked | None = None,
     *,
     ceiling: Ceiling | None,
-) -> str | None:
-    """Build the turn's context and reply from what its licenses permit.
+    voice: Voice | None = None,
+    bought: str | None = None,
+    removal: Removal | None = None,
+) -> Turned:
+    """The turn's words: prose, the claim alone, or nothing (story 13b).
 
-    Still deterministic and still model-free — AD-19's port is unbuilt, so
-    nothing here composes prose. What changed from story 4 is the boundary: the
-    ranked set is no longer uniformly unsayable. It is split by license
-    (AD-18), and the content channel is the one rung Half has the standing to
-    state, so its text may reach the main.
+    Until this story it returned ``"noted."``, or ``"noted. "`` bolted to a raw
+    claim — an English word on a worldwide product, and the internal
+    serialization one join away. What it does now is build the two-channel
+    context (AD-18) and hand it to ``half.voice.turn``, which composes through
+    the model port, judges the result cheaply, regenerates a bounded number of
+    times and **falls back to the claim alone** when it cannot.
 
     ``now`` is the inbound stamp the adapter read. Nothing below this line
     touches a clock, so one conversation replays to one set of replies.
 
-    Three properties this shape holds that a filter could not:
+    Four properties this shape holds that a filter could not:
 
     * `behave` and `ask` claim text is absent from the reply because it is
       absent from the context — there is no branch here that could re-admit it.
-    * The reply still does not echo the main's own words. The belief carrying
-      them is recorded after this returns, and it is recorded `behave`.
-    * A context with no content still produces a reply. Empty is an ordinary
-      outcome — an empty ledger, or retrieval disabled by a crisis — and is
-      never phrased as missing access (AD-24, AD-27).
+      The one exception is the belief a correction has just removed, which
+      CAP-11 requires be shown and which ``about`` admits deliberately and by
+      name.
+    * The reply does not echo the main's own words. Their message travels as a
+      ``Sample``, which is a type with no parameter on the quotable path it
+      could arrive through, and the belief carrying it is recorded after this
+      returns and recorded `behave`.
+    * A context with no content produces the fallback or nothing, never a
+      template and never a phrase about missing access (AD-24, AD-27).
+    * The bought question is **composed into** the prose. There is no line to
+      append and no branch here that could append one.
 
     ``ceiling`` is this main's global cap and is applied inside the context
     build, where licenses are resolved. Nothing here inspects it or subtracts
     anything afterwards: a capped belief simply never reaches the quotable
     channel (AD-28).
+
+    Never raises. Every path out is a ``Turned``, and a blank message is
+    ``Turned()`` — silence, which is what a blank message has always got.
     """
     if not inbound.text.strip():
-        return None
-    quotable = build_context(ranked, now=inbound.t, ceiling=ceiling).quotable()
-    if not quotable:
-        return "noted."
-    return f"noted. {quotable[0]}"
+        return Turned()
+    if removal is not None:
+        context, hidden = about(removal, ranked, now=inbound.t, ceiling=ceiling)
+        show = correction.shown(removal)
+    else:
+        context, hidden = split_context(
+            ranked, now=inbound.t, ceiling=ceiling, bought=bought
+        )
+        show = ""
+    return await voice_turn.words(
+        voice,
+        context,
+        main_id=inbound.main_id,
+        sample=Sample(inbound.text),
+        withheld=hidden,
+        show=show,
+    )

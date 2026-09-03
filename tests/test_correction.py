@@ -50,6 +50,8 @@ from half.channel.telegram import TelegramChannel
 from half.context.channels import Content, sanitize
 from half.correction import apply as correction
 from half.correction.apply import Removal, Source
+from half.voice.compose import ASK_ABOUT
+from half.voice.gate import Voice
 from half.correction.attribute import Attribution, attribution_for
 from half.correction.candidate import (
     ACTION_FOR_LABEL,
@@ -91,7 +93,13 @@ from half.store.store import Store
 from half.surface import touch as touch_module
 from half.surface.touch import Origin
 from half.trust.balance import balance
-from tests.conftest import FakeTransport, msg, outward, reaches
+from tests.conftest import (
+    FakeTransport,
+    msg,
+    outward,
+    reaches,
+    seed_belief,
+)
 
 pytestmark = pytest.mark.cap11
 
@@ -111,6 +119,11 @@ BELIEF = "b_land"
 #: that its presence in a reply cannot be an accident, and sharing no word with
 #: any correction phrase, so a table row can never match the claim itself.
 CLAIM = "has not walked that plot since March"
+
+#: One claim Half may **state**, for the cases that assert a reply still goes
+#: out (story 13b). It shares a word with the messages those cases send, so
+#: retrieval finds it, and no adjacent pair with ``CLAIM``, so it is admitted.
+SAYABLE = "walks the boundary of that field every autumn"
 
 ORIGIN = Origin(kind=TOUCH_TENSION, id="x_1")
 
@@ -223,6 +236,7 @@ def seed(
     rung=License.BEHAVE,
     loop=LOOP,
     favours=0,
+    sayable=None,
 ):
     """One main, one wanting, and beliefs on it, seeded through the ladder.
 
@@ -233,6 +247,12 @@ def seed(
     ``favours`` are delivered morning messages — the only thing that earns —
     dated before the turn. They exist so the *no favour spent* row is a real
     comparison: a turn with nothing to spend proves nothing about spending.
+
+    ``sayable`` seeds one `assert`-rung claim, and it exists because of story
+    13b: a turn whose material is all `behave` has nothing quotable and — with
+    no template in any language — nothing to say at all. A case whose point is
+    *"the main still gets their reply"* has to have a reply for that to be
+    about. It shares no adjacent pair with ``CLAIM``, so the builder admits it.
     """
     with Store(root / main_id, prefix=build_prefix) as store:
         if loop:
@@ -254,12 +274,33 @@ def seed(
                     Op.ASSERT, ident, "2026-08-01T00:00Z",
                     **ladder.promote(record, to=rung, acknowledged=True),
                 )
+        if sayable is not None:
+            seed_belief(store, "b_sayable", "2026-08-01T00:00Z", subject="self",
+                        claim=sayable, ledger="revealed",
+                        rung=License.ASSERT, support=["s_sayable"])
         for day in range(favours):
             marker = stamp(NOON - (day + 2) * DAY)[:10]
             store.record(
                 Op.TOUCH, f"tc_{marker}", f"{marker}T03:00Z",
                 **touch_module.spoke(day=marker, origin=ORIGIN, loops=()),
             )
+
+
+def a_voice(main_id=MAIN):
+    """A composer and the holder inside it, so a case can read the prompt.
+
+    Story 13b composes the bought question **into** the prose, so *"a question
+    was asked"* is no longer a string on the wire to grep for. What a case can
+    ask instead is what the generator was handed.
+    """
+    from tests.conftest import COMPOSED, GeneratorDouble, quotable_of
+    from half.voice.gate import Voice
+
+    def echo(work):
+        return f"{COMPOSED} {quotable_of(work)}".strip()
+
+    holder = GeneratorDouble(echo)
+    return Voice({main_id: holder}, bound_seconds=1.0), holder
 
 
 def a_turn(
@@ -271,6 +312,7 @@ def a_turn(
     engine=False,
     at=NOON,
     tag="m",
+    voice=None,
 ):
     """Real inbound turns, through the real runtime and the real crisis gate.
 
@@ -290,6 +332,13 @@ def a_turn(
     runtime = Runtime(
         channel=channel, registry=registry, corrections=corrections,
         questions=QuestionEngine(ledger=registry) if engine else None,
+        # **No composer by default, and that is deliberate.** With none, every
+        # turn here takes story 13b's fallback rung — the claim alone — which is
+        # exactly what CAP-11 asks a removal to show, so these cases assert the
+        # bytes a main sees rather than a stub's sentence. The two cases that
+        # are about the *bought question* pass a real one, because a question
+        # exists only in composed prose.
+        voice=Voice() if voice is None else voice,
     )
     asyncio.run(runtime.run())
     return transport
@@ -523,12 +572,12 @@ def test_a_correction_naming_nothing_half_holds_removes_nothing_and_says_so_gent
     """Matrix: *no such belief*. Nothing removed, nothing appended, and **the
     main is not shown an error** — being told *"I have no record of that"* in
     answer to *"that's wrong"* is Half arguing."""
-    seed(tmp_path, beliefs=(), loop=None)
+    seed(tmp_path, beliefs=(), loop=None, sayable=SAYABLE)
 
     transport = a_turn(registry, texts=("thats wrong",))
 
     assert corrections_in(tmp_path) == []
-    assert last(transport).strip() == "noted."
+    assert last(transport).strip() == SAYABLE
 
 
 def test_a_correction_of_a_belief_already_gone_removes_nothing_a_second_time():
@@ -552,7 +601,7 @@ def test_a_redelivered_correction_is_not_applied_twice(registry, tmp_path):
     At-least-once delivery makes redelivery routine, so the same message arrives
     again with the same external id. One correction record, not two.
     """
-    seed(tmp_path)
+    seed(tmp_path, sayable=SAYABLE)
     transport = FakeTransport([
         msg(text=ON_TOPIC, message_id="m0", chat_id="123", date=int(NOON)),
         msg(text="thats wrong", message_id="m1", chat_id="123", date=int(NOON) + 1),
@@ -562,7 +611,12 @@ def test_a_redelivered_correction_is_not_applied_twice(registry, tmp_path):
     asyncio.run(Runtime(channel=channel, registry=registry).run())
 
     assert len(corrections_in(tmp_path)) == 1
-    assert len(transport.sent) == 2
+    # **One send, and it is the removal.** The first turn has nothing quotable
+    # — the fixture's material is all `behave` — so since story 13b it is
+    # silent; the redelivery is silent too, because the idempotency check
+    # answers before anything is composed. What must not happen is the claim
+    # being shown twice, which is what a second correction would look like.
+    assert [text for _, text in transport.sent] == [CLAIM]
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -605,13 +659,13 @@ def test_a_correction_with_no_antecedent_removes_nothing(registry, tmp_path):
     exactly the floor here, which is what makes this the boundary case: a floor
     written ``<`` rather than ``<=`` admits all of them.
     """
-    seed(tmp_path)
+    seed(tmp_path, sayable=SAYABLE)
 
     transport = a_turn(registry, texts=("thats wrong",))
 
     assert corrections_in(tmp_path) == []
     assert BELIEF in beliefs_of(tmp_path)
-    assert last(transport).strip() == "noted."
+    assert last(transport).strip() == SAYABLE
 
 
 def test_the_aim_ignores_the_message_that_carried_the_correction():
@@ -945,7 +999,7 @@ def test_a_classifier_that_does_not_answer_leaves_the_table_standing(
     leaves the offline table's answer exactly as it was: **no correction is
     invented**, nothing is appended, and the main still gets their reply.
     """
-    seed(tmp_path)
+    seed(tmp_path, sayable=SAYABLE)
 
     transport = a_turn(
         registry, texts=("hm, i dont think that is me these days",),
@@ -963,7 +1017,7 @@ def test_the_bound_is_a_bound_and_the_turn_is_answered_without_it(
 ):
     """The bound is what a main waits, not what they lose. A holder that never
     answers costs the widening and never the reply."""
-    seed(tmp_path)
+    seed(tmp_path, sayable=SAYABLE)
 
     transport = a_turn(
         registry, texts=("hm, i dont think that is me these days",),
@@ -1156,10 +1210,15 @@ def test_the_same_main_still_gets_a_bought_question_on_an_ordinary_turn(
     makes them corrections.
     """
     seed(tmp_path, rung=License.ASK, favours=1)
+    voice, holder = a_voice()
 
-    transport = a_turn(registry, texts=("farmland: any news",), engine=True)
+    a_turn(registry, texts=("farmland: any news",), engine=True, voice=voice)
 
-    assert "question[" in sent(transport)
+    # **The question is in the prose now**, so the signal is the ``ask-about``
+    # block the generator was handed rather than a line on the wire (13b).
+    assert any(
+        ASK_ABOUT in work.prompt.turns[0].text for work in holder.requests
+    ), "no question reached the generator on an ordinary turn"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1645,7 +1704,7 @@ def test_a_correction_that_raises_costs_the_correction_and_not_the_reply(
     With it: the reply goes out, the message is recorded, and nothing is
     removed.
     """
-    seed(tmp_path)
+    seed(tmp_path, sayable=SAYABLE)
     monkeypatch.setattr(
         Runtime, "_removal",
         lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
@@ -1653,7 +1712,7 @@ def test_a_correction_that_raises_costs_the_correction_and_not_the_reply(
 
     transport = corrects(registry, "thats wrong")
 
-    assert last(transport).strip() == "noted."
+    assert last(transport).strip() == SAYABLE
     assert corrections_in(tmp_path) == []
     assert BELIEF in beliefs_of(tmp_path)
     # The main's own message is recorded, which is what says the turn completed.
@@ -1893,39 +1952,50 @@ def test_a_declined_candidate_does_not_swallow_the_turn(registry, tmp_path):
     right after a proposal was swallowed.
     """
     seed(tmp_path, rung=License.ASK, favours=1)
+    voice, holder = a_voice()
 
     transport = a_turn(
         registry,
         texts=("farmland: hm, i dont think that is me these days",
                "farmland: any news"),
-        engine=True, corrections=widening(labelled(CORRECTION)),
+        engine=True, corrections=widening(labelled(CORRECTION)), voice=voice,
     )
 
     assert corrections_in(tmp_path) == []
     assert f"{Op.RETRACT.value}?[" in transport.sent[0][1], "the proposal ran"
-    assert "question[" in transport.sent[1][1], "the declining turn still asks"
+    # The declining turn still asks — in the prose, so the signal is the block
+    # the generator was handed rather than a line on the wire (story 13b).
+    assert any(
+        ASK_ABOUT in work.prompt.turns[0].text for work in holder.requests
+    ), "the declining turn still asks"
 
 
-def test_a_removal_is_shown_even_when_the_turn_has_no_reply_of_its_own(
-    registry, tmp_path, monkeypatch
+def test_a_removal_is_shown_and_is_the_whole_of_what_the_turn_says(
+    registry, tmp_path
 ):
     """CAP-11's success criterion does not depend on there being anything else
-    to say.
+    to say — and it is not diluted by there being something else either.
 
-    ``respond`` answers every non-empty message today, so this ordering is
-    defensive rather than reachable — which is exactly why it is asserted with
-    ``respond`` stubbed to silence rather than left to be discovered. Returning
-    early on an empty reply left the belief gone durably, the candidate
-    consumed, and *"Half shows what it removed"* silently not happening.
+    Two halves, and the second is story 13b's. The turn's material carries a
+    claim Half is licensed to state, quite unrelated to the correction; the
+    reply is the **removed** claim and not that one. A correction turn is about
+    the belief that left, and a reply that answered *"that's wrong"* with an
+    unrelated statement would be Half changing the subject at the one moment the
+    main is checking its work.
+
+    Before review the ordering was inverted: returning early on an empty reply
+    left the belief gone durably, the candidate consumed, and *"Half shows what
+    it removed"* silently not happening.
     """
-    seed(tmp_path)
-    monkeypatch.setattr(runtime_module, "respond",
-                        lambda inbound, ranked=None, *, ceiling=None: None)
+    seed(tmp_path, sayable=SAYABLE)
 
     transport = corrects(registry, "thats wrong")
 
     assert [r.op for r in corrections_in(tmp_path)] == [Op.RETRACT]
     assert last(transport) == CLAIM
+    assert SAYABLE not in last(transport), (
+        "a correction turn is about the belief that left"
+    )
 
 
 def test_two_corrections_inside_one_second_are_two_records(registry, tmp_path):
@@ -2401,7 +2471,7 @@ def test_serve_hands_the_runtime_the_widening_build_made(tmp_path, monkeypatch):
 
     class Recording:
         def __init__(self, *, channel, registry, second=None, questions=None,
-                     corrections=None):
+                     corrections=None, voice=None):
             captured["corrections"] = corrections
 
         async def run(self):

@@ -704,7 +704,14 @@ def test_a_legacy_oversized_strand_label_does_not_cost_every_later_turn(
     finally:
         registry.close()
 
-    assert transport.sent, "an unusable strand label cost the main their reply"
+    # **The signal is the record, not the wire** (story 13b). This main's
+    # material is all `behave`, so there is nothing quotable and — with no
+    # template in any language — nothing to send. What an unusable strand label
+    # must not cost is the *turn*: the message is recorded and the loop lives.
+    with Store(mains_root / "vidit", prefix=build_prefix) as store:
+        assert "b_900" in store.state().beliefs, (
+            "an unusable strand label cost the main their message"
+        )
 
 
 def test_a_tokenizer_refusal_on_the_query_still_answers(tmp_path, monkeypatch):
@@ -728,7 +735,15 @@ def test_a_tokenizer_refusal_on_the_query_still_answers(tmp_path, monkeypatch):
     finally:
         registry.close()
 
-    assert transport.sent, "a query the tokenizer refused cost the main a reply"
+    # **The signal is the record, not the wire** (story 13b). A refused
+    # tokenizer empties the ranked set, so there is nothing quotable and nothing
+    # to fall back to; what must not happen is the turn dying and taking the
+    # main's message with it, because the idempotency check would then make the
+    # redelivery a no-op for ever.
+    with Store(root / "vidit", prefix=build_prefix) as store:
+        assert "b_900" in store.state().beliefs, (
+            "a query the tokenizer refused cost the main their message"
+        )
 
 
 # -- the prefix and the strand matcher, in every script ----------------------

@@ -661,6 +661,30 @@ def test_a_gate_with_no_classifier_at_all_behaves_as_it_did_before():
 # =============================================================================
 
 
+#: One claim Half is licensed to state, so an *ordinary* turn has a reply.
+#:
+#: **Story 13b made this necessary.** A turn whose material is all `behave` has
+#: nothing to say and no template to fall back to, so it is silent — and a case
+#: that measures *when* a main was answered needs them to be answered at all.
+#: Nothing about the crisis path changes: this is the ordinary half of the
+#: fixture, and the crisis replies are templates that were never affected.
+#: It has to share a term with ``ORDINARY`` or retrieval never puts it in front
+#: of the responder — and it must share no *adjacent pair* with it, or the
+#: builder drops the quotable line for echoing a withheld wording. Both halves
+#: are the real machinery, not a fixture convenience.
+ORDINARILY_SAYABLE = "checks flights every Sunday morning"
+
+
+def something_to_say(root, main_id=MAIN, ident="b_say"):
+    from half.governance.ladder import License
+    from half.retrieval.prefix import build_prefix
+
+    with Store(root / main_id, prefix=build_prefix) as store:
+        seed_belief(store, ident, "2026-06-01T00:00:00Z", subject="self",
+                    claim=ORDINARILY_SAYABLE, ledger="revealed",
+                    rung=License.ASSERT, support=["s_1"])
+
+
 def drive(registry, second, turns, *, mains=None):
     """Drive the real runtime with a second opinion wired, as ``serve`` does.
 
@@ -1377,6 +1401,7 @@ def test_a_hanging_provider_does_not_delay_another_mains_safe_word(tmp_path):
     provider down, and one sequential inbound loop made that true only for the
     message at the head of the queue.
     """
+    something_to_say(tmp_path / "mains", "vidit")
     registry = ActorRegistry(tmp_path / "mains")
     second = SecondOpinion({"vidit": Holder(labelled(NO_RISK), sleep=5.0)},
                            bound_seconds=0.5)
@@ -1466,6 +1491,7 @@ def test_a_cancelled_turn_does_not_end_the_inbound_loop(tmp_path):
             return labelled(NO_RISK)
 
     holder = Cancelling()
+    something_to_say(tmp_path / "mains")
     registry = ActorRegistry(tmp_path / "mains")
     replies = drive(registry, SecondOpinion({MAIN: holder}),
                     [(ORDINARY, AT), (ORDINARY, AT), (SAFE_WORD, AT)])
@@ -1691,8 +1717,11 @@ def test_serve_hands_the_runtime_the_classifier_build_made(tmp_path, monkeypatch
 
     class Recording:
         def __init__(self, *, channel, registry, second=None, questions=None,
-                     corrections=None):
+                     corrections=None, voice=None):
             captured["second"] = second
+            # Story 13b: and the composer, for the same reason — the turn is
+            # the only surface a main writes to, and it speaks through this.
+            captured["voice"] = voice
             # Story 12: and the correction widening, for the same reason.
             captured["corrections"] = corrections
             # Story 11: the runtime is also the only asker, so ``serve`` hands
@@ -1721,6 +1750,10 @@ def test_serve_hands_the_runtime_the_classifier_build_made(tmp_path, monkeypatch
     # Story 11: and the question engine, for the same reason — a surface
     # reachable only from a test is a surface nobody has run.
     assert captured["questions"] is made["wiring"].questions
+    # Story 13b: and the *same* composer the morning surface holds. One gate,
+    # one leak check and one tally across both surfaces — asserted by identity,
+    # because two of each is how the guarantees drift apart.
+    assert captured["voice"] is made["wiring"].voice
 
 
 # =============================================================================

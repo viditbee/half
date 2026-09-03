@@ -298,13 +298,29 @@ def test_a_belief_that_is_not_a_mapping_resolves_to_behave_without_raising(belie
 
 
 @pytest.mark.ad18
-def test_a_turn_whose_belief_record_is_malformed_still_replies():
-    """The same row, on the wire: the reply is produced and the main's message
-    is recorded, rather than the turn dying before either."""
+def test_a_turn_whose_belief_record_is_malformed_still_answers():
+    """The same row, on the wire: the turn does not die before either the reply
+    or the record.
+
+    A record this build cannot read resolves to the weakest rung, so it reaches
+    no quotable channel — and since story 13b a turn with nothing quotable and
+    no model has nothing to fall back to and is silent. What is asserted is that
+    the turn *answers* rather than raising, and that the unreadable record's
+    text is nowhere in the answer.
+    """
     turn = Inbound(main_id="vidit", address="123", text="hello",
                    external_id="1", t=NOW)
     bad = Candidate(id="b_1", claim=HELD, prefix="", bm25=None, belief="not a mapping")
-    assert respond(turn, ranked(bad), ceiling=None) == "noted."
+    turned = asyncio.run(respond(turn, ranked(bad), ceiling=None))
+    assert turned.silent
+    assert_absent(turned.text, HELD)
+
+    # And with one thing it *may* say, the same turn answers with that and
+    # nothing of the unreadable record.
+    good = cand("b_2", SAID, license="assert")
+    turned = asyncio.run(respond(turn, ranked(bad, good), ceiling=None))
+    assert turned.text == SAID
+    assert_absent(turned.text, HELD)
 
 
 def test_a_valid_license_survives_surrounding_whitespace():
@@ -1052,12 +1068,27 @@ def test_a_withheld_wording_cannot_reach_the_wire_inside_an_assert_claim(tmp_pat
 
 
 @pytest.mark.ad18
-def test_a_reply_is_still_produced_when_nothing_is_quotable(tmp_path):
-    """Matrix: empty content -> a reply is still produced."""
+def test_a_withheld_claim_is_absent_from_a_reply_built_beside_it(tmp_path):
+    """Matrix: a `behave` belief retrieved on a turn that still answers.
+
+    **Story 13b re-cut this case rather than deleting it.** It used to seed one
+    `behave` belief and assert that *something* was sent — which held while the
+    reply was ``noted.`` and stopped holding when the template went: a turn with
+    nothing quotable and no model now falls back to nothing at all. Asserting
+    silence would have made it trivially true and stopped it saying anything
+    about AD-18.
+
+    So it seeds both: one claim Half may state and one it may not, on the same
+    turn, and asserts that the reply exists, carries the first and carries no
+    part of the second.
+    """
     root = tmp_path / "mains"
     with Store(root / "vidit", prefix=build_prefix) as s:
         seed_belief(s, "b_hold", "2026-06-01T00:00:00Z", subject="self",
                     claim=HELD, ledger="revealed", loop="mend-things")
+        seed_belief(s, "b_say", "2026-06-01T00:00:00Z", subject="self",
+                    claim=SAID, ledger="revealed", rung=License.ASSERT,
+                    support=["s_1"])
 
     recorder = Recording()
     transport, reg = run_turn(root, "xyzzy plugh", reranker=recorder)
@@ -1065,24 +1096,43 @@ def test_a_reply_is_still_produced_when_nothing_is_quotable(tmp_path):
 
     assert "b_hold" in recorder.every_id, "the turn retrieved nothing"
     sent = "".join(text for _, text in transport.sent)
-    assert sent, "a context with no content must not cost the main a reply"
+    assert sent == SAID, "the claim Half may state is the whole of the reply"
     assert_absent(sent, HELD)
 
 
 @pytest.mark.ad18
-def test_a_turn_whose_retrieval_a_crisis_disabled_still_replies(tmp_path):
+def test_a_turn_whose_retrieval_a_crisis_disabled_answers_and_never_raises(
+    tmp_path,
+):
     """Matrix: crisis. Retrieval hard-disabled for that main (CAP-12), so the
-    context is empty — and a reply is still sent. Never a raised turn."""
+    context is empty — the turn answers rather than raising, and no belief text
+    reaches the wire.
+
+    **What changed, and it is a real loss story 13b's frozen block chooses.**
+    ``_retrieve`` used to be able to say *a disable degrades what Half knows,
+    never whether Half replies*, because the reply was ``noted.``. With no
+    template in any language and no claim to fall back to, a disabled ledger now
+    costs the main their reply as well as Half's memory. The message is still
+    recorded and the turn still completes; what is gone is the acknowledgement.
+    """
     root = seeded(tmp_path / "mains")
     reg = ActorRegistry(root)
     reg.retrieval_switch("vidit").disable()
 
-    transport, _ = run_turn(root, "still here?", registry=reg)
+    transport, registry = run_turn(root, "still here?", registry=reg)
+
+    async def recorded():
+        async with registry.acquire("vidit") as actor:
+            return actor.store.state().beliefs
+    kept = asyncio.run(recorded())
     reg.close()
 
     sent = "".join(text for _, text in transport.sent)
-    assert sent, "a disabled ledger must not cost the main a reply"
+    assert sent == "", "there is no claim to fall back to and no template"
     assert_absent(sent, SAID, HELD, ASKED)
+    assert any(
+        record.get("claim") == "still here?" for record in kept.values()
+    ), "a disable must never cost the main their message"
 
 
 @pytest.mark.ad18
@@ -1092,10 +1142,16 @@ def test_the_responder_quotes_only_the_content_channel():
     turn = Inbound(main_id="vidit", address="123", text="hello",
                    external_id="1", t=NOW)
 
-    assert respond(turn, ranked(cand("b_1", HELD, license="behave")),
-                   ceiling=None) == "noted."
-    assert SAID in (respond(turn, ranked(cand("b_1", SAID, license="assert")),
-                            ceiling=None) or "")
-    assert respond(turn, None, ceiling=None) == "noted."
-    assert respond(Inbound(main_id="vidit", address="123", text="   ",
-                           external_id="2", t=NOW), ceiling=None) is None
+    def reply(*candidates, inbound=turn):
+        return asyncio.run(
+            respond(inbound, ranked(*candidates) if candidates else None,
+                    ceiling=None)
+        )
+
+    # A `behave` claim reaches no channel, so there is nothing to fall back to.
+    assert reply(cand("b_1", HELD, license="behave")).silent
+    # An `assert` claim does, and it is the whole of the reply.
+    assert reply(cand("b_1", SAID, license="assert")).text == SAID
+    assert reply().silent
+    assert reply(inbound=Inbound(main_id="vidit", address="123", text="   ",
+                                 external_id="2", t=NOW)).silent

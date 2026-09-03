@@ -445,6 +445,15 @@ async def serve(config: Config, token: str) -> None:
                     # are: a surface reachable only from a test is a surface
                     # nobody has run.
                     corrections=wiring.corrections,
+                    # **The turn speaks here** (story 13b). It is the *same*
+                    # ``Voice`` the morning surface holds, wired by value, so
+                    # there is one composer, one gate, one leak check and one
+                    # tally across both surfaces — two of each is two renderings
+                    # of one thing, which is how a guard that scans one string
+                    # ends up admitting another. Without it the runtime answers
+                    # with the claim alone: honest, and never the internal
+                    # serialization this story took off the wire.
+                    voice=wiring.voice,
                 ).run()
             finally:
                 # The inbound loop is the process's life; the ticker is not
