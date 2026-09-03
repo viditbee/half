@@ -1840,6 +1840,20 @@ def test_every_minting_guarantee_this_story_rests_on_still_exists():
         "test_nothing_in_the_package_reaches_a_model_a_channel_or_the_network",
         "test_the_mint_view_carries_no_license_no_ceiling_and_no_crisis_record",
         "test_a_minted_tension_carries_a_state_a_pair_and_a_license_and_no_more",
+        # Review loop 2. Each of these is the only case asserting its rule,
+        # and each was written because the rule was silently absent.
+        "test_the_weight_and_the_order_are_the_same_whichever_way_a_couple_is_built",
+        "test_the_same_words_in_a_different_order_are_not_a_restatement",
+        "test_the_pass_reports_an_upper_bound_on_what_it_compared",
+        "test_a_pass_that_reaches_the_couple_ceiling_says_so",
+        "test_the_minting_arithmetic_actually_leaves_the_event_loop",
+        "test_a_night_with_nothing_admitted_does_not_tokenise_the_whole_ledger",
+        "test_a_main_who_was_suspended_still_has_everything_they_said_meanwhile",
+        "test_a_main_whose_first_pass_this_is_still_treats_everything_as_new",
+        "test_the_couples_beyond_the_bound_are_dropped_and_the_pass_says_dropped",
+        "test_a_judgement_that_raised_was_still_bought_and_is_still_billed",
+        "test_a_mint_carries_a_pair_a_fresh_state_and_the_ladders_floor",
+        "test_the_slate_never_raises_on_a_view_this_build_cannot_read",
     }
     missing = required - _cases_defined_here()
     assert not missing, (
