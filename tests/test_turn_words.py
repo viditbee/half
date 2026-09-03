@@ -44,6 +44,7 @@ import ast
 import asyncio
 import logging
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Final
 
@@ -70,6 +71,7 @@ from half.voice.compose import (
     MAY_BE_SAID,
     WORD_FOR_WORD,
     Sample,
+    quotable_block,
 )
 from half.voice.gate import BOUND_SECONDS, QUESTION_MARKS, Voice
 from half.voice.turn import TURN_BOUND_SECONDS, Turned, fallback, words
@@ -90,6 +92,20 @@ pytestmark = [pytest.mark.cap1_turn]
 MAIN = "vidit"
 OTHER = "asha"
 NOW = "2026-09-03T09:00:00Z"
+
+#: The instant an end-to-end turn arrives at, as the transport reports it.
+#:
+#: **Derived from ``NOW`` rather than written beside it.** The end-to-end cases
+#: rebuild the context the turn built in order to compare the wire against its
+#: own serialization, and a rebuild at a different instant is a rebuild of a
+#: different context: ``now`` travels onto the context, into every stamp the
+#: builder reads, and into the retrieval that produced the ranked set. The two
+#: were two days apart — a fixture that compared one turn's wire against another
+#: turn's context and could only ever have got away with it because nothing in
+#: this fixture decays inside forty-eight hours.
+TURN_AT: Final[int] = int(
+    datetime.fromisoformat(NOW.replace("Z", "+00:00")).timestamp()
+)
 
 #: The `assert` claim a turn may state, and the `behave` claim it may not. They
 #: share no adjacent word pair, so the builder admits the first — see
@@ -944,7 +960,7 @@ def a_main(root, *, main_id=MAIN, sayable=SAYABLE, withheld=WITHHELD,
                         topics=["farmland"])
 
 
-def turns(registry, texts, *, main_id=MAIN, voice=None, at=1_788_264_000,
+def turns(registry, texts, *, main_id=MAIN, voice=None, at=TURN_AT,
           asks=False, tag="t"):
     """Real inbound turns, through the real runtime and the real crisis gate.
 
@@ -1152,6 +1168,17 @@ def ranked_of(root, text, *, main_id=MAIN, now=NOW):
         return Retriever(store=store).retrieve(text, now=now)
 
 
+def ceiling_of(registry, main_id=MAIN):
+    """The cap the turn actually resolved licenses under (AD-28).
+
+    A rebuild that passes ``ceiling=None`` is a rebuild of the context an
+    *uncapped* main would have got, which is not the one the wire came from the
+    moment aftercare or an operator has lowered anything. ``license_ceiling``
+    is the runtime's own door onto it and is what ``_pipeline`` reads.
+    """
+    return registry.license_ceiling(main_id)
+
+
 # ── the ordinary turn ────────────────────────────────────────────────────────
 
 
@@ -1178,9 +1205,16 @@ def test_the_wire_carries_prose_and_no_part_of_the_serialization(
     assert body == "that plot has been waiting for you a while"
     context = build_context(
         ranked_of(root, "thinking about the farmland again"),
-        now=NOW, ceiling=None,
+        now=NOW, ceiling=ceiling_of(registry),
     )
     assert len(context) >= 1, "the turn must have built a context to compare to"
+    # **And it is the turn's own context, not one like it.** The rebuild takes
+    # the turn's instant and the actor's ceiling because both travel into what
+    # the builder produces; comparing the wire against a context built at a
+    # different moment, for an uncapped main, is comparing it against a
+    # different turn. Asserted rather than assumed by holding the rebuilt
+    # quotable channel against the block the model was actually handed.
+    assert quotable_block(context) == block_of(holder.requests[0], MAY_BE_SAID)
     for line in context.render().split("\n"):
         assert line not in body
     for item in context:
@@ -1681,7 +1715,7 @@ def test_a_failed_generation_asks_nothing_and_spends_no_favour(
 
     working, _ = a_voice("the plot is still there — what goes in it?")
     turns(registry, ["farmland again please"], voice=working, asks=True,
-          at=1_788_264_100, tag="u")
+          at=TURN_AT + 100, tag="u")
 
     assert len(_spends(root)) == 1, (
         "the positive control must spend, or the case above proves nothing"
@@ -1816,11 +1850,12 @@ def test_a_refused_spend_never_leaves_a_main_with_nothing(registry, tmp_path):
                       external_id="t0", t=NOW)
     ranked = ranked_of(root, "thinking about the farmland again")
     assert ranked.ids, "the fixture retrieved nothing"
-    assert fallback(build_context(ranked, now=NOW, ceiling=None)) == "", (
+    ceiling = ceiling_of(registry)
+    assert fallback(build_context(ranked, now=NOW, ceiling=ceiling)) == "", (
         "the fixture has something quotable, so it is not the case in question"
     )
 
-    unasked = asyncio.run(runtime._unasked(inbound, ranked, ceiling=None))
+    unasked = asyncio.run(runtime._unasked(inbound, ranked, ceiling=ceiling))
 
     assert unasked == "still here, and no rush"
     assert holder.calls == 1
