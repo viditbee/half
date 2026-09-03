@@ -78,6 +78,7 @@ from tests.conftest import (
     FakeTransport,
     NeverGenerates,
     a_voice,
+    block_of,
     msg,
     seed_belief,
 )
@@ -884,11 +885,9 @@ def test_a_run_of_failed_turns_stands_that_main_down_and_still_answers():
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def _block(assembled: str, label: str) -> str:
-    for block in assembled.split("\n\n"):
-        if block.startswith(label):
-            return block[len(label):].strip()
-    return ""
+#: One reader of the prompt's block format, shared with every other file that
+#: needs one. See ``tests/conftest.block_of``.
+_block = block_of
 
 
 def _withheld_with_ask() -> frozenset[str]:
@@ -1396,17 +1395,11 @@ def test_a_correction_reply_is_composed_when_the_removed_claim_shares_words(
 
 
 def _verbatim(work):
-    for block in work.prompt.turns[0].text.split("\n\n"):
-        if block.startswith(WORD_FOR_WORD):
-            return block[len(WORD_FOR_WORD):].strip()
-    return ""
+    return block_of(work, WORD_FOR_WORD)
 
 
 def _said(work):
-    for block in work.prompt.turns[0].text.split("\n\n"):
-        if block.startswith(MAY_BE_SAID):
-            return block[len(MAY_BE_SAID):].strip()
-    return ""
+    return block_of(work, MAY_BE_SAID)
 
 
 def test_a_composed_correction_reply_that_omits_the_claim_is_not_sent(
@@ -1520,8 +1513,7 @@ def test_a_bought_question_arrives_inside_the_message_and_never_as_a_line(
     assert sum(1 for char in body if char in QUESTION_MARKS) == 1
     asked = [
         block for work in holder.requests
-        for block in work.prompt.turns[0].text.split("\n\n")
-        if block.startswith(ASK_ABOUT)
+        if (block := block_of(work, ASK_ABOUT))
     ]
     assert asked, "the favour bought a question that never reached the prompt"
 

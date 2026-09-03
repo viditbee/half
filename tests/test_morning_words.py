@@ -93,6 +93,7 @@ from tests.conftest import (
     FakeTransport,
     GeneratorDouble,
     NeverGenerates,
+    block_of,
     seed_belief,
     seed_message,
 )
@@ -603,11 +604,7 @@ def test_the_sample_cannot_reach_the_quotable_channel_through_the_surface(
     voice, holder = a_voice()
     run(registry, FakeChannel(), voice)
 
-    turn = holder.requests[0].prompt.turns[0].text
-    said = next(
-        block[len(MAY_BE_SAID):].strip()
-        for block in turn.split("\n\n") if block.startswith(MAY_BE_SAID)
-    )
+    said = block_of(holder.requests[0], MAY_BE_SAID)
     assert said == SAYABLE
     assert SCRIPTS[script] not in said
 

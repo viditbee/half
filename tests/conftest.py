@@ -85,6 +85,34 @@ def seed_message(store, text=LAST_MESSAGE, *, ident="b_said", t="2026-08-31T00:0
                        **{"ledger": "stated"})
 
 
+def block_of(assembled, label: str) -> str:
+    """One labelled block's body out of an assembled turn, or ``""``.
+
+    **One reader of the prompt's block format, where there were six.**
+    ``conftest.quotable_of``, ``test_bought.asked_about``,
+    ``test_turn_words._block``, ``_verbatim`` and ``_said``, and an inline loop
+    in ``test_morning_words`` each spelled ``split("\\n\\n")`` for themselves,
+    so a change to how ``half.voice.compose.turn_text`` joins its blocks would
+    have broken them one at a time and none of them would have said why. The
+    separator is now read from the module that writes it (``BLOCK_JOIN``)
+    rather than respelled here, which is the choice
+    ``half.voice.gate.scaffolding`` already makes about the labels.
+
+    Takes either the assembled text or the ``Generate`` the composer handed the
+    holder, because half the callers hold one and half hold the other.
+    """
+    from half.voice.compose import BLOCK_JOIN
+
+    text = (
+        assembled if isinstance(assembled, str)
+        else assembled.prompt.turns[0].text
+    )
+    for block in text.split(BLOCK_JOIN):
+        if block.startswith(label):
+            return block[len(label):].strip()
+    return ""
+
+
 def quotable_of(work) -> str:
     """The ``may-be-said`` block out of a generation request, as a model sees it.
 
@@ -95,10 +123,7 @@ def quotable_of(work) -> str:
     """
     from half.voice.compose import MAY_BE_SAID
 
-    for block in work.prompt.turns[0].text.split("\n\n"):
-        if block.startswith(MAY_BE_SAID):
-            return block[len(MAY_BE_SAID):].strip()
-    return ""
+    return block_of(work, MAY_BE_SAID)
 
 
 class GeneratorDouble:

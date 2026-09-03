@@ -63,6 +63,7 @@ from half.text import clusters
 __all__ = [
     "ASK_ABOUT",
     "BE_MINDFUL_OF",
+    "BLOCK_JOIN",
     "INSTRUCTIONS",
     "LANGUAGE_SAMPLE",
     "MAX_CHARS",
@@ -173,6 +174,17 @@ WORD_FOR_WORD: Final[str] = "word-for-word:"
 #: in prose what was wrong with the last attempt would be the English rubric
 #: this module exists without. See ``half.voice.gate.REFUSALS``.
 RETRY: Final[str] = "retry-because:"
+
+#: What separates one block of the assembled turn from the next.
+#:
+#: **Named because it has readers outside this function.** ``turn_text`` writes
+#: it and the suite splits on it to read a block back; before this constant
+#: existed six of those readers each spelled ``"\n\n"`` for themselves, so
+#: changing how the blocks are joined would have broken them one at a time and
+#: none of them would have said why. It is the same choice
+#: ``half.voice.gate.scaffolding`` makes about the labels above — read them from
+#: here rather than respell them.
+BLOCK_JOIN: Final[str] = "\n\n"
 
 
 @dataclass(frozen=True, slots=True)
@@ -513,7 +525,7 @@ def turn_text(
         (WORD_FOR_WORD, sanitize(verbatim) if isinstance(verbatim, str) else ""),
         (RETRY, because if isinstance(because, str) else ""),
     )
-    return "\n\n".join(
+    return BLOCK_JOIN.join(
         f"{label}\n{body}" for label, body in blocks if body
     )
 

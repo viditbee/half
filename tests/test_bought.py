@@ -83,6 +83,7 @@ from tests.conftest import (
     FakeTransport,
     GeneratorDouble,
     a_voice,
+    block_of,
     msg,
     quotable_of,
     reaches,
@@ -294,12 +295,10 @@ def asked_about(holder):
     """
     from half.voice.compose import ASK_ABOUT
 
-    found = []
-    for work in holder.requests:
-        for block in work.prompt.turns[0].text.split("\n\n"):
-            if block.startswith(ASK_ABOUT):
-                found.append(block[len(ASK_ABOUT):].strip())
-    return found
+    return [
+        asked for work in holder.requests
+        if (asked := block_of(work, ASK_ABOUT))
+    ]
 
 
 def sent(transport):
