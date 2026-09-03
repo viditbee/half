@@ -462,6 +462,52 @@ def history_projection(record: Mapping[str, Any]) -> dict[str, Any]:
     return {name: record[name] for name in HISTORY_VISIBLE if name in record}
 
 
+#: What a belief says it is about, and what it says. Named here for the reason
+#: ``LEDGER``, ``QUESTION`` and ``TARGET`` are: the layer that owns record
+#: shapes owns the spelling, and a second literal is a rename that reaches three
+#: places out of four. Both were bare strings in ``half/context/build.py`` and
+#: in half the fixtures in the suite before story 9d needed to *select* on them.
+CLAIM: Final[str] = "claim"
+SUBJECT: Final[str] = "subject"
+
+
+#: The only fields of a belief record the **minting** half of the nightly pass
+#: may see (CAP-7, story 9d).
+#:
+#: **Wider than ``HISTORY_VISIBLE``, deliberately, and this is the one place in
+#: Half where a narrowing had to be relaxed rather than tightened.** The two
+#: halves of the pass ask different questions of the same records. Story 9c's
+#: half asks *how much does this entry cite, and did that change* — arithmetic
+#: over counts, which is why id, stamp and support were enough and the claim
+#: stayed behind the line. This half asks *which entries could disagree with
+#: this one, and do they* — and there is no answer to either question that does
+#: not read what the entry is about:
+#:
+#: * ``subject`` and ``loop`` **are** CAP-7's two comparison sets. A pass that
+#:   could not see them could not bound the comparison at all, which is the
+#:   one rule the capability is written around.
+#: * ``ledger`` is what makes the pair a *mirror* — the gap between what the
+#:   main says and what they do (glossary) — and it is the cheap filter's
+#:   sharpest cut.
+#: * ``claim`` is what the disagreement judgement is *about*. A port handed two
+#:   ids and no text could only ever guess.
+#:
+#: What stays behind the line is everything that is neither: the contact, the
+#: handle, the region, the safety plan, the zone, the independence count and
+#: the license. A minter has no business with the phone book, and the one field
+#: it would be most tempting to pass through — the license — is the governance
+#: layer's answer to *may this be said*, which is asked at delivery and never
+#: at minting.
+MINT_VISIBLE: Final[tuple[str, ...]] = (
+    "id", "t", CLAIM, SUBJECT, LEDGER, LOOP,
+)
+
+
+def mint_projection(record: Mapping[str, Any]) -> dict[str, Any]:
+    """``record`` reduced to what the minting half of the pass may see."""
+    return {name: record[name] for name in MINT_VISIBLE if name in record}
+
+
 def handoff_record(record: Mapping[str, Any] | Any) -> bool:
     """Whether ``record`` is phone-book material.
 
