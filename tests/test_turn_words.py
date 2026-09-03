@@ -1873,3 +1873,53 @@ def test_the_turn_text_scan_catches_the_template_it_forbids():
     assert _wire_literals(ast.parse(source)) == [
         "let me sit with that.", "अभी यहीं हूँ",
     ]
+
+
+def test_an_erasure_whose_words_never_reached_the_main_is_loud(
+    registry, tmp_path, caplog
+):
+    """The show-then-tombstone ordering's own cost, made visible.
+
+    The body is destroyed inside the mutex and the words go out afterwards, so
+    a permanent send failure leaves an irreversible removal the main was never
+    shown — and the confirming turn was the last moment a mis-aim could have
+    been caught. The ordering is kept (both alternatives are worse; ``_act``
+    carries the argument), so the failure is an ``error`` an operator sees
+    rather than a warning about one more undelivered message.
+
+    Content-free: the id, never the claim. The claim is the thing that was
+    destroyed, and a log line is not where it goes to survive.
+    """
+    root = tmp_path / "mains"
+    a_main(root, sayable="")
+    transport = FakeTransport(
+        [
+            msg(text=text, message_id=f"e{index}", chat_id="123",
+                date=1_788_264_000 + index)
+            for index, text in enumerate(
+                ["farmland again please", "delete that", "yes"]
+            )
+        ],
+        fail=RuntimeError("Forbidden: bot was blocked by the user"),
+    )
+    channel = TelegramChannel(transport=transport, mains={"123": MAIN})
+
+    with caplog.at_level(logging.ERROR, logger="half.actor.runtime"):
+        asyncio.run(Runtime(channel=channel, registry=registry).run())
+
+    assert transport.sent == [], "the fixture delivered something"
+    alarms = [
+        record for record in caplog.records
+        if "tombstoned" in record.getMessage()
+    ]
+    assert len(alarms) == 1, [r.getMessage() for r in caplog.records]
+    assert "b_hold" in alarms[0].getMessage()
+    assert WITHHELD not in alarms[0].getMessage()
+    for argument in (alarms[0].args or ()):
+        assert WITHHELD not in str(argument)
+    # And an ordinary undelivered reply is not this alarm.
+    assert not [
+        record for record in caplog.records
+        if "tombstoned" in record.getMessage()
+        and record is not alarms[0]
+    ]

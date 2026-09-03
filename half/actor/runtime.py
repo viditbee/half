@@ -162,9 +162,18 @@ _DEADLINE: Final[ContextVar[float | None]] = ContextVar(
 )
 
 
+#: The belief this turn tombstoned, or ``""``. **An id, never a claim.**
+#:
+#: Read by ``_handle`` after the send, so that an erasure whose words never
+#: reached the main is loud rather than silent. See ``_send_with_retry``.
+_ERASED: Final[ContextVar[str]] = ContextVar("half_turn_erased", default="")
+
+
 def _open_deadline() -> None:
-    """Start this turn's shared budget. Never raises."""
+    """Start this turn's shared budget, and clear last turn's erasure. Never
+    raises."""
     _DEADLINE.set(asyncio.get_running_loop().time() + TURN_DEADLINE_SECONDS)
+    _ERASED.set("")
 
 
 def _left(most: float) -> float:
@@ -460,7 +469,20 @@ class Runtime:
             self._expire_candidate(inbound)
         if reply is None:
             return  # silence is an outcome, not a failure (AD-27)
-        await self._send_with_retry(inbound, reply)
+        delivered = await self._send_with_retry(inbound, reply)
+        if not delivered and _ERASED.get():
+            # **The one send failure that cannot be shrugged off.** Every other
+            # reply that does not land costs a message; this one cost the main
+            # their only chance to catch a mis-aimed erasure, because the body
+            # is already tombstoned and there is nothing left to reverse or to
+            # show. The id and never the claim (AD-22) — the claim is the thing
+            # that was destroyed, and a log line is not where it goes to
+            # survive.
+            logger.error(
+                "the reply confirming an erasure could not be delivered to "
+                "main=%s; belief=%s is tombstoned and its words were never "
+                "shown", inbound.main_id, _ERASED.get(),
+            )
 
     def _expire_candidate(self, inbound: Inbound) -> None:
         """Drop a standing candidate this turn did not answer. Never raises.
@@ -478,31 +500,39 @@ class Runtime:
                 inbound.main_id, type(exc).__name__,
             )
 
-    async def _send_with_retry(self, inbound: Inbound, reply: str) -> None:
+    async def _send_with_retry(self, inbound: Inbound, reply: str) -> bool:
         """Send, retrying only what the platform says is worth retrying.
 
         ``SendFailed.retryable`` exists for this; it previously had no reader.
+
+        **Answers whether it landed**, which is review loop 1's addition and has
+        exactly one reader: an erasure's confirming turn. Every other
+        undelivered reply costs a message, and the exchange is still in the log;
+        that one cost the main the last moment a mis-aimed, irreversible removal
+        could be caught, because the body is already gone. See ``_handle``, and
+        ``_act`` for why the ordering is not the thing that moves.
         """
         for attempt, delay in enumerate((0.0, *RETRY_DELAYS)):
             if delay:
                 await asyncio.sleep(delay)
             try:
                 await self.channel.send(inbound.main_id, reply)
-                return
+                return True
             except NotReachable:
                 # Unreachable right now. Nothing is lost — the exchange is in
                 # the log — and a later story decides whether to queue,
                 # template, or stay quiet.
-                return
+                return False
             except SendFailed as exc:
                 if not exc.retryable or attempt == len(RETRY_DELAYS):
                     logger.warning(
                         "giving up on reply to main=%s: %s", inbound.main_id, exc
                     )
-                    return
+                    return False
             except HalfError:
                 logger.exception("send failed for main=%s", inbound.main_id)
-                return
+                return False
+        return False
 
     async def _pipeline(self, inbound: Inbound) -> str | None:
         """The ordinary turn. Exactly one caller: the crisis gate (AD-10).
@@ -1109,6 +1139,22 @@ class Runtime:
             # The store's own validate-then-erase: the op *and* the tombstoning
             # of the bodies, which a bare append would not do. An erasure that
             # left the text on disk is not an erasure.
+            #
+            # **The body goes before the send is acknowledged, and that is a
+            # choice rather than an oversight** (review loop 1). A permanent
+            # send failure therefore leaves the body gone and the words never
+            # delivered, which is a real loss — the confirming turn is the last
+            # moment a mis-aim is catchable. Both other orderings are worse.
+            # *Tombstoning after the send* needs a second acquire on this main's
+            # mutex and makes a crash in the gap into a deletion the main asked
+            # for, was told about, and did not get: a privacy request silently
+            # unfulfilled, which is the failure with the higher floor. *Showing
+            # the claim on the asking turn instead* is a licence question about
+            # what Half may quote while it is only proposing, which
+            # ``correction.proposed`` records as needing its own story. So the
+            # ordering stays and the failure is made **loud** instead: the send
+            # answers whether it landed and ``_handle`` alarms when it did not.
+            _ERASED.set(removal.target)
             actor.store.expunge(removal.target, t=inbound.t)
         else:
             actor.store.record(
