@@ -572,6 +572,33 @@ class Runtime:
         inside a single serialized operation rather than to widen this one. Say
         so here rather than discovering it from a balance that went negative.
 
+        **What story 13b changed is none of the three: it is the width of the
+        gap.** Until this story the offer and the buy were a build and a render
+        apart — pure work with no suspension point between them — and now a
+        model call sits in the middle, so the window is a whole
+        ``half.voice.turn.TURN_BOUND_SECONDS`` wide and contains a real ``await``
+        at which the loop runs everything else. That is worth writing down
+        precisely because the three facts above are silent about it, and a
+        reader could take their silence for coverage.
+
+        It is safe, and for a reason rather than by luck. Two of the facts are
+        about *who* may act and not about how long the gap is, so a wider gap
+        does not touch them. The third is what now carries the weight: ``spend``
+        re-reads the view at the moment it runs, so nothing it decides was
+        computed before the wait. And what the wait newly admits is **eviction**
+        — the mutex is released and ``Actor.claims`` is back to zero, so this
+        main's actor can be dropped under memory pressure mid-turn. That costs
+        nothing the spend reads: the balance, the ceiling and the ladder are
+        hydrated from the log, and the one volatile input, the live strands, was
+        *copied* above and travels as a value rather than being re-read off an
+        actor that may be a different object by then (AD-26).
+
+        The turn's own deadline bounds the width (``TURN_DEADLINE_SECONDS``), so
+        the gap cannot grow without that number moving. What would invalidate
+        this paragraph is not a slower model but a second bounded call added
+        between the offer and the buy, or a spend that started reading anything
+        it was handed before the wait.
+
         **The correction path is inside the lock, on purpose** (CAP-11, story
         12). It is an append to this main's log, so it happens under the acquire
         this method already holds — one lock acquisition, not two, which is what
