@@ -103,47 +103,41 @@ worldwide rubric problem, and story 13a's scope is the wire text. When it is
 built it belongs with the turn reply (13b), where a main is waiting and the
 material is wider, and it needs its own story rather than a commit.
 
-**Why this repeats the consultation shape a third time, and what should happen
-about it.** The bound, the ``Tally``, the breaker, the holder allowlist and the
-report/alarm cadence below are the same shape as ``half.crisis.classifier`` and
-``half.correction.candidate``. That module's own docstring records the cost
-honestly at two consumers; this is the third, and the arithmetic has changed
-enough to say so plainly: roughly two hundred lines of the same machinery now
-exist in three places, and a fix to one of them — story 6d's review corrected
-the holder check from a denylist to an allowlist, and separated ``raised`` from
-``unreadable`` — has to be made three times or it is made once and forgotten
-twice.
+**The consultation shape is shared now, and this is what stayed** (story 14).
+The bound, the breaker, the holder allowlist and the report/alarm cadence used
+to be written out here a third time, and this docstring said so and recorded the
+recommendation. It has been done: ``half.model.consult`` holds the shape, with
+the policy injected, and it holds *no* labels, *no* instructions and no domain
+vocabulary at all — which was the non-negotiable condition, because
+``tests/test_crisis_golden.py`` pins the crisis path's label set and
+instructions by digest as clinical-review material and a shared module holding
+any of it would have turned that pin into a pin on a base class.
 
-The obstacle ``candidate.py`` names still stands: ``half.crisis`` is the entry
-gate and is depended upon by no domain module, so the shared code cannot live
-there. But the two differences it gives as reasons *not* to share are both
-policy rather than shape, and both are injectable. What differs between the
-three is the **outcome type** (a ``Verdict`` carrying an action; a ``Verdict``
-carrying an action; a ``Composed`` carrying prose or a reason), the **label or
-judge policy**, and the **numbers**. What is identical is the bounded call, the
-counted fallback, the per-holder breaker and the allowlisted narrow holder.
+What differs between the three callers is what stayed with each of them: the
+**outcome type** (a ``Verdict`` carrying an action, twice; a ``Composed``
+carrying prose or a reason, here), the **label or judge policy**, and the three
+**numbers** that differ for reasons. Two of this module's are the reason the
+paragraph above exists: nobody is waiting for a morning, so ``BOUND_SECONDS`` is
+generous where a turn's must be short, and a morning happens once a day, so
+``BREAK_FOR`` counts mornings rather than turns. The two ceilings were always
+identical to the other two callers' and are now one definition.
 
-So the recommendation is unchanged and stronger: a ``half/model/consult.py``
-holding the bounded, counted, breaker-guarded call over a narrow holder, with
-the policy injected — and with two conditions that are not negotiable. Crisis
-behaviour must come out byte-identical, asserted rather than reviewed, because
-``tests/test_crisis_golden.py`` pins that module's label set and instructions by
-digest as clinical-review material. And the extraction must not let anything
-else acquire that status by inheritance: the shared module holds *no* labels,
-*no* instructions and *no* numbers, or the pin becomes a pin on a base class and
-means nothing.
+**The judge, the tripwire and the regeneration loop did not move**, and they
+never could have: they are the voice's, not the shape's. Nor did any log line,
+so the guard that proves nothing here can carry content still reads the
+arguments of the calls in this file.
 
-It is not done here because the crisis path is Ask-First for this story and a
-refactor across it is not something to slip into a story about prose. Recorded
-rather than done quietly, which is the same choice ``candidate.py`` made and the
-last time it will be the right one.
+The one correction this extraction had already earned is the report cadence.
+Review round 1 fixed the mutually-exclusive branches *here* and nowhere else,
+and the identical bug was still sitting in the other two modules when story 14
+opened. It is one branch now (``half.model.consult.due``), and the case below
+each caller proves the single fix reaches all three.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -152,6 +146,14 @@ from typing import Final
 
 from half.context.channels import Context, render_line, sanitize
 from half.errors import VoiceError
+from half.model import consult
+from half.model.consult import (
+    ALARM_AFTER,
+    BREAK_AFTER,
+    PER_CALL_MICRO_USD,
+    PER_PASS_MICRO_USD,
+    REPORT_EVERY,
+)
 from half.model.port import (
     Completion,
     Failure,
@@ -226,35 +228,37 @@ ATTEMPTS: Final[int] = 3
 #: silenced a main for ever with nothing anywhere saying why. Re-exported below
 #: so every existing reader is unaffected.
 
-#: Ceilings for one generation and for one process's worth of them, in
-#: millionths of a dollar.
-#:
-#: **The per-call figure is the one that binds**, and the port checks it against
-#: an estimate *before the transport is touched*. The estimate charges the full
-#: output ceiling in advance, so an ordinary morning prices well under this on
-#: either tier and a pathological prompt is refused rather than sent.
-#:
-#: **The per-pass figure is a runaway stop, not a cost target.** Spending is
-#: bounded by construction — at most ``ATTEMPTS`` generations per main per day,
-#: with no loop, retry or schedule that could make a fourth.
-PER_CALL_MICRO_USD: Final[int] = 100_000
-PER_PASS_MICRO_USD: Final[int] = 500_000_000
+# The two ceilings, how often the counts go out, when a rate becomes evidence
+# and how many consecutive silent mornings stand a main down are
+# ``half.model.consult``'s and are re-exported above under the names this module
+# has always used, so every existing reader and ``__all__`` are unaffected.
+#
+# **The two ceilings being identical to the crisis and correction ones is not a
+# coincidence worth dressing up**, and an earlier version of this file said so
+# already: they answer the same question — *what is an absurd amount to spend on
+# one call, and on one process* — and nobody has yet had a reason to answer it
+# differently here. The per-call figure is the one that binds, checked against
+# an estimate before the transport is touched; the per-pass one is a runaway
+# stop, since spending is bounded by construction at ``ATTEMPTS`` generations
+# per main per day.
+#
+# ``BREAK_AFTER`` is five in all three, and here five mornings is most of a
+# week — the right order for a provider outage and the wrong order for a
+# per-turn breaker, which is why ``BREAK_FOR`` below is not shared.
 
-#: How often the running counts are written out, in composed mornings, and the
-#: silent-morning rate at which they are written out as an error instead. The
-#: rate has to be *visible*, not merely reachable: a line per event tells an
-#: operator that one morning was quiet, not that a third of them are failing.
-REPORT_EVERY: Final[int] = 100
+#: The silent-morning rate at which the counts are written out as an error
+#: instead of at ``info``. **Policy, and the morning's**: half, where a waiting
+#: main's paths use a fifth, because a morning is silent for ordinary reasons
+#: far more often than a turn falls back. The rate has to be *visible*, not
+#: merely reachable: a line per event tells an operator that one morning was
+#: quiet, not that a third of them are failing.
 ALARM_RATE: Final[float] = 0.5
-#: Below this many mornings a rate is arithmetic rather than evidence.
-ALARM_AFTER: Final[int] = 10
 
-#: Consecutive silent mornings that stand this main's composer down, and how
-#: many mornings it stays down for. **Counted in mornings, not turns or
-#: seconds**, because nothing here reads a clock (AD-30) and because a morning
-#: is this path's natural unit — five is most of a week, which is the right
-#: order for a provider outage and the wrong order for a per-turn breaker.
-BREAK_AFTER: Final[int] = 5
+#: How many mornings this main's composer stays down for once it trips.
+#: **Counted in mornings, not turns or seconds**, because nothing here reads a
+#: clock (AD-30) and because a morning is this path's natural unit. Twenty
+#: mornings is three weeks of silence for one main, which is why it is smaller
+#: than the fifty turns the two waiting paths use.
 BREAK_FOR: Final[int] = 20
 
 #: The only public method a holder may have. An **allowlist**, inherited whole
@@ -651,7 +655,7 @@ class Tally:
         """The number an operator watches. Zero composed mornings reads as zero
         rather than as an error, because a deployment with no key wired is a
         supported shape and not a fault."""
-        return self.silent / self.composed if self.composed else 0.0
+        return consult.rate(self.silent, self.composed)
 
     @property
     def leaked(self) -> int:
@@ -661,14 +665,13 @@ class Tally:
         return self.silences.get(LEAKED, 0)
 
     def count_silence(self, reason: str) -> None:
-        self.silences[reason] = self.silences.get(reason, 0) + 1
+        consult.count_one(self.silences, reason)
 
     def count_refusal(self, refusal: str) -> None:
-        self.refusals[refusal] = self.refusals.get(refusal, 0) + 1
+        consult.count_one(self.refusals, refusal)
 
     def count_failure(self, failure: Failure) -> None:
-        key = f"{failure.kind}/{failure.because}"
-        self.failures[key] = self.failures.get(key, 0) + 1
+        consult.count_one(self.failures, consult.failure_key(failure))
 
 
 # ── the voice ────────────────────────────────────────────────────────────────
@@ -690,8 +693,7 @@ class Voice:
     """
 
     __slots__ = (
-        "_holders", "_bound", "_attempts", "_tally", "_consecutive", "_quiet",
-        "_sealed",
+        "_holders", "_bound", "_attempts", "_tally", "_breaker", "_sealed",
     )
 
     def __init__(
@@ -705,9 +707,7 @@ class Voice:
         given = dict(holders or {})
         for main_id, holder in given.items():
             _check_holder(main_id, holder)
-        if isinstance(bound_seconds, bool) or not isinstance(
-            bound_seconds, (int, float)
-        ) or bound_seconds <= 0:
+        if consult.refuses_as_a_bound(bound_seconds):
             raise VoiceError(
                 f"a bound of {bound_seconds!r} is not a bound. A generation "
                 "that may run for ever is a scheduler slot held for ever, and "
@@ -725,9 +725,9 @@ class Voice:
         self._bound = float(bound_seconds)
         self._attempts = attempts
         self._tally = tally if tally is not None else Tally()
-        #: main -> consecutive silent mornings, and main -> mornings to skip.
-        self._consecutive: dict[str, int] = {}
-        self._quiet: dict[str, int] = {}
+        #: main -> consecutive silent mornings, and main -> mornings to skip,
+        #: in the shared shape. Counted in mornings, per main.
+        self._breaker = consult.Breaker(break_for=BREAK_FOR)
         self._sealed = True
 
     def __setattr__(self, name: str, value: object) -> None:
@@ -895,20 +895,25 @@ class Voice:
         itself is not repeated in the line: it came from a caller, and the log
         on this path carries counts and ids only (AD-22).
 
-        **``math.isfinite`` and not ``> 0``**, which is story 13b's review-loop
-        correction and is the difference between a bound and none at all. Every
-        comparison against a NaN is ``False``, so ``given <= 0`` admitted it,
+        **``consult.a_bound`` — finite as well as positive — and not
+        ``> 0``**, which is story 13b's review-loop correction and is the
+        difference between a bound and none at all. Every comparison against a
+        NaN is ``False``, so ``given <= 0`` admitted it,
         ``asyncio.timeout(nan)`` never fires, and the main waited on a hung
         provider for as long as it hung — the one failure the whole bound
         exists to prevent, arriving through the guard that was supposed to
         prevent it. Infinity is refused by the same test and for the same
         reason.
+
+        **It is the stricter of the shape's two predicates, and the difference
+        is deliberate.** The construction bound is checked with
+        ``consult.refuses_as_a_bound``, which is what all three constructors
+        have always applied and which admits an infinite bound. Closing that is
+        a behaviour change in three callers and is not a refactor's to make.
         """
         if given is None:
             return self._bound
-        if isinstance(given, bool) or not isinstance(given, (int, float)) or (
-            not math.isfinite(given) or given <= 0
-        ):
+        if not consult.a_bound(given):
             logger.warning(
                 "the composer was given a bound it cannot use for main=%s; the "
                 "one it was built with stands", main_id,
@@ -1116,13 +1121,10 @@ class Voice:
         holder checks, so the countdown only advanced on mornings that had
         something to say — and a main stood down for twenty mornings who then
         had a quiet fortnight stayed silent for a month and a half. *Mornings*
-        is the unit, and every morning is one, including the quiet ones.
+        is the unit, and every morning is one, including the quiet ones. The
+        shared shape spends the unit; what it means is decided by the caller.
         """
-        left = self._quiet.get(main_id, 0)
-        if left <= 0:
-            return False
-        self._quiet[main_id] = left - 1
-        return True
+        return self._breaker.spend(main_id)
 
     def _note(self, main_id: str, outcome: Composed) -> None:
         """Record whether that morning spoke, and trip or clear the breaker.
@@ -1136,18 +1138,18 @@ class Voice:
         Neutral rather than clearing, because a leak says nothing about whether
         the provider is up: a run of transport failures interrupted by one leak
         is still a run of transport failures.
+
+        **A fault is not handed to the breaker at all**, which is how *neutral*
+        is spelled now that the breaker is shared: the shape either clears the
+        run or lengthens it, and neither is the right answer for an outcome
+        that says this build is wrong rather than that the provider is down.
         """
         if isinstance(outcome, Unspoken) and outcome.reason in FAULTS:
             return
-        if isinstance(outcome, Spoken):
-            self._consecutive[main_id] = 0
+        if not self._breaker.note(
+            main_id, failed=not isinstance(outcome, Spoken)
+        ):
             return
-        run = self._consecutive.get(main_id, 0) + 1
-        self._consecutive[main_id] = run
-        if run < BREAK_AFTER:
-            return
-        self._consecutive[main_id] = 0
-        self._quiet[main_id] = BREAK_FOR
         logger.error(
             "the morning composer produced nothing %d times running for "
             "main=%s and is standing down for %d mornings; that main gets no "
@@ -1159,20 +1161,26 @@ class Voice:
     def _report(self) -> None:
         """Write the running counts out, every so often. Counts only (AD-22).
 
-        **The alarm is asked first**, which is review round 1's correction. With
-        the periodic branch first and the alarm on the ``elif``, the two were
-        exclusive — so at the hundredth, two hundredth and every hundredth
-        morning after, a wholly failing composer reported at ``info`` instead of
-        ``error``. The one line an operator is watching for went missing exactly
-        at the round numbers they would look at.
+        **The alarm is asked first**, which was review round 1's correction
+        here and is now one branch for three callers. With the periodic branch
+        first and the alarm on the ``elif``, the two were exclusive — so at the
+        hundredth, two hundredth and every hundredth morning after, a wholly
+        failing composer reported at ``info`` instead of ``error``. The one line
+        an operator is watching for went missing exactly at the round numbers
+        they would look at.
+
+        It was fixed here and left standing in ``half.crisis.classifier`` and
+        ``half.correction.candidate``, which is the whole argument for the
+        extraction: a correction made in one of three copies is a correction
+        forgotten twice. ``half.model.consult.due`` is the branch now.
         """
-        if (
-            self._tally.composed >= ALARM_AFTER
-            and self._tally.silent_rate >= ALARM_RATE
-            and self._tally.composed % ALARM_AFTER == 0
-        ):
+        due = consult.due(
+            self._tally.composed, self._tally.silent_rate,
+            alarm_rate=ALARM_RATE,
+        )
+        if due is consult.Due.ALARM:
             self.flush(alarming=True)
-        elif self._tally.composed % REPORT_EVERY == 0:
+        elif due is consult.Due.PERIODIC:
             self.flush()
 
     @property
@@ -1243,12 +1251,7 @@ def _check_holder(main_id: str, holder: object) -> None:
             "method by another name. The voice holds an object that can "
             "generate and do nothing else"
         )
-    wider = sorted(
-        name for name in dir(holder)
-        if not name.startswith("_")
-        and name not in ALLOWED_METHODS
-        and callable(getattr(holder, name, None))
-    )
+    wider = consult.wider_than(holder, ALLOWED_METHODS)
     if wider:
         raise VoiceError(
             f"the holder for main {main_id!r} can also {', '.join(wider)}. The "

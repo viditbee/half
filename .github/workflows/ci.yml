@@ -1279,10 +1279,10 @@ jobs:
         # wiring and the determinism guarantees among them — fitted inside its
         # own margin.
         #
-        # 510 selected, 476 required. Story 14 adds one — the model-surface
-        # rule's non-vacuity case, which reaches this gate through
-        # `tests/test_voice.py`'s own `pytestmark` — and the floor moves with
-        # it, so this story does not grow the margin.
+        # 513 selected, 479 required. Story 14 adds four, all reaching this
+        # gate through `tests/test_voice.py`'s own `pytestmark`: the
+        # model-surface rule's non-vacuity case, and the three below. The floor
+        # moves with them, so this story does not grow the margin.
         #
         # **The margin here is 34 and the paragraph below says it is 10.** That
         # is not story 14's doing and it is not being fixed here: the count was
@@ -1309,7 +1309,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap8 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-8 cases collected: $collected"
-          if [ "$collected" -lt 476 ]; then
+          if [ "$collected" -lt 479 ]; then
             echo "::error::the CAP-8 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -1506,12 +1506,26 @@ jobs:
         # The floor moves with them: **324 selected, 324 required.** It stood at
         # 300 while 324 were collected, which is a margin of twenty-four on a
         # gate whose own comment two paragraphs up says its margin is zero.
+        #
+        # **Story 14 adds three**, and this caller's position in that story is
+        # the unusual one: the report cadence bug review round 1 fixed *here*
+        # was still sitting in the other two modules, so what has to be shown
+        # for the voice is that the extraction did not cost the caller that was
+        # already right. The alarm case above is unchanged and passes against
+        # the shared branch. The three added are: which numbers are the shape's
+        # and which are the morning's, with the two ceilings that were always
+        # identical now one answer; that the shape is read here rather than
+        # kept alongside a local copy, run against the mutation it forbids; and
+        # that the judge, the tripwire, the regeneration loop and this
+        # package's whole closed vocabulary did **not** move — a shared module
+        # holding any of the rubric would be one language's idea of good
+        # writing handed to two callers that never asked for it.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap8_voice -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-8 wire-text cases collected: $collected"
-          if [ "$collected" -lt 325 ]; then
+          if [ "$collected" -lt 328 ]; then
             echo "::error::the wire-text gate collected $collected cases; Half may have stopped speaking, or started speaking scaffolding"
             exit 1
           fi

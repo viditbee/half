@@ -78,6 +78,7 @@ from half.voice.compose import (
 )
 from tests.conftest import GeneratorDouble, NeverGenerates
 
+from half.model import consult
 from half.voice import gate
 from half.voice.gate import (
     ATTEMPTS,
@@ -1765,3 +1766,124 @@ def test_the_worst_case_composition_fits_inside_the_scheduler_s_own_timeout():
     assert ATTEMPTS * BOUND_SECONDS < DEFAULT_TIMEOUT, (
         ATTEMPTS * BOUND_SECONDS, DEFAULT_TIMEOUT
     )
+
+
+# =============================================================================
+# story 14: one consultation, three policies
+# =============================================================================
+#
+# This module's docstring used to carry the recommendation and the reason it
+# was not being acted on. It has been acted on: the bound, the caps, the
+# breaker, the holder allowlist and the report cadence are
+# ``half/model/consult.py``, with the policy injected.
+#
+# Everything above this line is the equivalence evidence, and it is evidence
+# because **not one of those assertions moved**. In particular:
+# ``test_a_failing_composer_alarms_at_error_and_is_not_hidden_by_a_round_number``
+# is this caller's alarm case, and it is the *older* of the three — review round
+# 1 wrote it here, this is the module whose branch was fixed, and the identical
+# bug was still sitting in the other two when story 14 opened. It passes
+# unchanged against the shared branch, which is the direction of evidence that
+# matters here: the extraction did not cost the one caller that was already
+# right.
+#
+# Also unmoved: the breaker ticking on every morning including the quiet ones;
+# a fault neither arming nor clearing it, over ``BREAK_AFTER + 2`` consecutive
+# leaks with the tripwire reached every time; the per-call bound override
+# refusing a NaN; the holder refused unless ``generate`` is its only public
+# method; and the two ceilings priced against a real prompt on both tiers.
+
+
+@pytest.mark.cap8_voice
+def test_the_shared_numbers_are_shared_and_this_paths_policy_is_its_own():
+    """Which numbers moved and which did not, pinned rather than reviewed.
+
+    The five that were byte-identical in all three consultations are one
+    definition with three readers now. The two ceilings are the interesting
+    pair: this module's docstring already said plainly that they were the same
+    as the crisis and correction ones and that it was *"not a coincidence worth
+    dressing up"* — they answer the same question and nobody has had a reason
+    to answer it differently. They are one answer now.
+
+    The three that differ differ *for reasons*, and they are the reasons this
+    file has always given: nobody is waiting for a morning, so the bound is
+    twenty seconds where a turn's is two; a morning is the unit, so twenty of
+    them is three weeks of silence where fifty turns is an afternoon; and a
+    morning is silent for ordinary reasons far more often than a turn falls
+    back, so the alarm rate is half rather than a fifth.
+    """
+    assert (BOUND_SECONDS, BREAK_FOR, ALARM_RATE) == (20.0, 20, 0.5)
+    for name in ("BOUND_SECONDS", "BREAK_FOR", "ALARM_RATE"):
+        assert not hasattr(consult, name), name
+    assert (BREAK_AFTER, REPORT_EVERY, ALARM_AFTER) == (5, 100, 10)
+    assert (PER_CALL_MICRO_USD, PER_PASS_MICRO_USD) == (100_000, 500_000_000)
+    assert (
+        BREAK_AFTER, REPORT_EVERY, ALARM_AFTER,
+        PER_CALL_MICRO_USD, PER_PASS_MICRO_USD,
+    ) == (
+        consult.BREAK_AFTER, consult.REPORT_EVERY, consult.ALARM_AFTER,
+        consult.PER_CALL_MICRO_USD, consult.PER_PASS_MICRO_USD,
+    )
+    # And the re-export is real: ``__all__`` promises these names and every
+    # existing reader takes them from here.
+    for name in ("ALARM_AFTER", "BREAK_AFTER", "PER_CALL_MICRO_USD",
+                 "PER_PASS_MICRO_USD", "REPORT_EVERY"):
+        assert name in gate.__all__, name
+        assert getattr(gate, name) == getattr(consult, name)
+
+
+@pytest.mark.cap8_voice
+def test_the_shape_is_read_from_one_place_and_not_repeated_here():
+    """A refactor whose caller kept its own copy beside the shared one is a
+    fourth copy with an import at the top.
+
+    Both halves are asserted: that the shared decisions are reached, and that
+    the arithmetic they replaced is gone from this file. The alarm branch is
+    the one that matters most here for the opposite reason to the other two
+    callers — this is the module that was *right*, and a local copy left behind
+    would go on being right while the shared one rotted, which is how a
+    refactor's payoff quietly stops being real.
+    """
+    source = (ROOT / "half/voice/gate.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    reached = {
+        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+    }
+    assert {
+        "Breaker", "due", "wider_than", "refuses_as_a_bound", "a_bound",
+    } <= reached
+    assert "% REPORT_EVERY" not in source
+    assert "% ALARM_AFTER" not in source
+    assert "_consecutive" not in source and "_quiet" not in source
+
+
+@pytest.mark.cap8_voice
+def test_the_judge_the_tripwire_and_the_loop_did_not_move():
+    """What is the voice's and not the shape's.
+
+    The rubric is the thing this package exists to get right worldwide — four
+    rules true or false in every script, no question about register — and the
+    tripwire is deliberately not one of them. A shared module holding any of it
+    would be one language's idea of good writing applied to everybody's, handed
+    to two callers that never asked for it.
+
+    So the shape is scanned for this package's whole vocabulary: every refusal
+    the judge may return, every reason a morning ends silent, and the question
+    marks. None of it is there, and none of it is reachable as an attribute of
+    the shared module either.
+    """
+    shape = (ROOT / "half/model/consult.py").read_text(encoding="utf-8")
+    from tests.test_consult import identifiers_and_literals
+
+    found = identifiers_and_literals(ast.parse(shape))
+    for token in sorted(REFUSALS | SILENCES):
+        assert not any(token in name for name in found), token
+    for name in ("judge", "scaffolding", "question_budget", "QUESTION_MARKS",
+                 "REFUSALS", "SILENCES", "ATTEMPTS", "MAX_CHARS",
+                 "MAX_OUTPUT_TOKENS", "Spoken", "Unspoken", "leak"):
+        assert not hasattr(consult, name), name
+    assert "".join(sorted(QUESTION_MARKS)) not in shape
+
+    # And they are still here, which is the half a purity scan cannot show.
+    for name in ("judge", "scaffolding", "question_budget"):
+        assert callable(getattr(gate, name)), name
