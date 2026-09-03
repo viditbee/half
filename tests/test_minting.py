@@ -1349,12 +1349,25 @@ def test_a_main_whose_first_pass_this_is_still_treats_everything_as_new(
 @pytest.mark.cap7_minting
 def test_a_minted_tension_folds_identically_after_a_rebuild(registry, tmp_path):
     """Matrix: *replay* (AD-4, AD-30). A mint that did not survive a rebuild is
-    a disagreement Half records and then loses."""
+    a disagreement Half records and then loses.
+
+    **Anchored on a tension that exists**, the way
+    ``test_the_shipped_wiring_runs_a_real_pass_and_mints_nothing`` already is.
+    This compared two tension tables without asserting either held anything, so
+    it read ``{} == {}`` and passed on a build that minted nothing: review
+    replaced the ``note_mint`` call with ``fields_for(couple)``, reddened ten
+    cases in this file, and left this one green.
+    """
     seeded(registry, tmp_path)
-    run_pass(registry, "vidit", judge=Judge(True))
+    result = run_pass(registry, "vidit", judge=Judge(True))
+    ident = key_of("b_said", "b_did")
+    assert result.minted.minted == (ident,)
+
     with Store(tmp_path / "vidit") as store:
-        assert store.rebuild().tensions == store.state().tensions
-        assert store.fold().tensions == store.state().tensions
+        held = store.state().tensions
+        assert set(held) == {ident}
+        assert store.rebuild().tensions == held
+        assert store.fold().tensions == held
 
 
 @pytest.mark.cap7_minting
@@ -1374,12 +1387,21 @@ def test_two_mains_with_identical_logs_reach_identical_tensions(
 ):
     """The same log and the same ``now`` produce the same tensions, id included
     — which is what makes the derived id a replay property rather than a
-    convenience."""
+    convenience.
+
+    **Anchored on a tension that exists.** This compared two tables without
+    asserting either held anything, so it read ``{} == {}`` and passed on a
+    build that minted nothing at all.
+    """
     for main_id in ("vidit", "asha"):
         seeded(registry, tmp_path, main_id)
     work = TensionPass(ledger=registry, judge=Judge(True))
-    asyncio.run(work.evaluate("vidit", NOW))
-    asyncio.run(work.evaluate("asha", NOW))
+    one = asyncio.run(work.evaluate("vidit", NOW))
+    other = asyncio.run(work.evaluate("asha", NOW))
+
+    ident = key_of("b_said", "b_did")
+    assert one.minted.minted == other.minted.minted == (ident,)
+    assert set(tensions_of(registry, "vidit")) == {ident}
     assert tensions_of(registry, "vidit") == tensions_of(registry, "asha")
 
 
@@ -1607,11 +1629,25 @@ def test_the_result_carries_counts_and_ids_but_never_a_claim(
 ):
     """AD-22 on the value the pass hands back, and the reason the *record* check
     above is not enough: a claim reaches an operator's log through whatever
-    formats a result."""
+    formats a result.
+
+    **Anchored on a result that carries something.** ``"farmland" not in
+    repr(MintResult())`` is trivially true, so this passed on a build that
+    minted nothing — an absence assertion over an empty value asserts nothing.
+    The result has to hold the ids and the counts *and* none of the words.
+    """
     seeded(registry, tmp_path)
     result = run_pass(registry, "vidit", judge=Judge(True))
+    ident = key_of("b_said", "b_did")
+    assert result.minted.minted == (ident,)
+    assert result.minted.considered == 1 and result.minted.consulted == 1
+
     rendered = repr(result.minted)
-    assert "farmland" not in rendered and "listing" not in rendered
+    # The ids and the counts are in it, so the absence below is an absence from
+    # something rather than an absence of everything.
+    assert ident in rendered
+    for word in ("farmland", "listing", "buy", "opened", "March", "means"):
+        assert word not in rendered, word
 
 
 @pytest.mark.cap7_minting
