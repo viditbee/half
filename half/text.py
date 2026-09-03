@@ -267,6 +267,34 @@ def tokens(text: object) -> frozenset[str]:
     return frozenset(folded for part in found if (folded := _fold(part)))
 
 
+def sequence(text: object) -> tuple[str, ...]:
+    """``tokens``' vocabulary **in the order it was written**, one per word.
+
+    The same folding as ``tokens`` and the same treatment of unspaced runs, but
+    a sequence rather than a set — because *what was said* and *in what order*
+    are two different questions and a set can only answer the first.
+
+    ``half.consolidate.filter.restating`` is why this exists. It compared token
+    *sets*, so ``"prefers Delhi over Goa"`` and ``"prefers Goa over Delhi"``
+    were judged one claim written twice and never reached the judge — which is
+    precisely the disagreement CAP-7 exists to catch, discarded by the cheap
+    filter in front of it. It is also the mirror image of the lexical-overlap
+    trap this project rejected once: two claims made of the same words are not
+    the same claim.
+
+    The cluster n-grams ``tokens`` adds are deliberately absent. They exist so
+    that an unspaced strand can be *found inside* a longer run, which is a
+    containment question; equality of two whole claims is not.
+
+    Raises ``TokenGrowthLimitError`` past either ceiling, like everything else
+    built on ``_expand``.
+    """
+    return tuple(
+        folded for parts in _expand(text)
+        if (folded := _fold("".join(parts)))
+    )
+
+
 def is_unspaced(char: str) -> bool:
     """Whether ``char`` belongs to a script written without word spaces.
 

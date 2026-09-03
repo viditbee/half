@@ -460,15 +460,24 @@ def test_nothing_changed_since_the_last_pass_reaches_the_judge_at_all(
             ),
             "no claim to judge",
         ),
+        (
+            lambda store: (
+                entry(store, "b_said", at=STIRRED, ledger="stated",
+                      claim="means to buy the farmland this year"),
+                entry(store, "b_did", at=SETTLED, ledger="revealed",
+                      claim="!?.  ,,, --- ;"),
+            ),
+            "a claim with no words in it",
+        ),
     ],
-    ids=["same-ledger", "restating", "no-claim"],
+    ids=["same-ledger", "restating", "no-claim", "unreadable-claim"],
 )
 def test_a_pair_the_cheap_filter_rejects_never_reaches_the_judge(
     registry, tmp_path, seed, why
 ):
     """Matrix: *filter rejects*. **Asserted by a call counter at zero.**
 
-    Three rules, one case each, and every one of them rejects a pair the
+    Four rules, one case each, and every one of them rejects a pair the
     comparison bound produced — a filter whose rejections were already made
     upstream would read as enforcement and assert nothing.
     """
@@ -494,6 +503,57 @@ def test_the_filter_admits_the_pair_the_capability_exists_for():
               subject="farmland", ledger="revealed"),
     ))
     assert relevance.admits(couple)
+
+
+@pytest.mark.cap7_minting
+def test_the_same_words_in_a_different_order_are_not_a_restatement(
+    registry, tmp_path
+):
+    """Matrix: *filter rejects*, from the other side — and the defect it was
+    written for.
+
+    ``restating`` compared token **sets**, so ``"prefers Delhi over Goa"`` and
+    ``"prefers Goa over Delhi"`` were one claim written twice and never reached
+    the judge. That is not a duplicate: it is a contradiction, and it is the
+    exact shape CAP-7 exists to catch, discarded by the cheap filter standing
+    in front of the judgement. It is also the mirror image of the
+    lexical-overlap trap loop 1 correctly rejected — two claims made of the
+    same words are not the same claim.
+
+    Asserted twice: on the filter, and end to end on a pass that mints, because
+    a predicate can be right while nothing calls it.
+    """
+    mirrored = Couple(both=(
+        Entry(id="b_said", claim="prefers Delhi over Goa", subject="travel",
+              ledger="stated"),
+        Entry(id="b_did", claim="prefers Goa over Delhi", subject="travel",
+              ledger="revealed"),
+    ))
+    assert not relevance.restating(mirrored)
+    assert relevance.admits(mirrored)
+
+    # And a genuine restatement — the same words in the same order, differing
+    # only in case — is still turned away, so this is not the rule deleted.
+    repeated = Couple(both=(
+        Entry(id="b_1", claim="the mornings are for writing", subject="work",
+              ledger="stated"),
+        Entry(id="b_2", claim="The Mornings Are For Writing", subject="work",
+              ledger="revealed"),
+    ))
+    assert relevance.restating(repeated)
+
+    def seed(store):
+        entry(store, "b_said", at=STIRRED, subject="travel", ledger="stated",
+              claim="prefers Delhi over Goa")
+        entry(store, "b_did", at=SETTLED, subject="travel", ledger="revealed",
+              claim="prefers Goa over Delhi")
+
+    seeded(registry, tmp_path, seed=seed)
+    judge = Judge(True)
+    result = run_pass(registry, "vidit", judge=judge)
+    assert judge.calls == 1
+    assert result.minted.turned_away == 0
+    assert result.minted.minted == (key_of("b_said", "b_did"),)
 
 
 @pytest.mark.cap7_minting

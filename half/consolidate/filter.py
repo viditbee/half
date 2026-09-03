@@ -29,16 +29,25 @@ enforcement and asserts nothing — the *"identical either way"* failure this
 project has shipped once. So each rule below is exercised by a case whose pair
 the candidate sets produce and this module turns away:
 
-* **Both halves must carry a claim.** A judge handed an id and no text can only
-  guess, and a pass that paid for that guess would have spent its budget on the
-  one comparison nothing could answer.
+* **Both halves must carry a claim this build can read.** A judge handed an id
+  and no text can only guess, and a pass that paid for that guess would have
+  spent its budget on the one comparison nothing could answer. *Readable* and
+  not merely *present*: a claim that is all punctuation, or one past ``tokens``'
+  growth ceiling, used to reach the ranking scoring ``0.0`` — which is the score
+  of a term every entry carries, so the thing nothing could compare sat at the
+  bottom of the queue instead of outside it.
 * **The two must not be on the same named ledger.** The mirror *is* the gap
   between what the main says and what they do (glossary, CAP-7), so two stated
   entries disagreeing is a question about Half's own record-keeping and two
   revealed ones is a question about the sources. A pair with a ledger missing
   on either side is admitted, because unknown is not the same as same.
-* **The two must not be restating each other.** Identical folded tokens is one
-  claim written twice, which is a duplicate rather than a disagreement.
+* **The two must not be restating each other.** The same folded tokens *in the
+  same order* is one claim written twice, which is a duplicate rather than a
+  disagreement. Ordered, because comparing token **sets** made ``"prefers Delhi
+  over Goa"`` and ``"prefers Goa over Delhi"`` a restatement of each other —
+  the disagreement CAP-7 exists to catch, discarded by the cheap filter in
+  front of it, and the mirror image of the lexical-overlap trap loop 1
+  rejected.
 
 **Ranking, from honcho's surprisal, with the embeddings left behind.** The
 manifest row is `src/dreamer/surprisal.py`, and the load-bearing detail is which
@@ -68,18 +77,42 @@ from math import log2
 from typing import Final
 
 from half.consolidate.candidates import BOTH, Couple, Entry
-from half.text import tokens
+from half.text import sequence, tokens
 
-#: What a term contributes when it is the only thing the corpus knows about.
-#: Not a threshold and not tunable — it is what ``-log2`` of the smallest
-#: possible estimate comes to, and it is named so the fallback below and the
-#: formula cannot drift apart.
-UNSEEN: Final[float] = 0.0
+#: What an entry scores when there is nothing in it to score. **Not the
+#: surprisal of an unseen term**, which is what this used to claim to be and
+#: is the opposite of what it is: ``-log2`` of the *smallest* estimate is the
+#: *largest* value the formula produces, and zero is what a term every single
+#: entry carries comes to. A claim this build cannot tokenise therefore ranked
+#: as the least surprising thing in the ledger rather than being kept out of
+#: the ranking at all.
+#:
+#: It stays zero, and ``readable`` is what makes that harmless: an entry with
+#: no readable claim never reaches the judge, so the floor is a floor for a
+#: value nothing is spent on rather than a rank an unreadable belief competes
+#: from.
+UNRANKED: Final[float] = 0.0
 
 
 def carries_claim(item: Entry) -> bool:
     """Whether ``item`` says anything a judgement could be about."""
     return isinstance(item, Entry) and bool(item.claim.strip())
+
+
+def readable(item: Entry) -> bool:
+    """Whether this build can actually read ``item``'s claim.
+
+    ``carries_claim`` asks whether there is text; this asks whether the text
+    comes to anything — a claim that is all punctuation, or one so long that
+    ``tokens`` refuses to expand it, has characters in it and no words.
+
+    Kept apart from the ranking deliberately. Such an entry used to reach the
+    priority queue scoring ``0.0``, which is the score of a term *every* entry
+    carries — so an unreadable claim sat at the bottom of the ranking, still
+    inside the budget, still able to be bought if the queue were short. An
+    entry nothing can compare is one to leave alone, not one to rank last.
+    """
+    return carries_claim(item) and bool(_marks(item.claim))
 
 
 def crossing(couple: Couple) -> bool:
@@ -97,14 +130,23 @@ def crossing(couple: Couple) -> bool:
 
 
 def restating(couple: Couple) -> bool:
-    """Whether the two halves say the same thing in the same words.
+    """Whether the two halves say the same thing in the same words, **in the
+    same order**.
 
-    Compared with ``half.text.tokens``, which folds case and diacritics and cuts
-    unspaced scripts into clusters — so this means the same thing in Devanagari,
-    Khmer and Japanese as it does in English, which a naive string equality
-    would not.
+    Compared with ``half.text.sequence``, which folds case and diacritics and
+    cuts unspaced scripts into clusters — so this means the same thing in
+    Devanagari, Khmer and Japanese as it does in English, which a naive string
+    equality would not.
+
+    **Ordered, and that is the correction.** This compared token *sets*, so
+    ``"prefers Delhi over Goa"`` and ``"prefers Goa over Delhi"`` were one claim
+    written twice and never reached the judge — the exact disagreement CAP-7
+    exists to catch, thrown away by the cheap filter standing in front of it,
+    and the mirror image of the lexical-overlap trap this story rejected in its
+    first loop. Two claims made of the same words are not the same claim; a
+    restatement is the same words *in the same order*.
     """
-    shapes = {_marks(item.claim) for item in couple.both}
+    shapes = {_ordered(item.claim) for item in couple.both}
     return len(shapes) < BOTH
 
 
@@ -119,7 +161,7 @@ def admits(couple: Couple) -> bool:
         return False
     if len(set(couple.names)) != BOTH:
         return False
-    if not all(carries_claim(item) for item in couple.both):
+    if not all(readable(item) for item in couple.both):
         return False
     if not crossing(couple):
         return False
@@ -160,7 +202,7 @@ def surprisal(item: Entry, *, counts: Mapping[str, int], total: int) -> float:
     """
     marks = _marks(item.claim)
     if not marks or total <= 0:
-        return UNSEEN
+        return UNRANKED
     return max(
         -log2((counts.get(mark, 0) + 1) / (total + 1)) for mark in marks
     )
@@ -208,7 +250,7 @@ def _marks(text: object) -> frozenset[str]:
     truncating it (``TokenGrowthLimitError``), which is right for an index and
     wrong for a filter: one enormous claim must cost that belief its comparison,
     not the main their night. An empty set means *nothing to compare*, which
-    every rule above already handles.
+    ``readable`` turns into a rejection rather than into a ranking.
     """
     try:
         return tokens(text)
@@ -216,13 +258,22 @@ def _marks(text: object) -> frozenset[str]:
         return frozenset()
 
 
+def _ordered(text: object) -> tuple[str, ...]:
+    """``half.text.sequence``, and never an exception. See ``_marks``."""
+    try:
+        return sequence(text)
+    except Exception:  # noqa: BLE001 - one claim, never the pass
+        return ()
+
+
 __all__ = [
-    "UNSEEN",
+    "UNRANKED",
     "admits",
     "carries_claim",
     "corpus",
     "crossing",
     "priority",
+    "readable",
     "restating",
     "surprisal",
     "weight",
