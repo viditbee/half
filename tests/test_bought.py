@@ -56,6 +56,7 @@ from half.civil import DAY
 from half.context.build import build as build_context
 from half.context.build import bought_question, resolve
 from half.context.channels import CHANNELS, Context, Question, Topic, render_line
+from half.voice.compose import question_block
 from half.errors import SendFailed
 from half.governance import ladder
 from half.governance.ladder import RUNGS, Ceiling, License
@@ -1248,7 +1249,12 @@ def test_the_question_channel_is_exactly_the_rung_and_the_purchase(rung, cap, bo
         now=NOW, ceiling=ceiling, bought=bought,
     )
     assert (context.question is not None) is expected
-    assert (context.question is not None) is expected
+    # **And the block the model is handed agrees**, which is the half that was
+    # lost. It read ``(question_line(context) != "") is expected`` until story
+    # 13b took that rendering off the wire, and was replaced by a copy of the
+    # line above — so the truth table asserted its first half twice and nothing
+    # tied the spend to what a generator is actually shown.
+    assert (question_block(context) != "") is expected
 
 
 @pytest.mark.cap4
