@@ -233,6 +233,12 @@ def priority(
     iteration order would mint one tension tonight and its neighbour tomorrow
     from a log that had not changed.
     """
+    # **Weighed once per couple, not once per comparison.** Review reported the
+    # opposite — that computing the weight inside the key runs the surprisal
+    # chain once per comparison — and it is not so: CPython's ``sort`` decorates
+    # first, calling the key exactly once per element, measured at 15, 100 and
+    # 1000 items. A decorate-sort-undecorate rewrite here would be the same
+    # number of tokenisations spelled longer.
     return tuple(
         sorted(
             offered,

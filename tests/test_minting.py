@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import threading
 from pathlib import Path
 
 import pytest
@@ -659,6 +660,77 @@ def test_the_pass_reports_an_upper_bound_on_what_it_compared(
     assert result.minted.considered == min(size * (size - 1) // 2,
                                            candidates.CEILING)
     assert result.minted.consulted <= minting.JUDGEMENTS
+
+
+@pytest.mark.cap7_minting
+def test_the_minting_arithmetic_actually_leaves_the_event_loop(
+    registry, tmp_path, monkeypatch
+):
+    """Matrix: *the loop is not stalled* (AD-9) — asserted by running it.
+
+    ``tests/test_pass.py`` pins the ``to_thread`` call sites by AST, which
+    catches the omission but certifies only that a line exists. This catches
+    the thing the line is for: ``slate`` tokenises every claim in the ledger
+    and sorts what survives — 1.64s of unyielding CPU for eight hundred beliefs
+    on the subject shape production writes — and it ran synchronously in the
+    coroutine while the re-evaluation beside it was already threaded. A
+    coroutine that never yields cannot be cancelled by ``asyncio.wait_for``, so
+    the tick's per-main bound looked healthy while the pass ran past it, in
+    front of every main's inbound turn.
+
+    So: record the thread ``slate`` ran on and assert it is not the loop's.
+    """
+    ran_on: list[str] = []
+    real = minting.slate
+
+    def watched(view, *, now):
+        ran_on.append(threading.current_thread().name)
+        return real(view, now=now)
+
+    monkeypatch.setattr(minting, "slate", watched)
+
+    seeded(registry, tmp_path)
+    here = threading.current_thread().name
+    result = run_pass(registry, "vidit", judge=Judge(True))
+
+    assert len(ran_on) == 1, "the arithmetic ran a number of times other than once"
+    assert ran_on[0] != here, (
+        f"slate ran on {ran_on[0]!r}, the thread the event loop is on"
+    )
+    # And the pass still did its work — a threaded call that returned nothing
+    # would satisfy the assertion above.
+    assert result.minted.minted == (key_of("b_said", "b_did"),)
+
+
+@pytest.mark.cap7_minting
+def test_a_night_with_nothing_admitted_does_not_tokenise_the_whole_ledger(
+    registry, tmp_path, monkeypatch
+):
+    """The other half: ``corpus`` walks every claim in the ledger, which is the
+    most expensive thing ``slate`` does, and an ordinary night — nothing
+    changed, nothing admitted — paid it in full to rank the empty list."""
+    reached: list[object] = []
+    real = relevance.corpus
+
+    def watched(known):
+        reached.append(known)
+        return real(known)
+
+    monkeypatch.setattr(relevance, "corpus", watched)
+
+    def settled(store):
+        entry(store, "b_settled", at=SETTLED, subject="farmland",
+              ledger="stated")
+        entry(store, "b_also", at=SETTLED, subject="farmland",
+              ledger="revealed")
+
+    seeded(registry, tmp_path, seed=settled)
+    judge = Never()
+    result = run_pass(registry, "vidit", judge=judge)
+
+    assert judge.calls == 0
+    assert result.minted.considered == 0
+    assert reached == [], "the whole ledger was tokenised for an empty queue"
 
 
 @pytest.mark.cap7_minting

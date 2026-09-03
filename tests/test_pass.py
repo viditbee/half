@@ -506,16 +506,32 @@ def test_the_deciding_runs_off_the_event_loop(registry, tmp_path):
 
     source = inspect.getsource(TensionPass.evaluate)
     assert "asyncio.to_thread" in source
-    tree = ast.parse((ROOT / "half/consolidate/pass_.py").read_text())
-    threaded = {
-        ast.unparse(node.args[0])
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "to_thread"
-        and node.args
-    }
-    assert threaded == {"_decide"}
+
+    threaded = set()
+    for name in ("half/consolidate/pass_.py", "half/consolidate/mint.py"):
+        tree = ast.parse((ROOT / name).read_text())
+        threaded |= {
+            ast.unparse(node.args[0])
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "to_thread"
+            and node.args
+        }
+    # **Both halves, and the equality is the point.** This read
+    # ``{"_decide"}`` and scanned one file, so it certified the omission it
+    # should have caught: the minting arithmetic — ``slate``, which tokenises
+    # every claim and sorts what survives — ran synchronously in the coroutine
+    # beside a re-evaluation that was already threaded. Measured on the subject
+    # shape production writes: 200 beliefs 0.10s, 800 beliefs 1.64s of
+    # unyielding CPU, quadratic, in front of every main's inbound turn and past
+    # a timeout that cannot fire because ``asyncio.wait_for`` cannot cancel a
+    # coroutine that never yields.
+    #
+    # Loosened to a superset this would stop having teeth, so it stays an
+    # equality: a third piece of arithmetic added to either module is a red
+    # test naming itself.
+    assert threaded == {"_decide", "slate"}
 
 
 def test_a_night_on_which_every_write_failed_is_not_a_quiet_night(

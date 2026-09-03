@@ -63,6 +63,7 @@ and a license.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -315,8 +316,14 @@ def slate(view: MintView, *, now: str) -> Slate:
             turned_away += 1
             continue
         admitted.append(couple)
-    counts, total = relevance.corpus(known)
-    queue = relevance.priority(admitted, counts=counts, total=total)
+    # **Only if there is something to rank.** ``corpus`` tokenises every claim
+    # in the ledger, which is the most expensive thing this function does and
+    # is a cost the ordinary night — nothing changed, nothing admitted — used
+    # to pay in full for a ranking of the empty list.
+    queue: tuple[Couple, ...] = ()
+    if admitted:
+        counts, total = relevance.corpus(known)
+        queue = relevance.priority(admitted, counts=counts, total=total)
     return Slate(
         within=queue[:JUDGEMENTS],
         unbudgeted=max(len(queue) - JUDGEMENTS, 0),
@@ -351,7 +358,14 @@ async def consider(
     **An append that fails costs its couple too**, and nothing was recorded, so
     the next pass computes the same answer again from the same log.
     """
-    plan = slate(view, now=now)
+    # **Off the event loop.** ``slate`` tokenises every claim in the ledger and
+    # sorts what survives — real CPU work, measured at 1.64s for eight hundred
+    # beliefs — and it ran here synchronously while the re-evaluation beside it
+    # went through a thread. ``half/schedule/tick.py`` states the rule it broke:
+    # ``asyncio.wait_for`` cannot cancel a coroutine that never yields, so a
+    # pass doing this on the loop runs past its bound with the tick looking
+    # healthy the whole time, in front of every main's inbound turn.
+    plan = await asyncio.to_thread(slate, view, now=now)
     minted: list[str] = []
     passed: list[str] = []
     unsaid: list[str] = []
