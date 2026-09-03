@@ -37,7 +37,14 @@ import pytest
 
 from half.context.build import build as build_context
 from half.context.build import withheld as withheld_wordings
-from half.context.channels import Content, Context, Directive, Topic, render_line
+from half.context.channels import (
+    Content,
+    Context,
+    Directive,
+    Topic,
+    render_line,
+    sanitize,
+)
 from half.errors import VoiceError
 from half.governance.ladder import Ceiling, License
 from half.model.port import (
@@ -70,8 +77,10 @@ from half.voice.compose import (
 )
 from tests.conftest import GeneratorDouble, NeverGenerates
 
+from half.voice import gate
 from half.voice.gate import (
     ATTEMPTS,
+    BOUND_SECONDS,
     FAULTS,
     BREAK_AFTER,
     BREAK_FOR,
@@ -94,6 +103,12 @@ from half.voice.gate import (
     STANDING_DOWN,
     TOO_LONG,
     TWO_QUESTIONS,
+    ALARM_AFTER,
+    ALARM_RATE,
+    PER_CALL_MICRO_USD,
+    PER_PASS_MICRO_USD,
+    REPORT_EVERY,
+    question_budget,
     Spoken,
     Tally,
     Unspoken,
@@ -1104,3 +1119,396 @@ def test_a_deployment_that_did_nothing_writes_no_line_at_shutdown(caplog):
     with caplog.at_level(logging.DEBUG, logger="half.voice.gate"):
         Voice().flush()
     assert not caplog.records
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# what a mutation proved was asserted by nothing
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Every case below exists because a live mutation left the suite green. Each one
+# names the mutation it catches, because a case whose reason is not written down
+# is a case the next reviewer deletes.
+
+
+@pytest.mark.ad18
+@pytest.mark.cap8_voice
+def test_a_leak_never_arms_the_breaker():
+    """The first of the three routes that made an AD-18 breach go quiet.
+
+    ``_note`` armed on any non-``Spoken`` outcome, so five consecutive leaks
+    stood the main down for twenty mornings — during which ``leak.check`` was
+    never reached, no ``error`` was logged and ``Tally.leaked`` stopped rising. A
+    live construction break would have been visible on five of every
+    twenty-five mornings.
+
+    Driven past ``BREAK_AFTER`` and then two more, and every single one comes
+    back ``LEAKED`` with a call actually made.
+    """
+    holder = GeneratorDouble("avoids the conversation with his brother")
+    v = Voice({MAIN: holder}, bound_seconds=0.5)
+
+    for _ in range(BREAK_AFTER + 2):
+        assert compose(v) == Unspoken(LEAKED)
+    assert holder.calls == BREAK_AFTER + 2, "the breaker silenced the tripwire"
+    assert v.tally.leaked == BREAK_AFTER + 2
+    assert v.tally.skipped == 0
+
+
+@pytest.mark.ad18
+@pytest.mark.cap8_voice
+def test_a_raise_never_arms_the_breaker_either():
+    """A raise out of the port is a mistake in this build, not an outage: it
+    does not get better by waiting and it is logged every time. Standing a main
+    down for it hides a build fault behind a silence that looks ordinary."""
+    holder = GeneratorDouble(RuntimeError("a build mistake"))
+    v = Voice({MAIN: holder}, bound_seconds=0.5)
+
+    for _ in range(BREAK_AFTER + 2):
+        assert compose(v) == Unspoken(RAISED)
+    assert holder.calls == BREAK_AFTER + 2
+    assert v.tally.skipped == 0
+    assert FAULTS == {LEAKED, RAISED}
+
+
+@pytest.mark.ad18
+@pytest.mark.cap8_voice
+def test_a_leak_is_caught_even_when_the_judge_would_also_refuse():
+    """The second route. A draft that both leaks and runs long used to be
+    refused for *length*, regenerated away, and the breach never counted and
+    never logged — the alarm losing to a spelling check."""
+    both = "avoids the conversation with his brother. " + "x" * MAX_CHARS
+    assert judge(both, context=ordinary()) == TOO_LONG, "the fixture is not both"
+
+    v = voice(wrote(both))
+    assert compose(v) == Unspoken(LEAKED)
+    assert v.tally.leaked == 1
+    assert v.tally.refusals == {}, "a leak was booked as a quality problem"
+
+
+@pytest.mark.ad18
+@pytest.mark.cap8_voice
+def test_the_tripwire_cannot_be_switched_off_by_omission():
+    """The third route. ``withheld`` had a default, so a caller who forgot it got
+    ``leak.check`` answering *"no leak"* on an empty set — AD-18's smoke alarm
+    switched off with nothing saying it had been.
+
+    ``half.context.build.resolve`` made its ``ceiling`` undefaulted for exactly
+    this reason in story 4b, and this is the same rule one package over: a scan
+    that catches callers who forget an argument can only catch the spellings it
+    thought of, and a ``TypeError`` catches all of them.
+    """
+    v = voice(wrote("a quiet morning"))
+    with pytest.raises(TypeError):
+        asyncio.run(v.compose(ordinary(), main_id=MAIN, sample=SAMPLE))
+
+
+@pytest.mark.cap8_voice
+def test_the_breaker_ticks_on_every_morning_including_the_quiet_ones():
+    """``BREAK_FOR`` is a count of *mornings*. It used to decrement only on
+    mornings that reached a holder, so a main stood down for twenty mornings who
+    then had a quiet fortnight stayed silent for a month and a half."""
+    holder = GeneratorDouble(Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED))
+    v = Voice({MAIN: holder}, bound_seconds=0.5)
+    for _ in range(BREAK_AFTER):
+        compose(v)
+
+    # Every one of these is a morning with nothing to say. The countdown must
+    # still be running, or a quiet week costs the main a quiet month.
+    for _ in range(BREAK_FOR):
+        assert compose(v, context=a_context()) == Unspoken(NOTHING_QUOTABLE)
+    assert compose(v) == Unspoken(REFUSED), (
+        "the stand-down did not run down over quiet mornings"
+    )
+
+
+@pytest.mark.cap8_voice
+def test_a_spoken_morning_clears_the_run_of_silent_ones():
+    """A merely *flaky* provider must not earn a month of enforced silence.
+    Deleting the reset line left the suite green, because no case interleaved a
+    spoken morning with silent ones for the same main."""
+    failing = Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED)
+    # Scripted per *morning* rather than per call: a refused morning costs
+    # ``ATTEMPTS`` calls and a spoken one costs a single call, so a flat list of
+    # answers would not line up with the thing the breaker counts.
+    answer = {"reply": failing}
+    v = Voice({MAIN: GeneratorDouble(lambda work: answer["reply"])},
+              bound_seconds=0.5)
+
+    for _ in range(BREAK_AFTER - 1):
+        assert compose(v) == Unspoken(REFUSED)
+    answer["reply"] = "a quiet morning"
+    assert compose(v) == Spoken("a quiet morning")
+    answer["reply"] = failing
+    for _ in range(BREAK_AFTER - 1):
+        assert compose(v) == Unspoken(REFUSED)
+    assert v.tally.skipped == 0, "a flaky provider was treated as an outage"
+
+
+@pytest.mark.cap8_voice
+def test_a_provider_outage_is_never_reported_as_a_judge_refusal():
+    """The terminal reason used to be inferred from whether ``because`` happened
+    to be set, so deleting one line changed an outage into a reported judge
+    refusal and no case noticed: two facts were riding on one variable."""
+    failing = Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED)
+    long = "x" * (MAX_CHARS + 1)
+
+    mixed = Voice({MAIN: GeneratorDouble(failing, long, failing)},
+                  bound_seconds=0.5)
+    assert compose(mixed) == Unspoken(REFUSED)
+
+    judged = Voice({MAIN: GeneratorDouble(failing, failing, long)},
+                   bound_seconds=0.5)
+    assert compose(judged) == Unspoken(JUDGED)
+
+
+@pytest.mark.cap8_voice
+def test_the_composer_never_raises_whatever_goes_wrong_inside_it(monkeypatch):
+    """*"Never raises"* was true by accident and stated absolutely.
+
+    ``prompt_for``, ``judge`` and ``leak.check`` all ran outside the handler, so
+    the guarantee held only while none of them was ever wrong —
+    ``Prompt.__post_init__`` raises, ``scaffolding`` renders every item, and
+    ``leaks`` folds arbitrary strings. An exception out of here reaches
+    ``MorningSurface._counted``, costs the main their morning, and is counted as
+    an unreadable *record* rather than as what it is.
+    """
+    def boom(*a, **kw):
+        raise ValueError("a guard this build got wrong")
+
+    for name in ("prompt_for", "judge"):
+        v = voice(wrote("a quiet morning"))
+        monkeypatch.setattr(gate, name, boom)
+        assert compose(v) == Unspoken(RAISED)
+        monkeypatch.undo()
+
+    v = voice(wrote("a quiet morning"))
+    monkeypatch.setattr(gate.leak, "check", boom)
+    assert compose(v) == Unspoken(RAISED)
+
+
+@pytest.mark.cap8_voice
+def test_generated_text_is_sanitized_the_way_every_context_item_is():
+    """Every item in a context is neutralized at construction; a completion was
+    the one string on this path that never had been, so control characters and
+    line separators went straight to the channel."""
+    v = voice(wrote("a quiet\u2028morning\x07 with a bell\n"))
+    outcome = compose(v)
+
+    assert isinstance(outcome, Spoken)
+    assert outcome.text == sanitize("a quiet\u2028morning\x07 with a bell\n")
+    assert "\u2028" not in outcome.text and "\x07" not in outcome.text
+    assert "\n" not in outcome.text
+
+
+@pytest.mark.cap8_voice
+@pytest.mark.parametrize("mark", sorted(QUESTION_MARKS), ids=lambda m: hex(ord(m)))
+def test_a_quotable_claim_that_asks_does_not_silence_the_main_for_ever(mark):
+    """A permanent-silence route, swept over every question mark.
+
+    An `assert` claim that itself ends in a question mark made a faithful
+    quotation of it look like a second question — so every attempt refused, for
+    ever, for that main. The budget is one question *plus* whatever the model was
+    handed, because telling a quoted mark from an asked one needs a parse of
+    somebody's prose in an unknown language and counting what was handed over
+    does not.
+    """
+    asking = a_context(
+        candidate("b_1", f"asked whether the fence was ever mended{mark}"),
+    )
+    quoted = f"you asked whether the fence was ever mended{mark}"
+
+    assert judge(quoted, context=asking) is None
+    assert judge(f"{quoted} and now{mark}", context=asking) is None
+    assert judge(f"{quoted} and now{mark} and then{mark}", context=asking) == (
+        TWO_QUESTIONS
+    )
+    # The budget follows the material rather than being a constant.
+    assert question_budget(asking) == 2
+    assert question_budget(ordinary()) == 1
+
+
+@pytest.mark.cap8_voice
+def test_a_short_or_quoted_scaffolding_token_does_not_silence_the_main():
+    """The other permanent-silence route.
+
+    A belief id or a stamp fragment short enough to occur in prose refused every
+    attempt for ever; and a token the model was *handed* in the quotable block
+    is not evidence of scaffolding, because Half told it that text may be said.
+    Both losses are in the safe direction — neither a two-character token nor a
+    string inside an `assert` claim is evidence that the serialization leaked.
+    """
+    short = a_context(candidate("ab", "the fence is still standing"))
+    assert "ab" not in scaffolding(short)
+    assert judge("a fine morning, ab and all", context=short) is None
+
+    quoted = a_context(candidate("b_1", "keeps notes in a file called b_1"))
+    assert "b_1" not in scaffolding(quoted)
+    assert judge("you keep notes in a file called b_1", context=quoted) is None
+
+    # And the rule still catches what it exists for.
+    assert judge("good morning b_2", context=ordinary()) == SCAFFOLDING
+
+
+@pytest.mark.cap8_voice
+@pytest.mark.parametrize("tier", ["cheap", "frontier"], ids=["cheap", "frontier"])
+def test_an_ordinary_morning_is_admitted_on_every_tier(tier):
+    """``PER_CALL_MICRO_USD`` is asserted against a real prompt on both tiers.
+
+    Set to 1 the ceiling refuses every generation before the transport is
+    touched and Half is permanently silent; set to 400,000,000 it never binds.
+    Both left the suite green, because the number was asserted by nothing but
+    ``_check_constants``'s *is it positive*. This prices the prompt the composer
+    actually builds, the way ``tests/test_classifier.py`` prices its own.
+    """
+    from half.model.budget import Budget, estimate
+    from half.model.tier import DEFAULT_MODELS, Tier
+
+    spec = DEFAULT_MODELS[Tier(tier)]
+    prompt = prompt_for(ordinary(), sample=SAMPLE, main_id=MAIN)
+    priced = estimate(
+        spec,
+        cached_text=prompt.cached_blocks,
+        uncached_text=prompt.uncached_blocks + tuple(
+            turn.text for turn in prompt.turns
+        ),
+        max_output_tokens=MAX_OUTPUT_TOKENS,
+    )
+    assert priced.micro_usd <= PER_CALL_MICRO_USD, (tier, priced.micro_usd)
+    # And the ceiling is not so wide it never binds: three attempts at the real
+    # price must sit well inside the per-pass runaway stop, and one call must be
+    # a real fraction of the per-call one rather than a rounding error.
+    assert priced.micro_usd * ATTEMPTS <= PER_PASS_MICRO_USD
+    assert priced.micro_usd * 20 >= PER_CALL_MICRO_USD, (
+        "the per-call ceiling is so far above a real morning that it never binds"
+    )
+    Budget(per_call_micro_usd=PER_CALL_MICRO_USD,
+           per_pass_micro_usd=PER_PASS_MICRO_USD)
+
+
+@pytest.mark.cap8_voice
+def test_the_counts_are_written_out_periodically(caplog):
+    """``_report`` gutted to ``return`` left the suite green: nothing drove
+    enough mornings to reach a round number."""
+    v = Voice({MAIN: GeneratorDouble("a quiet morning")}, bound_seconds=0.5)
+    with caplog.at_level(logging.INFO, logger="half.voice.gate"):
+        for _ in range(REPORT_EVERY):
+            compose(v)
+    written = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert written, "a hundred mornings produced no summary"
+    assert f"{REPORT_EVERY} composed" in written[-1].getMessage()
+
+
+@pytest.mark.cap8_voice
+def test_a_failing_composer_alarms_at_error_and_is_not_hidden_by_a_round_number(
+    caplog
+):
+    """Two mutations at once.
+
+    ``silent_rate`` returning a constant ``0.0`` and the alarming branch
+    downgraded to ``info`` were both green. And the branches were *exclusive*
+    with the periodic one first, so at the hundredth morning — and every
+    hundredth after — a wholly failing composer reported at ``info``, which is
+    exactly the number an operator would look at.
+    """
+    failing = Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED)
+    # One morning each for a hundred mains, because the breaker is *per main*:
+    # driving one main a hundred times stands them down after five and the
+    # counter never reaches a round number. A hundred mains failing once each is
+    # also the shape of the outage this alarm exists for.
+    mains = tuple(f"main{i}" for i in range(REPORT_EVERY))
+    v = Voice({m: GeneratorDouble(failing) for m in mains}, bound_seconds=0.5)
+
+    with caplog.at_level(logging.DEBUG, logger="half.voice.gate"):
+        for main_id in mains[:ALARM_AFTER]:
+            compose(v, main=main_id)
+    assert v.tally.silent_rate >= ALARM_RATE
+    assert [r for r in caplog.records if r.levelno == logging.ERROR], (
+        "a wholly failing composer never alarmed"
+    )
+
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="half.voice.gate"):
+        for main_id in mains[ALARM_AFTER:]:
+            compose(v, main=main_id)
+    at_hundred = [
+        r for r in caplog.records
+        if f"{REPORT_EVERY} composed" in r.getMessage()
+    ]
+    assert at_hundred, "the hundredth morning wrote nothing"
+    assert all(r.levelno == logging.ERROR for r in at_hundred), (
+        "the round number hid the alarm"
+    )
+
+
+@pytest.mark.cap8_voice
+def test_an_unequipped_main_is_outside_the_rate_an_operator_alarms_on():
+    """``counted=False`` on ``NO_MODEL`` flipped to ``True`` was green. The
+    silent-rate would then have become a count of how many mains have keys,
+    which is the one number it must not be."""
+    v = Voice({}, bound_seconds=0.5)
+    for _ in range(20):
+        assert compose(v) == Unspoken(NO_MODEL)
+    assert v.tally.silences == {}
+    assert v.tally.silent_rate == 0.0
+    assert v.tally.composed == 0
+
+
+@pytest.mark.cap8_voice
+def test_the_sample_does_not_depend_on_fold_iteration_order():
+    """Dropping the ``str(ident)`` tie-break was green. The language a morning is
+    written in would then be a function of dictionary order — which is not a
+    property of the log, so two folds of one log could answer differently
+    (AD-30)."""
+    same = "2026-08-30T00:00:00Z"
+    records = {
+        "b_a": {"ledger": "stated", "t": same, "claim": "अलग भाषा"},
+        "b_b": {"ledger": "stated", "t": same, "claim": "ภาษาอื่น"},
+    }
+    forward = sample_from(dict(records))
+    backward = sample_from(dict(reversed(list(records.items()))))
+    assert forward == backward
+    assert forward == Sample("ภาษาอื่น"), "the tie-break is not the id"
+
+
+@pytest.mark.cap8_voice
+def test_a_quarantined_message_is_never_handed_to_a_provider():
+    """Quarantine is the main having said *leave this topic alone*. Handing its
+    text to a provider is touching it in the one way that cannot be undone."""
+    pinned = {
+        "b_new": {"ledger": "stated", "t": "2026-08-30T00:00:00Z",
+                  "claim": "the thing I asked you never to bring up",
+                  "quarantined": True},
+        "b_old": {"ledger": "stated", "t": "2026-08-01T00:00:00Z",
+                  "claim": "an ordinary message"},
+    }
+    assert sample_from(pinned) == Sample("an ordinary message")
+    assert sample_from({"b": pinned["b_new"]}).present is False
+
+
+@pytest.mark.cap8_voice
+def test_the_model_is_told_the_length_it_is_judged_against():
+    """A model that habitually writes seven hundred characters burns every
+    attempt and the main gets silence, for ever, with nothing saying why. Stating
+    a length is format, not register."""
+    assert any(str(MAX_CHARS) in block for block in INSTRUCTIONS), (
+        "the judge enforces a bound the model is never told"
+    )
+
+
+@pytest.mark.cap8_voice
+def test_the_worst_case_composition_fits_inside_the_scheduler_s_own_timeout():
+    """A cross-package invariant, pinned where the two constants can both be
+    seen. ``_check_constants`` pins every invariant *inside* this module and
+    could not pin this one without ``half/voice`` importing the scheduler, which
+    it must not.
+
+    Three attempts at the bound is the worst case for one main, and the tick
+    gives each main ``DEFAULT_TIMEOUT``. A bound raised past that would make a
+    hung provider cost the main their morning *and* the tick a cancelled task —
+    which is claimed in a comment on ``BOUND_SECONDS`` and was asserted nowhere.
+    """
+    from half.schedule.tick import DEFAULT_TIMEOUT
+
+    assert ATTEMPTS * BOUND_SECONDS < DEFAULT_TIMEOUT, (
+        ATTEMPTS * BOUND_SECONDS, DEFAULT_TIMEOUT
+    )

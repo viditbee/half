@@ -236,6 +236,23 @@ def voices(config: Config, secrets: FileSecretStore) -> Voice:
     **Its own provider, and therefore its own ledger.** A provider's spend is
     shared by everything it hands out, so reusing the crisis one would let a
     morning draw down the budget the crisis path runs on.
+
+    **This is the third copy of this loop in this file, and that is recorded
+    rather than hidden.** ``second_opinion``, ``widening`` and this one differ in
+    four things: which narrow holder is taken off the provider, which budget
+    constants are used, how the tier is chosen, and what the log line says when a
+    main cannot be equipped. Everything else — the per-main iteration, the
+    construction, the catch that must never fail a boot, the outer catch around
+    the holder object itself — is the same twenty lines written out three times.
+
+    A fourth consumer should not write a fourth. The shape is
+    ``equipped(config, secrets, *, tier_for, budget, take, unequipped)``, and it
+    belongs beside the consultation extraction recorded in
+    ``half.voice.gate``'s docstring rather than in front of it: both are the same
+    observation about the same three subsystems, and doing one without the other
+    would leave a composition root that shares a loop with a crisis path whose
+    behaviour must stay byte-identical. Recorded here, and Ask-First for the same
+    reason that one is.
     """
     holders: dict[str, Generator] = {}
     for main_id in config.mains.values():

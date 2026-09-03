@@ -235,8 +235,10 @@ class Silence:
     module shipped anyway until ``Mornings`` existed to receive it.
 
     Silence is **not** a failure, a timeout or an exception. Most of these are
-    ordinary; the three in ``FAULTS`` are not, and only those are logged as
-    such.
+    ordinary; the ones in ``FAULTS`` are not, and only those are logged as such.
+    There were three of them until story 13a; there are five, and the count is
+    deliberately not written down here again — ``FAULTS`` is one set and this
+    docstring said *three* for one revision after it held five.
     """
 
     reason: str

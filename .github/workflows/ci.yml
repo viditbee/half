@@ -106,25 +106,36 @@ jobs:
         #
         # **The twenty-eight language-sample cases are deliberately *not* here.**
         # They are story 13a's own rule — a language signal that can never become
-        # content — and no rung governs a language. Marking them would have taken
-        # this gate from 65 to 102 while adding two rules' worth of AD-18
-        # coverage, which is story 11's forty-eight-case truth table arriving
-        # under a different name. They are gated by `cap8_voice`, at margin zero.
+        # content — and no rung governs a language. Marking them would take this
+        # gate from 78 to 106 while adding two rules' worth of AD-18 coverage,
+        # which is story 11's forty-eight-case truth table arriving under a
+        # different name. They are gated by `cap8_voice`, at margin zero.
         #
-        # 74 selected, 59 required. **The margin is fifteen and it is not zero
+        # Review round 1 added four more: a leak must not arm the breaker, nor
+        # must a raise, a leak must be caught even when the judge would also
+        # refuse, and the tripwire must not be switchable off by omission. Each
+        # of the four was a live route by which an AD-18 breach went quiet.
+        #
+        # 78 selected, 63 required. **The margin is fifteen and it is not zero
         # on purpose**: several cases here are neighbours inside one sweep — the
         # nine malformed-license parameters, the script cases — so pruning a
         # redundant parameter should be possible without editing this number,
-        # while gutting the gate should not. Every rule with a *single* case
-        # (the rendering-completeness enumeration, the byte-wise leak guard, each
-        # of story 13a's four construction cases) sits far enough below the floor
-        # that losing it drops the count beneath it.
+        # while gutting the gate should not.
+        #
+        # **What the margin does *not* do is protect any fifteen named cases**,
+        # and an earlier revision of this comment claimed it did. A floor fifteen
+        # under the count cannot stop the byte-wise leak guard, the
+        # rendering-completeness enumeration or story 13a's construction cases
+        # being deleted — nothing about a superset floor ever could. Story 13a's
+        # are protected by `cap8_voice` at margin zero; the older single-case
+        # rules are protected by this floor only in the weak sense that deleting
+        # enough of them together drops the count.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m ad18 -q --collect-only \
             | grep -c '::' || true)
           echo "AD-18 cases collected: $collected"
-          if [ "$collected" -lt 59 ]; then
+          if [ "$collected" -lt 63 ]; then
             echo "::error::the AD-18 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -1045,18 +1056,23 @@ jobs:
         # wiring and the determinism guarantees among them — fitted inside its
         # own margin.
         #
-        # 439 selected, 429 required. The margin is 10, and it is deliberately
-        # smaller than every protected subset: silence (83), nagging (72),
-        # structure (13), the wire text (254) and the cases held by this gate
+        # 482 selected, 472 required. The margin is 10, and it is deliberately
+        # smaller than every protected subset: silence (82), nagging (72),
+        # structure (13), the wire text (297) and the cases held by this gate
         # alone. Deleting any one of them drops this gate beneath its floor
         # **and** fails whichever sub-gate names it. Story 11 added one and story
-        # 13a added 254; the floor moves with them, so the margin does not grow.
+        # 13a added 297; the floor moves with them, so the margin does not grow.
+        #
+        # The silence figure read 83 for one revision and the gate collects 82.
+        # A number in a comment that the gate does not support is the same defect
+        # as a floor that protects nothing, one layer up: it is what a later
+        # reader sizes the next floor against.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap8 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-8 cases collected: $collected"
-          if [ "$collected" -lt 429 ]; then
+          if [ "$collected" -lt 472 ]; then
             echo "::error::the CAP-8 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -1212,8 +1228,14 @@ jobs:
         # is no room to leave for pruning one. Adding cases moves this number
         # with them; nothing else may.
         #
-        # A superset floor cannot protect this: `cap8` collects 439 against 429,
-        # so all 254 of these could be deleted with that step green.
+        # **A superset floor cannot protect this, and the reason is not the one
+        # an earlier revision gave.** That revision said all 297 could be deleted
+        # with `cap8` green, which is false — deleting them leaves 185 against a
+        # floor of 472, so the superset gate is stronger than the sentence
+        # claimed. What `cap8` cannot do is protect any *subset*: its margin is
+        # 10, so deleting the fourteen script cases, or the twenty question-mark
+        # cases, or every case review round 1 added, passes it comfortably. That
+        # is what this gate is for, and it is why its own margin is zero.
         #
         # **Two of these cases exist because a mutation survived without them**,
         # which is the only honest way to size a gate. Replacing the holder
@@ -1225,13 +1247,23 @@ jobs:
         # package's own; there is now one over the whole morning path, in every
         # script.
         #
-        # 254 selected, 254 required.
+        # Review round 1 added forty-three, and every one of them exists because
+        # a live mutation left the suite green: the breaker silencing the
+        # tripwire, the tripwire losing to the judge, the tripwire switched off
+        # by omission, a quotable claim that asks silencing a main for ever, a
+        # short belief id doing the same, the window closing mid-composition, an
+        # outage reported as a judge refusal, the alarm hidden at every hundredth
+        # morning, an unequipped main counted into the operator's rate, the
+        # sample depending on fold order, a hardcoded tier, the price of a real
+        # morning on both tiers, and the flush at shutdown.
+        #
+        # 297 selected, 297 required.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap8_voice -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-8 wire-text cases collected: $collected"
-          if [ "$collected" -lt 254 ]; then
+          if [ "$collected" -lt 297 ]; then
             echo "::error::the wire-text gate collected $collected cases; Half may have stopped speaking, or started speaking scaffolding"
             exit 1
           fi

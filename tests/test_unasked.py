@@ -1381,14 +1381,23 @@ def test_the_package_reaches_a_log_only_through_the_narrow_door(package, protoco
     "package", [name for name, _ in GUARDED], ids=[name for name, _ in GUARDED]
 )
 def test_no_guarded_package_can_reach_outward(package):
-    """*"No model call, no generated prose"*, and no channel to say it on.
+    """No channel to say it on, no network to reach, and no model except where
+    one is the subject.
 
-    Asserted structurally, because *"it does not call a model today"* decays the
-    first time somebody reaches for one — and the reach would be invisible: a
-    question composed by a model still looks like a question. Written against
-    resolved dotted roots for the reason the store rule is: story 11's first
-    version compared string prefixes, which ``from half import model`` walks
-    past.
+    This opened *"no model call, no generated prose"* for three stories, which
+    was the rule for the three packages it then covered and stopped being the
+    rule the moment ``half/voice`` joined — a package whose entire subject is
+    generated prose. The sentence stayed true-sounding and had become false,
+    which is how a guard's stated purpose drifts away from what it does.
+
+    What it asserts is unchanged and is stronger than the old sentence: **no
+    package here may reach a channel or the network at all**, and a model only
+    where the lift below says so and is paid for. Asserted structurally, because
+    *"it does not call a model today"* decays the first time somebody reaches
+    for one — and the reach would be invisible: a question composed by a model
+    still looks like a question. Written against resolved dotted roots for the
+    reason the store rule is: story 11's first version compared string prefixes,
+    which ``from half import model`` walks past.
 
     ``outward`` is ``UNREACHABLE`` minus whatever that package lifts, which for
     two of the four is nothing at all. ``half/correction`` lifts the model root

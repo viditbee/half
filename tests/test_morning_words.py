@@ -89,6 +89,7 @@ from half.voice.gate import (
 
 from tests.conftest import (
     COMPOSED,
+    LAST_MESSAGE,
     FakeTransport,
     GeneratorDouble,
     NeverGenerates,
@@ -889,3 +890,133 @@ def test_a_second_morning_the_same_day_is_still_refused(registry, tmp_path):
     voice, _ = a_voice()
     assert isinstance(run(registry, FakeChannel(), voice), Surfaced)
     assert run(registry, FakeChannel(), voice) == Silence(ALREADY_TODAY)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# what a mutation proved was asserted by nothing
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def test_the_window_is_re_asked_after_composing(registry, tmp_path):
+    """A composition can take three attempts at the bound — a minute — and
+    WhatsApp's free-form window is a rolling twenty-four hours that can close
+    inside one.
+
+    Without the second ask the day was claimed and the send went into a shut
+    window: a spent day and a message nobody received. The first ask stays where
+    it is because it does a different job — stopping Half paying to write at all.
+    """
+    class Closing(FakeChannel):
+        """Open when asked before the composer, closed when asked after."""
+
+        def capability_query(self, main_id):
+            self.queries.append(main_id)
+            return (
+                Reachability.OPEN if len(self.queries) == 1
+                else Reachability.WINDOW_CLOSED
+            )
+
+    a_main(tmp_path)
+    channel = Closing()
+    voice, holder = a_voice()
+
+    outcome = run(registry, channel, voice)
+    assert outcome == Silence(str(Reachability.WINDOW_CLOSED))
+    assert len(channel.queries) == 2, "the window was asked about only once"
+    assert holder.calls == 1, "the first ask stopped happening"
+    assert channel.sent == []
+    assert view_of(registry).spoke is None, "a closed window spent the day"
+
+
+def test_the_composer_is_flushed_on_the_way_out_of_serve(tmp_path, monkeypatch,
+                                                         caplog):
+    """A process that ran for a week composing nothing that passed the judge
+    would otherwise end with nothing anywhere saying so — which looks exactly
+    like a week in which nobody had anything worth hearing.
+
+    Asserted through ``serve`` rather than by finding a call in the source,
+    because that is how story 6d's identical claim passed with the value set to
+    ``None``. Both sibling paths have this case; deleting
+    ``wiring.voice.flush()`` was green without it.
+    """
+    import half.__main__ as entrypoint
+    from half.config import MAINS_ENV, ROOT_ENV, load
+
+    class Recording:
+        def __init__(self, **kw):
+            pass
+
+        async def run(self):
+            return None
+
+    real_build = entrypoint.build
+
+    def build_and_count(config, token):
+        wiring = real_build(config, token)
+        wiring.voice.tally.composed = 7
+        wiring.voice.tally.spoken = 2
+        return wiring
+
+    monkeypatch.setattr(entrypoint, "build", build_and_count)
+    monkeypatch.setattr(entrypoint, "Runtime", Recording)
+    config = load({ROOT_ENV: str(tmp_path), MAINS_ENV: f"123:{MAIN}"})
+    with caplog.at_level(logging.INFO, logger="half.voice.gate"):
+        asyncio.run(entrypoint.serve(config, "123:fake"))
+
+    assert any("7 composed" in r.getMessage() for r in caplog.records)
+
+
+def test_the_tier_the_wiring_equips_a_main_with_is_the_main_s_own(tmp_path):
+    """AD-20 puts the tier on the main, and it is what a deployment pays for.
+
+    Hardcoding ``'cheap'`` in ``voices`` was green: a deployment paying for
+    ``frontier`` mornings would have silently got the cheap tier, which is
+    exactly the outcome AD-20 exists to prevent — a quality regression nobody
+    sees. Asserted through the model the holder actually resolves, not through
+    the config it was built from.
+    """
+    from half.__main__ import build
+    from half.config import MAINS_ENV, ROOT_ENV, TIERS_ENV, load
+    from half.model.anthropic_transport import MODEL_KEY
+    from half.model.tier import DEFAULT_MODELS, Tier
+    from half.secrets import FileSecretStore
+
+    for name in ("cheap", "frontier"):
+        root = tmp_path / name
+        root.mkdir()
+        FileSecretStore.beside(root).put(MAIN, MODEL_KEY, "sk-not-a-real-key")
+        config = load({ROOT_ENV: str(root), MAINS_ENV: f"123:{MAIN}",
+                       TIERS_ENV: f"{MAIN}:{name}"})
+        wiring = build(config, token="123:fake")
+        try:
+            holder = wiring.voice._holders[MAIN]
+            assert holder._tiers.spec_for(MAIN) == DEFAULT_MODELS[Tier(name)], (
+                name
+            )
+        finally:
+            wiring.registry.close()
+
+
+def test_the_suite_s_own_morning_shares_no_wording_with_any_seeded_claim():
+    """``conftest.COMPOSED`` states a property and nothing asserted it.
+
+    The AD-18 tripwire refuses a morning that repeats a *withheld* wording, and
+    the shared double composes ``COMPOSED`` for every case in the suite. A
+    collision with any seeded claim would silence every morning in the tree at
+    once, for a reason nobody would look for — the suite would go red in fifty
+    places and none of them would name the cause.
+
+    Checked with ``half.context.build.fragments``, which is the rule the
+    tripwire actually applies, rather than with a substring scan.
+    """
+    from half.context.build import fragments
+
+    mine = set(fragments(COMPOSED))
+    assert mine, "the fixture sentence has no comparable wording at all"
+    seeded = (SAYABLE, WITHHELD, *SCRIPTS.values(), LAST_MESSAGE,
+              "reads two books at once")
+    for claim in seeded:
+        clash = mine & set(fragments(claim))
+        assert not clash, (
+            f"the suite's own morning shares wording with {claim!r}: {clash}"
+        )

@@ -65,6 +65,44 @@ reach this package at all — a crisis reply stays a join of reviewed template
 lines assembled by ``half.crisis.respond``, which takes an ``Assessment`` and
 never a word of text.
 
+**What nothing here checks: that the morning is true.**
+
+The judge asks four things and none of them is about provenance. The tripwire
+asks one thing and it is about *withheld* wordings — text the ladder said Half
+may not say. **Neither asks whether what the model wrote is in the may-be-said
+block at all.** A completion that invents a claim the main never made, or that
+takes a real claim and states it more strongly than the evidence does, passes
+every gate in this package and reaches the wire.
+
+That is named here rather than left to be discovered, because it is in tension
+with something the product says about itself. The constitution's *assert only
+with receipts* is the reason ``quotable_block`` drops belief ids — a citation is
+what makes a statement checkable — and this module is where the citation stops
+being enforceable, because a sentence a model wrote has no id on it any more.
+
+It is an accepted cost of composing with a model at all, and the alternatives
+were weighed rather than skipped. A groundedness *judge* would be a second model
+call per attempt, doubling the cost and the latency of every morning to ask a
+question the first model already got wrong. A verbatim-quotation rule — the
+morning must contain a quotable claim word for word — would make Half unable to
+write a natural sentence in any language whose grammar inflects the claim, which
+is most of them, and would land on AD-18's second named failure from a new
+direction. An entailment check needs a model too.
+
+**Two things bound the damage, and neither removes it.** The material a morning
+is built from is narrow: `assert` claims the ladder admitted, under this main's
+ceiling, from the candidates last night's pass produced — so an invention is an
+invention *around* one true thing rather than out of nothing. And the outcome is
+one message a day to one person who knows their own life, which is the cheapest
+possible place for a wrong sentence to land: they can say *that's wrong*, and
+CAP-11 exists so that saying it changes what Half holds.
+
+**Deferred, deliberately, and not to be built quietly.** A groundedness check is
+a second judge with its own failure modes, its own cost model and its own
+worldwide rubric problem, and story 13a's scope is the wire text. When it is
+built it belongs with the turn reply (13b), where a main is waiting and the
+material is wider, and it needs its own story rather than a commit.
+
 **Why this repeats the consultation shape a third time, and what should happen
 about it.** The bound, the ``Tally``, the breaker, the holder allowlist and the
 report/alarm cadence below are the same shape as ``half.crisis.classifier`` and
