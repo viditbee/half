@@ -1,5 +1,10 @@
 """The cheap gate in front of the judge, and what a full budget takes first.
 
+**Named for what it decides, not ``filter.py``.** It shadowed the builtin, and
+both of its importers renamed it at the import site (``import filter as
+relevance``) — which is the module telling you twice what it should have been
+called.
+
 **Everything here runs before any model comparison and none of it is one**
 (CAP-7). A couple this module turns away never reaches
 ``half.consolidate.port``, so the judge's cost is a function of what survived

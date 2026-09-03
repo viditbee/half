@@ -36,7 +36,7 @@ import pytest
 
 from half.actor.registry import ActorRegistry
 from half.consolidate import candidates
-from half.consolidate import filter as relevance
+from half.consolidate import relevance
 from half.consolidate import mint as minting
 from half.consolidate.candidates import Couple, Entry, MintView, key_of
 from half.consolidate.pass_ import TensionPass
@@ -1075,6 +1075,60 @@ def test_the_mint_door_refuses_a_tension_the_log_already_holds(
 
 
 @pytest.mark.cap7_minting
+def test_a_mint_carries_a_pair_a_fresh_state_and_the_ladders_floor(
+    registry, tmp_path
+):
+    """``note_transition``'s sibling guard, which this door did not have.
+
+    ``note_transition`` has refused stray fields since the review that found it
+    appending whatever a caller handed it; ``note_mint``, added by the same
+    story, refused nothing. Verified accepting ``state=persistent``, an
+    arbitrary ``license``, ``known_to_main``, ``support`` and ``tombstone`` —
+    every one of them allowed on a tension record by ``TENSION_FIELDS``, none
+    of them composed by a mint, and all of them durable where no correction to
+    either entry could take them back (AD-22).
+
+    The state and the license are pinned as well as the field set. A mint that
+    wrote ``persistent`` would hand 9c a tension whose widening clock had
+    already run, and a license composed anywhere but the ladder is the thing
+    story 5a says nobody may write.
+    """
+    seeded(registry, tmp_path)
+    ident = key_of("b_said", "b_did")
+    fields = minting.fields_for(Couple(both=(Entry(id="b_said"),
+                                             Entry(id="b_did"))))
+    assert set(fields) == {BETWEEN, STATE, "license"}
+
+    for stray in ({"known_to_main": True}, {"support": ["s_1"]},
+                  {"tombstone": True}, {"model_tier": "frontier"},
+                  {"quarantined": True}, {"claim": "he never writes"}):
+        with pytest.raises(TensionError, match="nothing else"):
+            asyncio.run(registry.note_mint(
+                "vidit", tension_id=ident, t=stamp(NOON),
+                fields={**fields, **stray},
+            ))
+
+    for born in ("persistent", "widening", "closing", "resolved"):
+        with pytest.raises(TensionError, match="born"):
+            asyncio.run(registry.note_mint(
+                "vidit", tension_id=ident, t=stamp(NOON),
+                fields={**fields, STATE: born},
+            ))
+
+    with pytest.raises(TensionError, match="ladder"):
+        asyncio.run(registry.note_mint(
+            "vidit", tension_id=ident, t=stamp(NOON),
+            fields={**fields, "license": "assert"},
+        ))
+
+    # Nothing landed, and the fields a mint really composes still do.
+    assert tensions_of(registry, "vidit") == {}
+    asyncio.run(registry.note_mint("vidit", tension_id=ident, t=stamp(NOON),
+                                   fields=fields))
+    assert set(tensions_of(registry, "vidit")) == {ident}
+
+
+@pytest.mark.cap7_minting
 def test_a_mint_that_the_store_refuses_costs_that_couple_and_nothing_else(
     registry, tmp_path
 ):
@@ -1233,9 +1287,20 @@ def test_a_main_in_crisis_mode_is_never_minted_for(registry, tmp_path):
     — asserted **through a real tick** rather than by a second check inside the
     pass, because a second enforcement path is a second place for the two to
     disagree. The judge counts, so the case fails if a consultation was bought.
+
+    **The two mains carry different entries.** They used to carry the same
+    ones, so ``judge.asked == [frozenset({"b_said", "b_did"})]`` — the central
+    assertion — was satisfied by a consultation bought for *either* of them,
+    including the suspended one. The pair the judge was asked about now names
+    which main it belonged to.
     """
     for main_id in ("vidit", "asha"):
-        seeded(registry, tmp_path, main_id, marked=False)
+        def seed(store, who=main_id):
+            entry(store, f"b_said_{who}", at=STIRRED, ledger="stated",
+                  claim=f"means to buy the farmland this year, says {who}")
+            entry(store, f"b_did_{who}", at=SETTLED, ledger="revealed",
+                  claim=f"has not opened a listing since March, {who}")
+        seeded(registry, tmp_path, main_id, seed=seed, marked=False)
         due_now(registry, main_id)
     asyncio.run(registry.suspend_for_crisis(
         "vidit", t=stamp(NOON - 100), tier="acute", score=3
@@ -1249,9 +1314,14 @@ def test_a_main_in_crisis_mode_is_never_minted_for(registry, tmp_path):
     ).tick())
 
     assert result.suspended == ("vidit",) and result.ran == ("asha",)
-    assert judge.asked == [frozenset({"b_said", "b_did"})]
+    # Named by main, so a consultation bought for the suspended one cannot
+    # satisfy this.
+    assert judge.asked == [frozenset({"b_said_asha", "b_did_asha"})]
+    assert frozenset({"b_said_vidit", "b_did_vidit"}) not in judge.asked
     assert tensions_of(registry, "vidit") == {}
-    assert len(tensions_of(registry, "asha")) == 1
+    assert set(tensions_of(registry, "asha")) == {
+        key_of("b_said_asha", "b_did_asha")
+    }
 
 
 @pytest.mark.cap7_minting
@@ -1648,6 +1718,57 @@ def test_the_result_carries_counts_and_ids_but_never_a_claim(
     assert ident in rendered
     for word in ("farmland", "listing", "buy", "opened", "March", "means"):
         assert word not in rendered, word
+
+
+@pytest.mark.cap7_minting
+@pytest.mark.parametrize(
+    "broken",
+    [
+        {"beliefs": "not a mapping"},
+        {"tensions": "not a mapping"},
+        {"loops": 7},
+        {"loops": object()},
+        {"passes": 7},
+        {"gone": 7},
+        {"beliefs": {"b_1": "not a mapping"}},
+        {"tensions": {"x_1": "not a mapping"}},
+    ],
+    ids=["beliefs", "tensions", "loops-number", "loops-object", "passes",
+         "gone", "belief-row", "tension-row"],
+)
+def test_the_slate_never_raises_on_a_view_this_build_cannot_read(broken):
+    """``slate`` says *"never raises"*, and it was an overclaim.
+
+    ``read`` and ``mint.linked`` guarded their arguments; ``watermark``,
+    ``on_a_loop`` and the two ``in`` tests against the tension and erased tables
+    did not, so a ``loops`` or a ``passes`` that was not iterable came out of
+    the middle of a function whose whole contract is that it does not — and the
+    alternative to reporting is a main whose entire night ends on one malformed
+    field.
+
+    Every field of the view, one case each, because a guard on one of them is
+    what the code already had — and every case carries a **real belief table**
+    beside the broken field, so the couple that reaches the tension and erased
+    tables is actually built. Breaking one field of an otherwise empty view
+    exercises nothing past the first guard, which is how two of these passed
+    against the unguarded code.
+    """
+    whole = {
+        "beliefs": _mint_rows(*_SIDES),
+        "tensions": {},
+        "loops": ("buy-farmland",),
+        "passes": (),
+        "gone": frozenset(),
+    }
+    view = MintView(**{**whole, **broken})
+    plan = minting.slate(view, now=stamp(NOON))
+    assert isinstance(plan.within, tuple)
+    assert plan.considered >= 0
+
+    # Non-vacuity: the unbroken view produces couples, so a case above is a
+    # broken field surviving real work rather than an empty view surviving
+    # nothing.
+    assert minting.slate(MintView(**whole), now=stamp(NOON)).considered > 0
 
 
 @pytest.mark.cap7_minting

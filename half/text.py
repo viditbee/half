@@ -274,7 +274,7 @@ def sequence(text: object) -> tuple[str, ...]:
     a sequence rather than a set — because *what was said* and *in what order*
     are two different questions and a set can only answer the first.
 
-    ``half.consolidate.filter.restating`` is why this exists. It compared token
+    ``half.consolidate.relevance.restating`` is why this exists. It compared token
     *sets*, so ``"prefers Delhi over Goa"`` and ``"prefers Goa over Delhi"``
     were judged one claim written twice and never reached the judge — which is
     precisely the disagreement CAP-7 exists to catch, discarded by the cheap

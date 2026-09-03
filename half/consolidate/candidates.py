@@ -201,6 +201,25 @@ class MintView:
     gone: frozenset[str] = frozenset()
 
 
+#: How much of the exclusive-or the tension id keeps, in hex digits.
+#:
+#: **It was twelve — forty-eight bits — and that is not enough here.** A couple
+#: id is not a display name: ``slate`` reads ``couple.id in view.tensions`` and
+#: a hit means *already linked*, so two different pairs that collided would put
+#: the second one in ``standing`` — recognised as a disagreement Half has
+#: already recorded, never judged, never minted, and silent. There is no
+#: message, no count and no way for the main or an operator to see it, which is
+#: what makes the width worth arguing about rather than the odds.
+#:
+#: This is not a claim that a collision has happened. It is that the failure is
+#: undetectable, so the width should be one nobody has to compute a birthday
+#: bound for: at forty-eight bits a main who accumulates a few hundred thousand
+#: couples over a few years is already at a probability with a leading digit.
+#: Thirty-two digits is a hundred and twenty-eight bits, where the same
+#: arithmetic gives a number no amount of use reaches.
+KEY_DIGITS: Final[int] = 32
+
+
 def key_of(one: str, other: str) -> str:
     """The tension id two entries name, **in no order**.
 
@@ -209,11 +228,19 @@ def key_of(one: str, other: str) -> str:
     would put the two entries in an order, in the one function every mint runs
     through, and a reviewer would have to keep noticing that the order was only
     used for a hash. XOR is commutative, so there is no order to notice.
+
+    **What a collision would do**, said because the truncation makes it a
+    question somebody has to answer: two different pairs sharing an id would
+    make the second look, to ``mint.slate``, like a couple the fold already
+    holds a tension over. It would land in ``standing`` — nothing judged,
+    nothing minted, nothing logged, nothing anybody could see. That is why
+    ``KEY_DIGITS`` is wide rather than short; a truncation whose failure is
+    silent has to be one nobody has to reason about.
     """
     mixed = 0
     for ident in (one, other):
         mixed ^= int(hashlib.sha256(ident.encode("utf-8")).hexdigest(), 16)
-    return f"x_{mixed:064x}"[:14]
+    return f"x_{mixed:064x}"[:2 + KEY_DIGITS]
 
 
 def read(rows: Mapping[str, Mapping[str, Any]] | None) -> dict[str, Entry]:
@@ -325,7 +352,15 @@ def on_a_loop(
     demotes, freezes or refutes a wanting (CAP-6), and the way that rule breaks
     is a minter that acquired a reason to look at the loop itself.
     """
-    live = {slug for slug in loops if isinstance(slug, str) and slug.strip()}
+    try:
+        live = {slug for slug in loops if isinstance(slug, str) and slug.strip()}
+    except TypeError:
+        # A view this build cannot read costs this main their loop set, never
+        # their night. ``read`` and ``mint.linked`` already guarded and this did
+        # not, so ``slate``'s *"never raises"* was an overclaim: a ``loops``
+        # that was not iterable came out of here as a ``TypeError``, through a
+        # function whose whole contract is that it does not raise.
+        return ()
     if not live:
         return ()
     return tuple(item for item in known.values() if item.loop in live)
@@ -427,6 +462,7 @@ def _text(value: object) -> str | None:
 __all__ = [
     "BOTH",
     "CEILING",
+    "KEY_DIGITS",
     "Comparison",
     "Couple",
     "Entry",

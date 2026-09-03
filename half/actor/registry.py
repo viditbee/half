@@ -31,6 +31,8 @@ from typing import Any, AsyncIterator
 from half.errors import StoreError, TensionError, TouchError, TrustError
 from half.governance.aftercare import FLOOR_DAYS, answered, at_least, entered_at
 from half.governance.ladder import (
+    FLOOR,
+    LICENSE,
     TOP,
     Ceiling,
     License,
@@ -38,6 +40,7 @@ from half.governance.ladder import (
     height,
     next_rung,
 )
+from half.consolidate.candidates import MintView
 from half.retrieval.prefix import build_prefix
 from half.retrieval.rank import RetrievalSwitch
 from half.retrieval.strands import Strands
@@ -66,7 +69,6 @@ from half.store.records import (
     zone_projection,
     zone_record,
 )
-from half.consolidate.candidates import MintView
 from half.store.fold import fold as fold_records
 from half.store.store import Store
 from half.surface.touch import spoken_on
@@ -80,6 +82,8 @@ from half.surface.view import (
 from half.questions.answered import history as ask_history_of
 from half.questions.engine import QuestionView
 from half.tensions.states import STATE as TENSION_STATE
+from half.tensions.states import TensionState
+from half.tensions.widening import BETWEEN
 from half.trust.balance import balance as trust_balance
 from half.trust.unasked import (
     ASK_CRISIS,
@@ -872,7 +876,42 @@ class ActorRegistry:
         gate treats an expunged id as already seen and the fold drops the
         record, so without this the mint would look like it had landed and be
         an erasure quietly undone.
+
+        **A mint carries a pair, `fresh`, and the ladder's floor.** Nothing
+        else, and this is where that is enforced: ``note_transition`` has had a
+        stray-field guard since the review that found it appending whatever a
+        caller handed it, and this door — added by the same story — had none.
+        Review verified it accepting ``state=persistent``, an arbitrary
+        ``license``, ``known_to_main``, ``support`` and ``tombstone``, every one
+        of which the append gate's ``TENSION_FIELDS`` allows on a tension
+        record and none of which a *mint* composes. Durable, and no correction
+        to either entry could take any of them back.
+
+        The state is pinned as well as the field set, because ``fresh`` is
+        where 9c's state machine starts and a mint that wrote ``persistent``
+        would hand 9c a tension whose widening clock had already run.
         """
+        stray = sorted(set(fields) - {BETWEEN, TENSION_STATE, LICENSE})
+        if stray:
+            raise TensionError(
+                f"a mint carries {BETWEEN!r}, {TENSION_STATE!r} and the "
+                f"license the ladder admits, and nothing else; refusing {stray}"
+            )
+        born = fields.get(TENSION_STATE)
+        if born != str(TensionState.FRESH):
+            raise TensionError(
+                f"a mint is born {str(TensionState.FRESH)!r}; every state after "
+                f"that is a transition and goes through the other door, and a "
+                f"mint that wrote a later state would hand the pass a tension "
+                f"whose widening clock had already run"
+            )
+        granted = fields.get(LICENSE)
+        if granted != str(FLOOR):
+            raise TensionError(
+                f"a mint is admitted at the ladder's floor and the ladder is "
+                f"the only thing that may write a license; refusing a record "
+                f"whose {LICENSE!r} was composed elsewhere"
+            )
         async with self.acquire(main_id) as actor:
             state = actor.store.state()
             if tension_id in state.tensions:

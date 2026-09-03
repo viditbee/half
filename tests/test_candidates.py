@@ -29,6 +29,7 @@ import pytest
 from half.consolidate.candidates import (
     BOTH,
     CEILING,
+    KEY_DIGITS,
     Couple,
     Entry,
     couples,
@@ -540,8 +541,15 @@ def test_the_derived_id_separates_pairs_and_looks_like_a_tension_id():
             for i in range(20) for j in range(20) if i != j}
     assert len(seen) == 190
     for ident in seen:
-        assert ident.startswith("x_") and len(ident) == 14
+        assert ident.startswith("x_") and len(ident) == 2 + KEY_DIGITS
         assert all(char in "0123456789abcdef" for char in ident[2:])
+
+    # Pinned by value. The width was twelve digits — forty-eight bits — and a
+    # collision here is silent: ``mint.slate`` reads a hit on this id as *"the
+    # fold already holds a tension over this pair"* and files the couple under
+    # ``standing``, so nothing is judged, nothing is minted and nothing says
+    # so. Narrowing it again is a red test and a deliberate edit.
+    assert KEY_DIGITS == 32
 
 
 @pytest.mark.cap7_minting

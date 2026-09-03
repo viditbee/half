@@ -69,7 +69,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Protocol
 
-from half.consolidate import filter as relevance
+from half.consolidate import relevance
 from half.consolidate.candidates import (
     BOTH,
     CEILING,
@@ -148,9 +148,18 @@ class Slate:
     #: here is not reconsidered later — which is one of the two answers CAP-7's
     #: matrix allows, and the one this build gives.
     unbudgeted: int = 0
-    #: Couples already carrying a live tension. Recognised before the filter and
-    #: long before the port, so nothing is spent on a disagreement Half has
-    #: already recorded.
+    #: Couples this pass will not mint because the log already answers for
+    #: them. **Three distinct facts, deliberately together and named here
+    #: because the name says only the first**: a live tension over the pair; a
+    #: record the fold already holds under the couple's own derived id, which
+    #: on a live pair is that same tension and otherwise is a `resolved` one; and
+    #: an id the main **erased**.
+    #:
+    #: They are one field because they are one decision — nothing is judged,
+    #: nothing is minted, nothing is spent — and separating them would be three
+    #: counts of the same outcome. What they are not is one *fact*, and a reader
+    #: who took this for *"already linked"* would read an erasure as a
+    #: disagreement Half is tracking.
     standing: tuple[str, ...] = ()
     #: Couples the cheap filter turned away. Counted, because a filter whose
     #: rejections nothing can see is a filter nothing can assert.
@@ -180,8 +189,10 @@ class MintResult:
 
     #: Tensions this pass created, by id. The only outcome that wrote anything.
     minted: tuple[str, ...] = ()
-    #: Couples that already carried a live tension. Nothing minted, nothing
-    #: spent, nothing wrong.
+    #: Couples the log already answers for: a live tension over the pair, a
+    #: record under the couple's own derived id, or an id the main erased. Three
+    #: facts and one outcome — nothing minted, nothing spent, nothing wrong —
+    #: and see ``Slate.standing`` for why they travel together.
     standing: tuple[str, ...] = ()
     #: Couples the judge was asked about and found no disagreement in.
     passed: tuple[str, ...] = ()
@@ -331,7 +342,7 @@ def slate(view: MintView, *, now: str) -> Slate:
         if frozenset(couple.names) in already:
             standing.append(couple.id)
             continue
-        if couple.id in view.tensions or couple.id in view.gone:
+        if _held(view.tensions, couple.id) or _held(view.gone, couple.id):
             # A tension the fold already holds under this couple's own derived
             # id — a `resolved` one, or one the main erased. Either way the
             # record exists and a second mint would be a duplicate or an
@@ -501,6 +512,20 @@ async def consider(
         considered=plan.considered,
         ceiling_reached=plan.ceiling_reached,
     )
+
+
+def _held(table: object, ident: str) -> bool:
+    """Whether ``table`` holds ``ident``. Never raises.
+
+    ``slate`` says it never raises, and a ``tensions`` or a ``gone`` that is not
+    a container made ``in`` a ``TypeError`` straight out of the middle of it —
+    the same overclaim ``on_a_loop`` carried, one line down. A view this build
+    cannot read costs this main their mint, not their night.
+    """
+    try:
+        return ident in table  # type: ignore[operator]
+    except TypeError:
+        return False
 
 
 __all__ = [

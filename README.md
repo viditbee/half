@@ -66,9 +66,14 @@ consolidation, tension minting, and the reply itself) are each their own story
 with their own risk, and wiring one of them in alongside the port would put the
 port's design and that consumer's risk into a single review. The trust balance
 and the unsaid and unasked queues are story 5b. The nightly pass the scheduler
-runs today re-evaluates this main's tensions against the log and an injected
-`now`, appends the transitions that follow, and sends nothing to anybody —
-minting new tensions is story 9d and the morning surface is story 10.
+runs today mints this main's tensions — new or changed entries against the loop
+set and against beliefs sharing a subject, through a cheap relevance filter,
+inside a per-main couple ceiling and judgement budget (story 9d) — then
+re-evaluates them against the log and an injected `now`, appends the
+transitions that follow, and sends nothing to anybody. The disagreement
+judgement itself is a port with no implementation and none wired into the
+composition root, so this build mints nothing until story 9e supplies one; the
+morning surface is story 10.
 
 **Not ready for real use.** The crisis subsystem has not been reviewed by a
 qualified clinician, and that review is a launch gate rather than a follow-up.
