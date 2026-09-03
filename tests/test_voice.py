@@ -29,6 +29,7 @@ import ast
 import asyncio
 import inspect
 import logging
+import time
 import unicodedata
 from pathlib import Path
 from typing import Final
@@ -204,6 +205,20 @@ def ordinary() -> Context:
             "b_2", "avoids the conversation with his brother",
             rung=License.BEHAVE, topics=["family"],
         ),
+    )
+
+
+def bought_a_question() -> Context:
+    """A context carrying **one bought question** (CAP-4).
+
+    The one state in which the judge permits a question mark of Half's own: the
+    permission to ask is what a favour buys, and ``Context.question`` is where
+    that purchase is recorded.
+    """
+    return a_context(
+        candidate("b_3", "wants to plant the north field",
+                  rung=License.ASK, topics=["farmland"]),
+        bought="b_3",
     )
 
 
@@ -525,8 +540,16 @@ def test_one_question_is_accepted_and_two_are_refused_in_every_script(mark):
     """Swept over every question mark Unicode has, because a rule that counts
     ``?`` alone is the Latin-only guard this project keeps shipping: it does
     nothing at all for a main writing Arabic, Greek, Armenian, Amharic or
-    Chinese."""
-    context = ordinary()
+    Chinese.
+
+    **The one that is permitted is the one a favour bought** (story 13b, review
+    loop 1). The budget used to be one mark on every send, so a composer could
+    ask on a send that bought nothing — CAP-4 leaking through the composer
+    rather than through the currency. So the accepted case carries a bought
+    question and the refused one carries two; the send that bought nothing is
+    the case below.
+    """
+    context = bought_a_question()
     assert judge(f"the plot is still there{mark}", context=context) is None
     assert judge(
         f"is the plot still there{mark} and the fence{mark}", context=context
@@ -665,6 +688,71 @@ def test_a_provider_past_the_bound_is_abandoned_and_never_waited_on_twice():
     assert compose(v) == Unspoken(PAST_THE_BOUND)
     assert holder.calls == 1, "a slow provider was asked again"
     assert v.tally.bound_exceeded == 1
+
+
+@pytest.mark.cap8_voice
+def test_the_bound_covers_the_whole_run_and_not_one_attempt_of_it():
+    """*"A wall-clock bound"*, singular — asserted as arithmetic.
+
+    **A live mutation found this.** Each regeneration used to open its own
+    ``asyncio.timeout``, so a provider that answered just inside the bound and
+    was then refused by the judge bought itself another whole one, twice over:
+    the promise in this module's docstring was one bound and the code spent
+    ``ATTEMPTS`` of them. On the turn path that is six seconds in front of
+    somebody who has just written.
+
+    The signal is the *reason* rather than a stopwatch — a run bounded as a run
+    ends ``PAST_THE_BOUND``, and one bounded per attempt ends ``JUDGED`` having
+    spent three times as long — with the elapsed time asserted beside it so the
+    arithmetic is checked and not only the label.
+    """
+    each = 0.2
+    holder = GeneratorDouble(wrote(""), sleep=each)   # judged empty, every time
+    v = Voice({MAIN: holder}, bound_seconds=each * 1.5)
+
+    started = time.monotonic()
+    outcome = compose(v)
+    elapsed = time.monotonic() - started
+
+    assert outcome == Unspoken(PAST_THE_BOUND)
+    assert v.tally.bound_exceeded == 1
+    assert elapsed < each * ATTEMPTS, "the run spent a bound per attempt"
+
+
+@pytest.mark.cap8_voice
+@pytest.mark.parametrize(
+    "given", [float("nan"), float("inf"), float("-inf")],
+    ids=["nan", "inf", "-inf"],
+)
+def test_a_bound_that_is_not_finite_is_refused_like_a_negative_one(given, caplog):
+    """**A live mutation found this, and it is the guard failing open.**
+
+    The check was ``given <= 0``, and every comparison against a NaN is
+    ``False`` — so a non-finite bound went straight into ``asyncio.timeout``,
+    which then never fired. A main waited on a hung provider for as long as it
+    hung, through the one guard whose whole job is to stop exactly that. An
+    infinity is the same hole with a friendlier face.
+
+    What must happen is what happens to any other unusable value: the
+    construction bound stands, the fact is logged, and nobody's reply is lost
+    to a bad argument.
+    """
+    holder = GeneratorDouble(wrote("a reply"))
+    v = Voice({MAIN: holder}, bound_seconds=0.5)
+
+    with caplog.at_level(logging.WARNING, logger="half.voice.gate"):
+        outcome = asyncio.run(v.compose(
+            ordinary(), main_id=MAIN, sample=SAMPLE,
+            withheld=ordinary_withheld(), bound_seconds=given,
+        ))
+
+    assert outcome == Spoken("a reply")
+    assert any("bound it cannot use" in r.message for r in caplog.records), (
+        "a bound that is not a bound was accepted as one"
+    )
+    # And the value itself is nowhere in the line (AD-22).
+    for record in caplog.records:
+        assert str(given) not in record.getMessage()
 
 
 @pytest.mark.cap8_voice
@@ -1352,17 +1440,47 @@ def test_generated_text_is_sanitized_the_way_every_context_item_is():
     assert "\n" not in outcome.text
 
 
+@pytest.mark.cap4
+@pytest.mark.cap8_voice
+@pytest.mark.parametrize("mark", sorted(QUESTION_MARKS), ids=lambda m: hex(ord(m)))
+def test_a_send_that_bought_no_question_may_not_ask_one(mark):
+    """CAP-4 at the composer, in every script that has a mark.
+
+    **A live mutation found this.** The budget was one mark on *every* send, so
+    a model handed no ask-about block at all could still put a question in front
+    of a main — an unbought question arriving through the composer rather than
+    through the currency, which is the one thing the whole trust ledger exists
+    to prevent. Nothing failed: the currency's own cases assert what the
+    *builder* emits and never what the *generator* wrote.
+
+    The negative half only. *Zero marks is not zero questions* in Japanese, Thai
+    or spoken-register Chinese, so requiring a mark where one was bought would
+    refuse those mains for ever — that half stays with the instructions, and
+    ``UNMARKED_QUESTIONS`` above is why.
+    """
+    assert question_budget(ordinary()) == 0
+    assert judge(f"how did the plot look{mark}", context=ordinary()) == (
+        TWO_QUESTIONS
+    )
+    # And the same sentence, on a turn where a favour bought the question, is
+    # accepted — or this case would pass on a Half that never asks anybody
+    # anything.
+    assert judge(
+        f"how did the plot look{mark}", context=bought_a_question()
+    ) is None
+
+
 @pytest.mark.cap8_voice
 @pytest.mark.parametrize("mark", sorted(QUESTION_MARKS), ids=lambda m: hex(ord(m)))
 def test_a_quotable_claim_that_asks_does_not_silence_the_main_for_ever(mark):
     """A permanent-silence route, swept over every question mark.
 
     An `assert` claim that itself ends in a question mark made a faithful
-    quotation of it look like a second question — so every attempt refused, for
-    ever, for that main. The budget is one question *plus* whatever the model was
-    handed, because telling a quoted mark from an asked one needs a parse of
-    somebody's prose in an unknown language and counting what was handed over
-    does not.
+    quotation of it look like an asked question — so every attempt refused, for
+    ever, for that main. The budget is therefore *whatever the model was handed*
+    plus the one mark a favour bought, because telling a quoted mark from an
+    asked one needs a parse of somebody's prose in an unknown language and
+    counting what was handed over does not.
     """
     asking = a_context(
         candidate("b_1", f"asked whether the fence was ever mended{mark}"),
@@ -1370,13 +1488,12 @@ def test_a_quotable_claim_that_asks_does_not_silence_the_main_for_ever(mark):
     quoted = f"you asked whether the fence was ever mended{mark}"
 
     assert judge(quoted, context=asking) is None
-    assert judge(f"{quoted} and now{mark}", context=asking) is None
-    assert judge(f"{quoted} and now{mark} and then{mark}", context=asking) == (
-        TWO_QUESTIONS
-    )
-    # The budget follows the material rather than being a constant.
-    assert question_budget(asking) == 2
-    assert question_budget(ordinary()) == 1
+    assert judge(f"{quoted} and now{mark}", context=asking) == TWO_QUESTIONS
+    # The budget follows the material rather than being a constant, and the
+    # mark Half may add on top of it is the one a favour bought.
+    assert question_budget(asking) == 1
+    assert question_budget(ordinary()) == 0
+    assert question_budget(bought_a_question()) == 1
 
 
 @pytest.mark.cap8_voice

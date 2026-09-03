@@ -143,6 +143,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -274,8 +275,10 @@ TOO_LONG: Final[str] = "too-long"
 #: The candidate carries Half's own internal serialization — a belief id, a
 #: channel label, the context's stamp, or one of the prompt's block labels.
 SCAFFOLDING: Final[str] = "scaffolding"
-#: Two or more questions. CAP-4's *exactly one question* is the rule; this is
-#: the half of it that is decidable in every script — see ``judge``.
+#: More question marks than this send was permitted. CAP-4's rule is *at most
+#: one question, and only one a favour bought*; this is the half of it that is
+#: decidable in every script — see ``judge`` and ``question_budget``. The name
+#: is kept because it is the key an operator's counter already holds.
 TWO_QUESTIONS: Final[str] = "two-questions"
 
 #: Every reason the judge may refuse a candidate. Closed, so a regeneration
@@ -510,23 +513,41 @@ def scaffolding(context: Context) -> frozenset[str]:
 def question_budget(context: Context) -> int:
     """How many question marks a candidate may carry.
 
-    One — the question CAP-4 permits — **plus however many the model was handed
-    in the quotable block**, which is review round 1's correction and a
-    permanent-silence route in its own right: an `assert` claim that itself ends
-    in a question mark (*"asked whether the fence was ever mended?"*) makes a
-    faithful quotation of it look like a second question, every attempt refuses,
-    and that main never hears anything again.
+    **One only where a favour bought one**, plus however many the model was
+    handed in the quotable block.
+
+    *The first half is CAP-4 and is story 13b's review-loop correction.* This
+    used to allow one mark on **every** send, so a composer could ask a question
+    on a turn with no ask-about block at all — an unbought question reaching a
+    main through the composer rather than through the currency, which is the one
+    thing the whole trust ledger exists to prevent. The permission to ask is
+    something a favour buys, and ``Context.question`` is where that purchase is
+    recorded (it is singular by type, so *"never two"* is structural). With no
+    question in the context the budget is the quoted marks and nothing more.
+
+    Only the mark is judged, never the absence of one: *zero marks is not zero
+    questions* in Japanese, Thai or spoken-register Chinese, so the negative
+    half stays with the instructions — see ``judge``.
+
+    *The second half is review round 1's* and is a permanent-silence route in
+    its own right: an `assert` claim that itself ends in a question mark
+    (*"asked whether the fence was ever mended?"*) makes a faithful quotation of
+    it look like an asked question, every attempt refuses, and that main never
+    hears anything again.
 
     Counting the marks the model was given rather than trying to tell a quoted
     mark from an asked one is deliberate: telling them apart needs to know where
     the quotation ends, which is a parse of somebody's prose in an unknown
     language. Counting what was handed over is arithmetic, and it errs toward
-    permitting — which is the right direction here, because the thing being
-    guarded against is an *interview*, and one extra mark is not one.
+    permitting — which is the right direction for *that* half, because what it
+    guards against is an *interview* and one quoted mark is not one.
     """
     if not isinstance(context, Context):
-        return 1
-    return 1 + sum(1 for char in quotable_block(context) if char in QUESTION_MARKS)
+        return 0
+    bought = 1 if context.question is not None else 0
+    return bought + sum(
+        1 for char in quotable_block(context) if char in QUESTION_MARKS
+    )
 
 
 def judge(text: object, *, context: Context) -> str | None:
@@ -544,8 +565,11 @@ def judge(text: object, *, context: Context) -> str | None:
     (``half.voice.compose.INSTRUCTIONS``) and is not adjudicated here.
 
     **Why there is no *"it must contain a question"* rule.** CAP-4's rule is
-    *exactly one question*, and only one half of that is decidable across
-    scripts. Two question marks are two questions in any script that has one.
+    *at most one question, and only one a favour bought*, and only one half of
+    that is decidable across scripts. A mark past the budget is a question past
+    the budget in any script that has one — and on a send that bought nothing
+    the budget is zero, which is where CAP-4 stops being a rule about the
+    currency alone (``question_budget``).
     But *zero* question marks is not zero questions: written Japanese asks with
     か and a full stop, Thai with ไหม and no mark at all, and a great deal of
     spoken-register Chinese likewise. A rule requiring a mark would have
@@ -733,6 +757,7 @@ class Voice:
         withheld: frozenset[str] | set[str],
         bound_seconds: float | None = None,
         verbatim: str = "",
+        even_when_empty: bool = False,
     ) -> Composed:
         """One send's words, or a reason there are none. Never raises.
 
@@ -782,6 +807,21 @@ class Voice:
         in hand before the first call. The requirement is checked once, at the
         one place that can act on it, immediately before the send.
 
+        ``even_when_empty`` is the turn's second one-number-of-difference, and
+        it is story 13b's second review-loop amendment. A **morning** with an
+        empty context is a caller paying a provider to write about nothing, and
+        it is refused here. A **turn** with an empty context is a person who has
+        just written and whose ledger happens to say nothing usable — a disabled
+        retrieval, a refused tokenizer, an unusable strand label, an empty
+        ranked set — and refusing it there meets a degradation with silence,
+        which is exactly what ``half.actor.runtime._retrieve``'s invariant says
+        must never happen: *a degradation changes what Half knows, never whether
+        Half answers*. It matters most for a main whose retrieval a crisis
+        disabled, because that switch is turned back on only by an explicit
+        operator action, so the silence would be permanent. The prompt is still
+        coherent: the language sample is the message in hand and the
+        instructions already say what to do with no may-be-said block.
+
         ``CancelledError`` is deliberately not caught — it is a
         ``BaseException`` and shutdown is not a failed send.
         """
@@ -794,10 +834,19 @@ class Voice:
         # was rather than as a stand-down.
         standing_down = self._tick_breaker(main_id)
 
-        if not isinstance(context, Context) or context.empty:
+        if not isinstance(context, Context) or (
+            context.empty and not even_when_empty
+        ):
             # **Nothing in any channel.** Story 10 answers this before reaching
             # here; checked again because a caller that did not would be paying
             # a provider to write about nothing.
+            #
+            # ``even_when_empty`` is the turn opting out, and only the turn: a
+            # main is waiting, and *nothing in the ledger* is a fact about the
+            # ledger rather than a reason to answer nobody (review loop 1,
+            # second amendment). A context that is not a ``Context`` at all is
+            # refused either way — there is no sample-shaped thing to compose
+            # from and no channel to withhold.
             #
             # ``Context.empty`` and not *"nothing quotable"*, which is story
             # 13b's review-loop correction and is the whole of it: a context
@@ -845,11 +894,20 @@ class Voice:
         unusable value is logged and the construction bound stands. The number
         itself is not repeated in the line: it came from a caller, and the log
         on this path carries counts and ids only (AD-22).
+
+        **``math.isfinite`` and not ``> 0``**, which is story 13b's review-loop
+        correction and is the difference between a bound and none at all. Every
+        comparison against a NaN is ``False``, so ``given <= 0`` admitted it,
+        ``asyncio.timeout(nan)`` never fires, and the main waited on a hung
+        provider for as long as it hung — the one failure the whole bound
+        exists to prevent, arriving through the guard that was supposed to
+        prevent it. Infinity is refused by the same test and for the same
+        reason.
         """
         if given is None:
             return self._bound
         if isinstance(given, bool) or not isinstance(given, (int, float)) or (
-            given <= 0
+            not math.isfinite(given) or given <= 0
         ):
             logger.warning(
                 "the composer was given a bound it cannot use for main=%s; the "
@@ -869,7 +927,17 @@ class Voice:
         bound: float,
         verbatim: str = "",
     ) -> Composed:
-        """Generate, judge, regenerate, stop. The bounded loop.
+        """Generate, judge, regenerate, stop, **inside one bound**.
+
+        **The bound is on the run and not on each attempt**, which is story
+        13b's review-loop correction and a factor of ``ATTEMPTS`` in what a
+        waiting main can be made to wait. The docstring above has always said
+        *"a wall-clock bound"*, singular, and the arithmetic underneath said
+        three of them: a provider that answered just inside the bound and was
+        then refused by the judge bought itself another whole one, twice over,
+        so the turn's two seconds were six and the morning's twenty were sixty.
+        A single ``asyncio.timeout`` around the loop makes the promise the
+        arithmetic.
 
         **The whole attempt is inside the handler**, which is review round 1's
         correction to a guarantee this module's docstring stated absolutely and
@@ -896,6 +964,40 @@ class Voice:
         changed a provider outage into a reported judge refusal and no test
         noticed, because the two facts were being carried by one variable.
         """
+        try:
+            async with asyncio.timeout(bound):
+                return await self._regenerating(
+                    context, holder=holder, main_id=main_id, sample=sample,
+                    withheld=withheld, verbatim=verbatim,
+                )
+        except TimeoutError:
+            # Past the bound. Terminal, and the bound covered the whole run:
+            # a provider that is slow now is slow for the next attempt too, and
+            # nobody is owed one of these per attempt.
+            self._tally.bound_exceeded += 1
+            logger.warning(
+                "the composer passed its bound for main=%s; "
+                "nothing is sent", main_id,
+            )
+            return self._silent(main_id, PAST_THE_BOUND)
+
+    async def _regenerating(
+        self,
+        context: Context,
+        *,
+        holder: Generator,
+        main_id: str,
+        sample: Sample,
+        withheld: frozenset[str] | set[str],
+        verbatim: str = "",
+    ) -> Composed:
+        """The loop itself, unbounded — its caller holds the one bound.
+
+        Split out so that ``asyncio.timeout`` wraps the run rather than each
+        attempt: a ``return`` from inside a ``try`` inside a ``for`` inside an
+        ``async with`` is legal and unreadable, and the readable version is the
+        one whose scope is obvious from the indentation.
+        """
         because = ""
         terminal = REFUSED
         for _ in range(self._attempts):
@@ -908,8 +1010,7 @@ class Voice:
                     ),
                     max_tokens=MAX_OUTPUT_TOKENS,
                 )
-                async with asyncio.timeout(bound):
-                    answered = await holder.generate(work)
+                answered = await holder.generate(work)
 
                 if isinstance(answered, Failure):
                     self._tally.count_failure(answered)
@@ -969,15 +1070,6 @@ class Voice:
 
                 self._tally.spoken += 1
                 return Spoken(text)
-            except TimeoutError:
-                # Past the bound. Terminal: a provider that is slow now is slow
-                # for the next attempt too, and nobody is owed three bounds.
-                self._tally.bound_exceeded += 1
-                logger.warning(
-                    "the composer passed its bound for main=%s; "
-                    "nothing is sent", main_id,
-                )
-                return self._silent(main_id, PAST_THE_BOUND)
             except Exception as exc:
                 # The port answers a provider fault with a value; a raise here
                 # is a build mistake — an unknown tier, a budget admitting
