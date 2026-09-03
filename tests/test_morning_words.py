@@ -696,6 +696,48 @@ def test_no_generated_string_is_written_anywhere(registry, tmp_path, script):
     assert words.encode() in written
 
 
+@pytest.mark.parametrize("script", sorted(SCRIPTS), ids=sorted(SCRIPTS))
+def test_no_log_line_on_the_morning_path_carries_a_word_of_it(
+    registry, tmp_path, caplog, script
+):
+    """AD-22 over the **whole** path, not just the composer's own modules.
+
+    ``tests/test_voice.py`` scans the voice package's logging; this scans the
+    surface's, the registry's, the channel's and everything else a morning
+    touches — which is a different set, and a gap mutation found: adding
+    ``logger.info("morning for main=%s said %s", main_id, text)`` to
+    ``half.surface.morning`` survived every case in this file, because nothing
+    here had ever read a log record.
+
+    Every outcome is driven — sent, judged, leaked, failed — and both the
+    generated text and the main's own words are looked for in each record's
+    message *and* in its arguments, which is where an interpolated value
+    actually sits. Swept over scripts because a scan written against one proves
+    one encoding.
+    """
+    words = SCRIPTS[script]
+    composed = f"{COMPOSED} {words}"
+
+    with caplog.at_level(logging.DEBUG):
+        for i, answer in enumerate((
+            composed,
+            "x" * (MAX_CHARS + 1),
+            f"you {WITHHELD} again",
+            Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED),
+        )):
+            main_id = f"main{i}"
+            a_main(tmp_path, main_id=main_id, message=words)
+            voice, _ = a_voice(answer, main=main_id)
+            run(registry, FakeChannel(), voice, main_id=main_id)
+
+    for record in caplog.records:
+        haystack = record.getMessage() + repr(record.args)
+        for forbidden in (COMPOSED, composed, words, WITHHELD, SAYABLE):
+            assert forbidden not in haystack, (
+                f"{record.name} logged content: {record.getMessage()!r}"
+            )
+
+
 def test_a_silent_morning_writes_nothing_at_all(registry, tmp_path):
     a_main(tmp_path)
     before = _log_bytes(tmp_path / MAIN)

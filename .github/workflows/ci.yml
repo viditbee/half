@@ -1045,18 +1045,18 @@ jobs:
         # wiring and the determinism guarantees among them — fitted inside its
         # own margin.
         #
-        # 416 selected, 406 required. The margin is 10, and it is deliberately
+        # 439 selected, 429 required. The margin is 10, and it is deliberately
         # smaller than every protected subset: silence (83), nagging (72),
-        # structure (13), the wire text (231) and the cases held by this gate
+        # structure (13), the wire text (254) and the cases held by this gate
         # alone. Deleting any one of them drops this gate beneath its floor
         # **and** fails whichever sub-gate names it. Story 11 added one and story
-        # 13a added 231; the floor moves with them, so the margin does not grow.
+        # 13a added 254; the floor moves with them, so the margin does not grow.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap8 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-8 cases collected: $collected"
-          if [ "$collected" -lt 406 ]; then
+          if [ "$collected" -lt 429 ]; then
             echo "::error::the CAP-8 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -1212,16 +1212,26 @@ jobs:
         # is no room to leave for pruning one. Adding cases moves this number
         # with them; nothing else may.
         #
-        # A superset floor cannot protect this: `cap8` collects 416 against 406,
-        # so all 231 of these could be deleted with that step green.
+        # A superset floor cannot protect this: `cap8` collects 439 against 429,
+        # so all 254 of these could be deleted with that step green.
         #
-        # 231 selected, 231 required.
+        # **Two of these cases exist because a mutation survived without them**,
+        # which is the only honest way to size a gate. Replacing the holder
+        # allowlist with a denylist of the four names a reader would reach for
+        # survived the whole suite, so the refusal is now swept over nine method
+        # names, seven of which no denylist would contain. And writing the
+        # composed sentence into a log line on the *surface* survived every case
+        # in the wire-text file, because the log scan lived only in the voice
+        # package's own; there is now one over the whole morning path, in every
+        # script.
+        #
+        # 254 selected, 254 required.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap8_voice -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-8 wire-text cases collected: $collected"
-          if [ "$collected" -lt 231 ]; then
+          if [ "$collected" -lt 254 ]; then
             echo "::error::the wire-text gate collected $collected cases; Half may have stopped speaking, or started speaking scaffolding"
             exit 1
           fi

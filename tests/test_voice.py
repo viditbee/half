@@ -916,31 +916,50 @@ def test_an_empty_context_is_answered_before_a_provider_is_paid():
 # ═════════════════════════════════════════════════════════════════════════════
 
 
+#: Extra public methods a holder might have beside ``generate``. Two of them
+#: are names a denylist would plausibly contain and the rest are not, which is
+#: the whole point of the sweep below: a denylist only ever catches the
+#: spellings somebody thought of, and this codebase has shipped that defect
+#: three times. Replacing the allowlist with ``name in {"classify", "submit",
+#: "collect", "ledger"}`` — the four a reader would reach for — survives every
+#: case built from the first two and fails on every one built from the rest.
+WIDER_METHODS: Final[tuple[str, ...]] = (
+    "classify", "submit", "chat", "invoke", "run", "complete", "stream",
+    "reset", "__call__",
+)
+
+
 @pytest.mark.cap8_voice
-def test_a_holder_that_can_do_more_than_generate_is_refused():
-    """An allowlist, not a denylist. What must not be handed over is the
-    provider that owns the generator — it can reset a ledger and reach a
-    batcher, and a denylist of names lets it straight through."""
-    class Wider:
+@pytest.mark.parametrize("extra", WIDER_METHODS, ids=WIDER_METHODS)
+def test_a_holder_that_can_do_more_than_generate_is_refused(extra):
+    """An allowlist, not a denylist, swept over names a denylist would not have.
+
+    What must not be handed over is the provider that owns the generator — it
+    can reset a ledger and reach a batcher. The check is *"has it any public
+    method but generate"* rather than *"has it one of these"*, because the
+    second only ever catches the spellings somebody thought of: story 5b's
+    import guard denied four literal strings and was walked around, story 11
+    reintroduced the same defect by copying it, and story 12's prose substring
+    scan was a third. So this sweeps two names a denylist would plausibly
+    contain and seven it would not, and every one of them is refused.
+    """
+    body = {"generate": lambda self, work: None, extra: lambda self, *a: None}
+    wider = type("Wider", (), body)
+
+    with pytest.raises(VoiceError):
+        Voice({MAIN: wider()})
+
+
+@pytest.mark.cap8_voice
+def test_the_narrow_holder_is_accepted_and_a_non_generator_is_not():
+    class Narrow:
         async def generate(self, work):  # pragma: no cover - never reached
             raise AssertionError
-        async def classify(self, work):  # pragma: no cover
-            raise AssertionError
 
-    class Callable_:
-        async def generate(self, work):  # pragma: no cover
-            raise AssertionError
-        def __call__(self):  # pragma: no cover
-            raise AssertionError
-
-    class Narrow:
-        async def generate(self, work):  # pragma: no cover
-            raise AssertionError
-
-    for holder in (Wider(), Callable_(), object()):
+    assert Voice({MAIN: Narrow()}).holds(MAIN)
+    for holder in (object(), "not a holder", None):
         with pytest.raises(VoiceError):
             Voice({MAIN: holder})
-    assert Voice({MAIN: Narrow()}).holds(MAIN)
 
 
 @pytest.mark.cap8_voice
