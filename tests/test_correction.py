@@ -54,15 +54,19 @@ from half.voice.gate import Voice
 from half.correction.attribute import Attribution, attribution_for
 from half.correction.candidate import (
     ACTION_FOR_LABEL,
+    ALARM_AFTER,
+    ALARM_RATE,
     BREAK_AFTER,
     BREAK_FOR,
     ALLOWED_METHODS,
     BOUND_SECONDS,
     CORRECTION,
+    INSTRUCTIONS,
     LABELS,
     NO_CORRECTION,
     PER_CALL_MICRO_USD,
     PER_PASS_MICRO_USD,
+    REPORT_EVERY,
     UNSURE,
     Action,
     Verdict,
@@ -81,6 +85,7 @@ from half.errors import CorrectionError
 from half.governance import ladder
 from half.governance.ladder import License
 from half.loops import ledger as loops
+from half.model import consult
 from half.model.port import Classify, Decision, Failure, Kind, Reason, Usage
 from half.questions.engine import QuestionEngine
 from half.retrieval.prefix import build_prefix
@@ -2639,3 +2644,153 @@ def test_serve_hands_the_runtime_the_widening_build_made(tmp_path, monkeypatch):
 
     assert isinstance(captured["corrections"], Widening)
     assert captured["corrections"] is made["wiring"].corrections
+
+
+# =============================================================================
+# story 14: one consultation, three policies
+# =============================================================================
+#
+# The shape — the bound, the caps, the breaker, the holder allowlist and the
+# report cadence — moved to ``half/model/consult.py``. The policy stayed: this
+# module's labels, its instructions, ``ACTION_FOR_LABEL``, the standing
+# candidate, and the three numbers that differ between the callers for reasons.
+#
+# Everything above this line is the equivalence evidence, and it is evidence
+# because **not one of those assertions moved**: the breaker still trips at
+# ``BREAK_AFTER`` and skips exactly ``BREAK_FOR``, asserted on calls the holder
+# actually received; the tally still holds the same fields with the same values,
+# ``proposed`` and ``confirmed`` included; ``flush`` still writes nothing at all
+# for a deployment that did nothing; the allowlist still refuses a holder with
+# any public method but ``classify``; and the per-call bound override still
+# refuses a NaN. What follows is what could not have been asserted before.
+
+
+def test_the_hundredth_wholly_failing_consultation_alarms_rather_than_reporting(
+    caplog
+):
+    """The payoff, at this caller.
+
+    ``_report`` asked the periodic question first and hung the alarm off an
+    ``elif``, so the two were mutually exclusive: at the hundredth consultation
+    — and every hundredth after — a wholly failing widening reported at ``info``,
+    which is exactly the number an operator would look at. The identical bug sat
+    in ``half/crisis/classifier.py`` and ``half/voice/gate.py``; story 13a fixed
+    the voice's and left the other two.
+
+    It was fixed once, in ``half.model.consult.due``. This case is how a later
+    reader can see that the single fix reached the correction path rather than
+    being made here a second time.
+
+    One consultation each for a hundred mains, because the breaker is *per
+    main*: driving one main a hundred times stands them down after five and the
+    counter never reaches a round number.
+    """
+    mains = tuple(f"main{i}" for i in range(REPORT_EVERY))
+    failing = Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED)
+    wide = Widening({main: Holder(failing) for main in mains}, bound_seconds=0.2)
+
+    with caplog.at_level(logging.INFO, logger="half.correction.candidate"):
+        for main in mains:
+            asyncio.run(wide.consult("hm, is that me these days", main_id=main))
+
+    assert wide.tally.consulted == REPORT_EVERY
+    assert wide.tally.fallback_rate == 1.0
+    at_hundred = [
+        record for record in caplog.records
+        if f"{REPORT_EVERY} consulted" in record.getMessage()
+    ]
+    assert at_hundred, "the hundredth consultation wrote nothing"
+    assert all(record.levelno == logging.ERROR for record in at_hundred), (
+        "the round number hid the alarm"
+    )
+
+
+@pytest.mark.cap11_structure
+def test_the_shared_numbers_are_shared_and_this_mains_policy_is_its_own():
+    """Which numbers moved and which did not, pinned rather than reviewed.
+
+    The five that were byte-identical in all three consultations are one
+    definition with three readers now, so moving one moves it for the crisis
+    path, the correction path and the morning at once — which is the point and
+    is also the risk.
+
+    The three that differ differ *for reasons*, and this module's docstring
+    already gave them: two seconds is a pause in front of somebody who has just
+    written, fifty turns is how long this main's widening stands down, and a
+    fifth is the fallback rate worth waking an operator for. The shape takes
+    all three and supplies none of them.
+    """
+    assert (BOUND_SECONDS, BREAK_FOR, ALARM_RATE) == (2.0, 50, 0.2)
+    for name in ("BOUND_SECONDS", "BREAK_FOR", "ALARM_RATE"):
+        assert not hasattr(consult, name), name
+    assert (BREAK_AFTER, REPORT_EVERY, ALARM_AFTER) == (5, 100, 10)
+    assert (PER_CALL_MICRO_USD, PER_PASS_MICRO_USD) == (100_000, 500_000_000)
+    assert (
+        BREAK_AFTER, REPORT_EVERY, ALARM_AFTER,
+        PER_CALL_MICRO_USD, PER_PASS_MICRO_USD,
+    ) == (
+        consult.BREAK_AFTER, consult.REPORT_EVERY, consult.ALARM_AFTER,
+        consult.PER_CALL_MICRO_USD, consult.PER_PASS_MICRO_USD,
+    )
+
+
+@pytest.mark.cap11_structure
+def test_the_shape_is_read_from_one_place_and_not_repeated_here():
+    """A refactor whose caller kept its own copy beside the shared one is a
+    fourth copy with an import at the top.
+
+    Both halves are asserted: that the shared decisions are reached, and that
+    the arithmetic they replaced is gone from this file. The alarm branch is
+    the one that matters — a caller still computing ``consulted % ALARM_AFTER``
+    here could go on being wrong with the shared version green, which is the
+    whole failure this story exists to make impossible.
+
+    ``a_bound`` as well as ``refuses_as_a_bound``, because this module uses
+    both: the constructor's predicate and the stricter per-call one, whose
+    difference is deliberate and is documented at ``_bound_for``.
+    """
+    source = (ROOT / "half/correction/candidate.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    reached = {
+        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+    }
+    assert {
+        "Breaker", "due", "wider_than", "refuses_as_a_bound", "a_bound",
+    } <= reached
+    assert "% REPORT_EVERY" not in source
+    assert "% ALARM_AFTER" not in source
+    assert "_consecutive" not in source and "_quiet" not in source
+
+
+@pytest.mark.cap11_structure
+def test_the_shape_holds_no_label_and_no_instruction_of_this_modules():
+    """This module's own docstring gave *"must not acquire that status by
+    inheritance"* as a reason not to share the machinery at all.
+
+    Crisis's label set and instructions are clinical-review material pinned by
+    digest; these are not, and a shared module holding either module's would
+    have made both claims false at once — the crisis pin would become a pin on
+    a base class, and these labels would acquire a status nobody reviewed them
+    for. So the shape holds neither, scanned from this side as well as from the
+    crisis path's.
+
+    Scanned over **identifiers and non-docstring literals** rather than over
+    prose, which is the one honest way to run it here: this module's own label
+    is the word ``correction``, and the shape's docstring uses that word to
+    name ``half.correction.candidate`` while explaining what it must not know.
+    A substring sweep would refuse the sentence that states the rule. The scan
+    is ``tests/test_consult.py``'s own, carried across so there is one of it,
+    and it has its non-vacuity cases there.
+    """
+    from tests.test_consult import identifiers_and_literals
+
+    shape = (ROOT / "half/model/consult.py").read_text(encoding="utf-8")
+    found = identifiers_and_literals(ast.parse(shape))
+    for label in LABELS:
+        assert not any(label in name for name in found), label
+    for block in INSTRUCTIONS:
+        assert block not in shape
+    assert "ACTION_FOR_LABEL" not in shape
+    assert not hasattr(consult, "LABELS")
+    assert not hasattr(consult, "INSTRUCTIONS")
+    assert not hasattr(consult, "ACTION_FOR_LABEL")

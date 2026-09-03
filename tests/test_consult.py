@@ -397,9 +397,16 @@ def test_no_consultations_reads_as_a_rate_of_zero_and_not_as_a_fault():
 # =============================================================================
 
 
-def _identifiers_and_literals(tree: ast.AST) -> set[str]:
+def identifiers_and_literals(tree: ast.AST) -> set[str]:
     """Every name the module binds or reads, and every string that is not a
     docstring.
+
+    Public, and imported by ``tests/test_correction.py``, because the
+    correction path's own label is the word ``correction`` — which the shape's
+    prose uses to name ``half.correction.candidate`` while explaining what it
+    must not know. A raw substring sweep would report that sentence as a leak.
+    The crisis path's labels are distinctive enough to be checked against the
+    source directly, and are.
 
     Docstrings are excluded deliberately and it is the only honest way to run
     this scan: this module's docstring has to be able to say *what it must not
@@ -451,7 +458,7 @@ def test_the_shape_names_no_label_no_meaning_and_no_morning():
     ``tests/test_crisis_golden.py`` pins the crisis label set and instructions
     by digest as clinical-review material, and a shared module holding any of
     it would turn that pin into a pin on a base class."""
-    found = _identifiers_and_literals(ast.parse(SOURCE.read_text("utf-8")))
+    found = identifiers_and_literals(ast.parse(SOURCE.read_text("utf-8")))
     offending = sorted(
         f"{word} in {name!r}"
         for name in found for word in DOMAIN_WORDS
@@ -476,7 +483,7 @@ def test_the_domain_scan_sees_each_shape_of_a_leak(bypass):
     """Non-vacuity, one shape at a time. A scan nobody has tried to defeat is a
     scan nobody has tested — and this one had to exclude docstrings, which is
     exactly the kind of exclusion that quietly makes a scan see nothing."""
-    found = _identifiers_and_literals(ast.parse(bypass))
+    found = identifiers_and_literals(ast.parse(bypass))
     assert any(word in name.lower() for name in found for word in DOMAIN_WORDS)
 
 

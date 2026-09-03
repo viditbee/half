@@ -54,38 +54,34 @@ provider quotes the request it rejected, so nothing here calls
 ``logger.exception`` or passes ``exc_info``: the class of a fault is the whole of
 what may cross.
 
-**Why this repeats ``half.crisis.classifier`` rather than sharing it.** Roughly
-half of this module — the bound, the tally, the breaker, the holder check, the
-verdict reading — is the same shape, and that is a real cost stated rather than
-hidden. Two things stop it being one module.
+**Why this no longer repeats ``half.crisis.classifier``, and what is still its
+own** (story 14). Roughly half of this module — the bound, the tally, the
+breaker, the holder check, the report cadence — was the same shape, written out
+a second time, and this docstring said so and left it. A third copy arrived with
+``half.voice.gate``, and by then the arithmetic was plain: story 6d's own
+review-round corrections had to be made three times, and the report's
+mutually-exclusive branches were fixed in exactly one of the three. The shape is
+now ``half.model.consult``, which is where both sides already reached and which
+is under no domain module's layer.
 
-The first is the spine's layer table: ``half.crisis`` is the entry gate and is
-depended upon by no domain module. This is a domain module, so it cannot import
-that one, and the shared machinery cannot live there.
-
-The second is that the two are the same *shape* and not the same *policy*, and
-the differences are the ones that would be argued away by a shared base. Crisis
-maps ``unsure`` to **ask**, because doubt is cheap when a wrong silence costs
-the only chance anyone had; this maps it to **nothing**, because asking on doubt
+What was *not* shared is what this docstring gave as the reason not to share,
+and it holds: the two are the same shape and not the same policy. Crisis maps
+``unsure`` to **ask**, because doubt is cheap when a wrong silence costs the
+only chance anyone had; this maps it to **nothing**, because asking on doubt
 here is Half proposing a deletion on every ambiguous message. Crisis's label set
 and instructions are **clinical-review material** pinned by digest
 (``tests/test_crisis_golden.py``); these are not, and must not acquire that
-status by inheritance. Crisis is the recall instrument with the table as its
-fallback; here the table acts alone and the model only widens.
-
-The honest resolution is a third module holding what is genuinely common — a
-bounded, counted, breaker-guarded consultation over the port's narrow
-classifier, with the label policy injected — under ``half/model`` or beside it,
-which is where both sides already reach. That is a refactor across the crisis
-path, and the crisis path is Ask-First for this story. It is recorded here
-rather than done quietly.
+status by inheritance — which is exactly why the shared module holds no label
+and no instruction at all. Crisis is the recall instrument with the table as its
+fallback; here the table acts alone and the model only widens. All of that
+stayed here, along with the three numbers that differ between the callers for
+reasons, the standing candidate, and every log line.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -94,6 +90,14 @@ from typing import Final
 
 from half.correction.apply import Removal
 from half.errors import CorrectionError
+from half.model import consult
+from half.model.consult import (
+    ALARM_AFTER,
+    BREAK_AFTER,
+    PER_CALL_MICRO_USD,
+    PER_PASS_MICRO_USD,
+    REPORT_EVERY,
+)
 from half.model.port import (
     Classifier,
     Classify,
@@ -211,29 +215,27 @@ BOUND_SECONDS: Final[float] = 2.0
 #: and a name this build does not know is refused at boot.
 CLASSIFY_TIER: Final[str] = "cheap"
 
-#: Ceilings for one classification and for one process's worth of them, in
-#: millionths of a dollar. The per-call figure is the one that binds and is
-#: checked by the port's budget *before the transport is touched*; the per-pass
-#: figure is a runaway stop rather than a cost target, because spending is
-#: bounded by construction — at most one classification per inbound message, and
-#: no loop, schedule or retry can make a second.
-PER_CALL_MICRO_USD: Final[int] = 100_000
-PER_PASS_MICRO_USD: Final[int] = 500_000_000
+# The ceilings, how often the counts go out, when a rate becomes evidence and
+# how many consecutive fallbacks trip the breaker are ``half.model.consult``'s
+# and are re-exported above under the names this module has always used, so
+# every existing reader is unaffected. They were byte-identical in all three
+# consultations before story 14 moved them.
+#
+# The per-call ceiling is the one that binds and is checked by the port's budget
+# *before the transport is touched*; the per-pass one is a runaway stop rather
+# than a cost target, because spending is bounded by construction — at most one
+# classification per inbound message, and no loop, schedule or retry can make a
+# second.
 
-#: How often the running counts are written out, in consultations, and the
-#: fallback rate at which they are written out as an error instead. The rate has
-#: to be visible rather than merely reachable: a line per event tells an
-#: operator that one call failed, not that a fifth of them are failing.
-REPORT_EVERY: Final[int] = 100
+#: The fallback rate at which the counts are written out as an error instead of
+#: at ``info``. **Policy, and this main's**: the rate has to be visible rather
+#: than merely reachable — a line per event tells an operator that one call
+#: failed, not that a fifth of them are failing.
 ALARM_RATE: Final[float] = 0.2
-#: Below this many consultations a rate is arithmetic rather than evidence.
-ALARM_AFTER: Final[int] = 10
 
-#: Consecutive fallbacks that trip this main's breaker, and how many turns it
-#: stays open for. Counted in turns because nothing here reads a clock (AD-30),
-#: and per main because one main's provider being down says nothing about
-#: another's.
-BREAK_AFTER: Final[int] = 5
+#: How many turns this main's breaker stays open for once it trips. Counted in
+#: turns because nothing here reads a clock (AD-30), and per main because one
+#: main's provider being down says nothing about another's.
 BREAK_FOR: Final[int] = 50
 
 #: The only public method a holder may have. An **allowlist**, which is story
@@ -328,14 +330,13 @@ class Tally:
     def fallback_rate(self) -> float:
         """Zero consultations reads as zero rather than as an error: a build
         with no classifier wired is a supported deployment, not a fault."""
-        return self.fell_back / self.consulted if self.consulted else 0.0
+        return consult.rate(self.fell_back, self.consulted)
 
     def count_label(self, label: str) -> None:
-        self.labels[label] = self.labels.get(label, 0) + 1
+        consult.count_one(self.labels, label)
 
     def count_failure(self, failure: Failure) -> None:
-        key = f"{failure.kind}/{failure.because}"
-        self.failures[key] = self.failures.get(key, 0) + 1
+        consult.count_one(self.failures, consult.failure_key(failure))
 
 
 class Widening:
@@ -360,8 +361,7 @@ class Widening:
     """
 
     __slots__ = (
-        "_holders", "_bound", "_tally", "_consecutive", "_quiet", "_standing",
-        "_sealed",
+        "_holders", "_bound", "_tally", "_breaker", "_standing", "_sealed",
     )
 
     def __init__(
@@ -374,9 +374,7 @@ class Widening:
         given = dict(holders or {})
         for main_id, holder in given.items():
             _check_holder(main_id, holder)
-        if isinstance(bound_seconds, bool) or not isinstance(
-            bound_seconds, (int, float)
-        ) or bound_seconds <= 0:
+        if consult.refuses_as_a_bound(bound_seconds):
             raise CorrectionError(
                 f"a bound of {bound_seconds!r} is not a bound. A widening that "
                 "may run for ever is a main waiting for a reply for ever"
@@ -384,8 +382,9 @@ class Widening:
         self._holders: Mapping[str, Classifier] = MappingProxyType(given)
         self._bound = float(bound_seconds)
         self._tally = tally if tally is not None else Tally()
-        self._consecutive: dict[str, int] = {}
-        self._quiet: dict[str, int] = {}
+        #: main -> consecutive fallbacks, and main -> turns still to skip, in
+        #: the shared shape. Counted in turns, per main.
+        self._breaker = consult.Breaker(break_for=BREAK_FOR)
         #: main -> the removal Half has offered, and the turn it was offered
         #: on. Volatile by AD-26, and correctly so: this is how the conversation
         #: is *right now*, it expires by itself, and losing it costs a
@@ -517,17 +516,22 @@ class Widening:
         """The wall-clock bound for one call. The construction one unless a
         caller asked for another, and never a value that is not a bound.
 
-        ``math.isfinite`` rather than ``> 0``, which is
-        ``half.voice.gate._bound_for``'s finding and holds here identically:
-        every comparison against a NaN is ``False``, so a ``given <= 0`` test
-        admits one and ``asyncio.timeout`` then never fires — a main waiting on
-        a hung provider through the guard that exists to stop exactly that.
+        ``consult.a_bound`` — finite as well as positive — rather than
+        ``> 0``, which is ``half.voice.gate._bound_for``'s finding and holds
+        here identically: every comparison against a NaN is ``False``, so a
+        ``given <= 0`` test admits one and ``asyncio.timeout`` then never fires
+        — a main waiting on a hung provider through the guard that exists to
+        stop exactly that.
+
+        **It is the stricter of the shape's two predicates, and the difference
+        is deliberate.** The construction bound above is checked with
+        ``consult.refuses_as_a_bound``, which is what all three constructors
+        have always applied and which admits an infinite bound. Closing that is
+        a behaviour change in three callers and is not a refactor's to make.
         """
         if given is None:
             return self._bound
-        if isinstance(given, bool) or not isinstance(given, (int, float)) or (
-            not math.isfinite(given) or given <= 0
-        ):
+        if not consult.a_bound(given):
             logger.warning(
                 "the correction widening was given a bound it cannot use for "
                 "main=%s; the one it was built with stands", main_id,
@@ -538,24 +542,22 @@ class Widening:
     # -- the breaker ----------------------------------------------------------
 
     def _breaking(self, main_id: str) -> bool:
-        """Whether this main's widening is standing down. Counted, per main."""
-        left = self._quiet.get(main_id, 0)
-        if left <= 0:
+        """Whether this main's widening is standing down. Counted, per main.
+
+        The counting is the shared shape's; the *skip* is counted here, because
+        a turn the breaker declined is not a consultation and stays outside
+        every rate.
+        """
+        if not self._breaker.spend(main_id):
             return False
-        self._quiet[main_id] = left - 1
         self._tally.skipped += 1
         return True
 
     def _note(self, main_id: str, verdict: Verdict) -> None:
-        if not verdict.fell_back:
-            self._consecutive[main_id] = 0
+        """The breaker decides; the line is written here, where the scan that
+        proves no log call on this path can carry content reads it."""
+        if not self._breaker.note(main_id, failed=verdict.fell_back):
             return
-        run = self._consecutive.get(main_id, 0) + 1
-        self._consecutive[main_id] = run
-        if run < BREAK_AFTER:
-            return
-        self._consecutive[main_id] = 0
-        self._quiet[main_id] = BREAK_FOR
         logger.error(
             "the correction widening failed %d times running for main=%s and "
             "is standing down for %d turns; the table decides alone until "
@@ -565,14 +567,24 @@ class Widening:
     # -- what an operator sees ------------------------------------------------
 
     def _report(self) -> None:
-        if self._tally.consulted % REPORT_EVERY == 0:
-            self.flush()
-        elif (
-            self._tally.consulted >= ALARM_AFTER
-            and self._tally.fallback_rate >= ALARM_RATE
-            and self._tally.consulted % ALARM_AFTER == 0
-        ):
+        """Write the running counts out, every so often. Counts only (AD-22).
+
+        **The alarm is asked first, and the branch that decides it is shared.**
+        With the periodic question first and the alarm on an ``elif`` the two
+        were exclusive, so at the hundredth consultation — and every hundredth
+        after — a wholly failing widening reported at ``info`` instead of
+        ``error``, which is exactly the number an operator would look at. That
+        bug lived identically in three modules and story 13a fixed one of them;
+        it is now one branch in ``half.model.consult.due``.
+        """
+        due = consult.due(
+            self._tally.consulted, self._tally.fallback_rate,
+            alarm_rate=ALARM_RATE,
+        )
+        if due is consult.Due.ALARM:
             self.flush(alarming=True)
+        elif due is consult.Due.PERIODIC:
+            self.flush()
 
     @property
     def quiet(self) -> bool:
@@ -719,12 +731,7 @@ def _check_holder(main_id: str, holder: object) -> None:
             "method by another name. The correction path holds an object that "
             "can classify and do nothing else"
         )
-    wider = sorted(
-        name for name in dir(holder)
-        if not name.startswith("_")
-        and name not in ALLOWED_METHODS
-        and callable(getattr(holder, name, None))
-    )
+    wider = consult.wider_than(holder, ALLOWED_METHODS)
     if wider:
         raise CorrectionError(
             f"the holder for main {main_id!r} can also {', '.join(wider)}. The "

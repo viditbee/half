@@ -1105,10 +1105,16 @@ jobs:
         #   and that all three attributions read the same after the derived view
         #   is deleted and replayed (AD-4).
         #
-        # **Margin zero: 261 selected, 261 required.** Story 14 adds one, which
-        # reaches this gate through the file's own `pytestmark`: the
+        # **Margin zero: 265 selected, 265 required.** Story 14 adds four, all
+        # reaching this gate through the file's own `pytestmark`: the
         # non-vacuity case for the model-surface rule, which became a property
-        # check instead of a name check. Sized against the subset
+        # check instead of a name check; the hundredth wholly failing
+        # consultation alarming at `error` rather than reporting at `info`,
+        # which is the payoff of extracting the shape and is the branch story
+        # 13a fixed in one module of three; and the two structural cases naming
+        # which numbers are the shape's and which are this main's, and that the
+        # shape is read here rather than kept alongside a local copy.
+        # Sized against the subset
         # it protects rather than against a total, and every case here is the
         # only one asserting its rule.
         #
@@ -1142,7 +1148,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap11 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-11 correction cases collected: $collected"
-          if [ "$collected" -lt 261 ]; then
+          if [ "$collected" -lt 265 ]; then
             echo "::error::the CAP-11 gate collected $collected cases; a main may not be able to tell Half it is wrong"
             exit 1
           fi
@@ -1205,7 +1211,7 @@ jobs:
         #   green, which made the rule story 11 fixed undoable by a one-line
         #   edit in a test helper.
         #
-        # 25 selected, 25 required. Zero margin: every case is a rule.
+        # 28 selected, 28 required. Zero margin: every case is a rule.
         #
         # **Story 14 adds one**, and it is the price of a rule that changed.
         # The widening's model surface was checked by a name — every reached
@@ -1216,6 +1222,16 @@ jobs:
         # `half.model` module reached must itself reach nothing under
         # `half.model` but the port. The added case is its bypass, run against
         # a synthetic tree containing the reach it forbids.
+        #
+        # **And three more**, each asserting something no amount of behaviour
+        # can show: which numbers are the shape's and which are this main's,
+        # with the three policy numbers absent from the shape entirely; that
+        # the shape is read from one place rather than repeated here, run
+        # against the mutation it forbids; and that no label and no instruction
+        # followed the machinery out — scanned over identifiers and literals
+        # rather than prose, because this module's own label is the ordinary
+        # word `correction` and the shape's docstring uses it to name this very
+        # file while explaining what it must not know.
         #
         # Story 13b added the two that keep its inclusion check honest, and the
         # floor moves with them. ``shows`` is defined over ``shown``'s own
@@ -1237,7 +1253,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap11_structure -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-11 structural cases collected: $collected"
-          if [ "$collected" -lt 25 ]; then
+          if [ "$collected" -lt 28 ]; then
             echo "::error::the CAP-11 structure gate collected $collected cases; a rule with one case has lost it"
             exit 1
           fi
