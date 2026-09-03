@@ -1954,10 +1954,16 @@ def test_the_scheduler_is_wired_into_the_shipped_composition(tmp_path):
         # Story 11, review loop 1: the morning surface is **not** an asker and
         # has no field for an engine. Delivery is the runtime's — the wiring
         # carries the engine on ``Wiring.questions``, asserted below by value.
+        # Story 13a: the surface also holds *this* wiring's voice, compared by
+        # value for the reason everything else here is — a surface wired with a
+        # voice that has no holders is silent for every main, which is the
+        # fail-closed default and exactly the state a keyword search of the
+        # source cannot tell apart from a working one.
         assert wiring.scheduler.work == MorningPass(
             consolidate=TensionPass(ledger=wiring.registry),
             surface=MorningSurface(
-                ledger=wiring.registry, channel=wiring.channel
+                ledger=wiring.registry, channel=wiring.channel,
+                voice=wiring.voice,
             ),
         )
         assert wiring.questions == QuestionEngine(ledger=wiring.registry)

@@ -10,12 +10,13 @@ and there is no branch that looks for something to say because saying nothing
 felt like a bug. On most days the pass moves nothing, so there are no
 candidates and this module answers before it asks a platform anything.
 
-*Three of the reasons are genuine faults and are logged as such* —
-``UNREADABLE``, ``UNRECORDED`` and ``UNSENT``. The rule is not *"a silent
-morning is never an error"*; it is that **an ordinary silence is never an
-error**, and the three that are not ordinary say so at ``error`` while every
-other one says nothing above ``debug``. An earlier docstring here claimed the
-stronger sentence and the code did not implement it.
+*Five of the reasons are genuine faults and are logged as such* —
+``UNREADABLE``, ``UNRECORDED``, ``UNSENT``, and the composer's ``LEAKED`` and
+``RAISED``. The rule is not *"a silent morning is never an error"*; it is that
+**an ordinary silence is never an error**, and the ones that are not ordinary
+say so at ``error`` while every other one says nothing above ``debug``. An
+earlier docstring here claimed the stronger sentence and the code did not
+implement it.
 
 **Every outcome is counted** (AD-32, and the matrix's *one main fails →
 counted*). ``Silence`` exists because *"one unit returning None for silence and
@@ -45,11 +46,28 @@ being assembled must not receive it.
 **The ladder decides what may be said; the context builder decides how**
 (story 5a, story 4b). Nothing here re-implements either.
 
-**No model call, and no prose.** The wording of a morning message is a later
-story; what this one delivers is the choice of *what* to say and the proof that
-it may be said. The text is the context builder's own rendering of the channels
-a surface may speak from — deterministic, byte-identical for one log and one
-``now``, and carrying nothing the ladder did not admit.
+**The choice is this module's; the words are ``half.voice``'s** (story 13a).
+Until then this module put ``Context.render()`` on the wire, so a main received
+``content[b_1]: has not walked that plot since March`` — the internal
+serialization, label and belief id included. What it now does is hand the built
+context, the main's own most recent words and the withheld set to a composer
+that generates through the model port, judges the result cheaply and regenerates
+a bounded number of times.
+
+**And when the composer produces nothing, the morning is silent** (AD-27).
+Never a template: a hand-written sentence is one language's phrasing shipped to
+a worldwide product, which is the objection ``half.context.channels`` already
+records, and silence is already the ordinary outcome here. A deployment that has
+equipped nobody with a model therefore sends nothing at all, which is honest —
+before this story it sent internal scaffolding, which was not.
+
+**The words are composed *after* reachability and *before* the day is claimed**,
+and both halves of that are load-bearing. Asking the platform first is free and
+stops Half paying to write a message it may not send. Composing before the claim
+is what makes a failed generation cost no day: the main gets a quiet morning
+rather than a spent one. Story 11's review found the mirror-image bug — a favour
+spent before the thing it paid for existed — so the ordering has a test rather
+than a comment (``tests/test_morning_words.py``).
 
 **The morning surface does not ask, and that is a rule rather than an
 omission** (CAP-4, story 11). A question is bought — no `ask`-rung belief becomes
@@ -86,12 +104,13 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any, Final, Protocol
 
 from half.channel.port import Channel, Reachability, SendResult
 from half.consolidate.pass_ import PassResult, completed
 from half.context.build import build as build_context
+from half.context.build import withheld as withheld_wordings
 from half.context.channels import Context, Item
 from half.context.channels import CHANNELS as CHANNEL_NAMES
 from half.governance.ladder import License, height
@@ -106,6 +125,14 @@ from half.surface.view import (
     CLAIM_CRISIS,
     CLAIMED,
     SurfaceView,
+)
+from half.voice.compose import sample_from
+from half.voice.gate import (
+    LEAKED,
+    RAISED,
+    SILENCES,
+    Spoken,
+    Voice,
 )
 
 logger = logging.getLogger(__name__)
@@ -152,9 +179,21 @@ UNREADABLE: Final[str] = "unreadable"
 
 #: The reasons that are **faults** rather than ordinary quiet. Named once and
 #: read by the logger, so *"an ordinary silence is never logged as an error"*
-#: is a property of one set rather than of three call sites somebody kept in
+#: is a property of one set rather than of five call sites somebody kept in
 #: step.
-FAULTS: Final[frozenset[str]] = frozenset({UNREADABLE, UNRECORDED, UNSENT})
+#:
+#: Two of the composer's own reasons are in here and the other eight are not,
+#: and the line between them is the same one: *is this a normal thing to find on
+#: a normal morning?* A judge that refused every draft, a provider that was
+#: slow, a deployment with no key — ordinary, counted, quiet. ``LEAKED`` is not
+#: ordinary: it means either that a model repeated a withheld wording or that
+#: AD-18 has stopped being enforced at context construction, and the second is a
+#: launch-blocking defect that must not look like a quiet morning. ``RAISED`` is
+#: not ordinary either: the port answers a provider fault with a *value*, so a
+#: raise out of it is a mistake in this build.
+FAULTS: Final[frozenset[str]] = frozenset(
+    {UNREADABLE, UNRECORDED, UNSENT, LEAKED, RAISED}
+)
 
 #: Every reason a morning can be silent, beside the platform's own. Closed, so
 #: that a caller counting silences counts constants and never a message — an
@@ -162,10 +201,20 @@ FAULTS: Final[frozenset[str]] = frozenset({UNREADABLE, UNRECORDED, UNSENT})
 #: out of a main's own ledger (AD-22). ``Reachability``'s own refusals join
 #: them: *"Half may not send unprompted right now"* is the port's answer and
 #: the port owns its spelling (AD-7).
+#:
+#: **The composer's reasons join them whole** rather than collapsing into one
+#: ``unspoken``. They are already a closed set of constants
+#: (``half.voice.gate.SILENCES``), so nothing a main's own ledger produced can
+#: reach a counter through them — and the distinction an operator needs most on
+#: this path is between *nobody is equipped with a model*, *the judge refuses
+#: everything* and *the tripwire fired*, which one merged reason would hide.
+#: Read from the voice's own set rather than spelled again, so a reason added
+#: there cannot become a reason this module silently fails to count.
 REASONS: Final[frozenset[str]] = frozenset(
     {
         CRISIS, ALREADY_TODAY, NOTHING_TO_SAY, NOTHING_MAY_BE_SAID,
         UNREADABLE_MARKER, UNRECORDED, UNSENT, UNREADABLE,
+        *SILENCES,
         *(str(answer) for answer in Reachability if not answer.may_send_freeform),
     }
 )
@@ -202,10 +251,16 @@ class Surfaced:
     can be examined and it names the tension, loop transition or ingested item
     in the preceding pass it was built from.
 
-    ``text`` is the context builder's rendering of the channels a surface may
-    speak from. Deliberately not prose: composing the sentence is a later
-    story, and a template written here would be one language's phrasing shipped
-    to a worldwide product (see ``half.context.channels``).
+    ``text`` is what went on the wire: prose, composed through the model port
+    from the two channels the builder split, in the language the main last wrote
+    in. It carries no label, no belief id and no channel scaffolding, because
+    none of those ever reached the prompt (``half.voice.compose``) and the judge
+    refuses one that appears anyway (``half.voice.gate.scaffolding``).
+
+    **It is never written anywhere** (AD-22). It travels on this value so the
+    caller that sent it can be tested against it; the log records that a morning
+    was sent and never what it said, and there is no field on any record in
+    ``half.surface.touch`` a sentence could go in.
     """
 
     loops: tuple[str, ...]
@@ -390,6 +445,13 @@ class MorningSurface:
     #: without one, and constructed by default so the shipped path always has
     #: somewhere to put them.
     mornings: Mornings = field(default_factory=Mornings)
+    #: Who writes the sentence (story 13a). **Defaulted to a voice with no
+    #: holders**, which composes nothing for anybody — so a surface built
+    #: without one is silent rather than falling back to the internal
+    #: serialization this story exists to take off the wire. That is the
+    #: fail-closed direction: a deployment that has equipped nobody sends
+    #: nothing, and nothing is what AD-27 makes first-class.
+    voice: Voice = field(default_factory=Voice)
 
     async def surface(
         self, main_id: str, *, now: Now, candidates: Sequence[Candidate]
@@ -483,24 +545,40 @@ class MorningSurface:
                 len(choice.degraded),
             )
 
-        # 5. What may be said, and how. The ladder resolves each record's rung
-        #    under this main's ceiling and the context builder splits content
-        #    from directives; this reads the answer and never re-decides it.
+        # 5. What may be said. The ladder resolves each record's rung under this
+        #    main's ceiling and the context builder splits content from
+        #    directives; this reads the answer and never re-decides it.
         #    **Nothing is bought.** A question is delivered on the turn path
         #    (``half.actor.runtime``), and this call hands the builder no bought
         #    belief, so no morning can carry one.
-        text = self._speech(view, choice=choice, now=now)
-        if not text:
+        material = self._material(view, choice=choice)
+        context = build_context(material, now=now.stamp, ceiling=view.ceiling)
+        if not speech(context):
             return Silence(NOTHING_MAY_BE_SAID)
 
         # 6. Reachability is asked, never assumed (AD-7) — and asked here, once
-        #    there is actually something to send, so a morning the bound
-        #    silenced is not reported as an unreachable one.
+        #    there is actually something to say, so a morning the bound silenced
+        #    is not reported as an unreachable one, and **before** a provider is
+        #    paid to write a message the platform would not carry.
         reach = self.channel.capability_query(main_id)
         if not reach.may_send_freeform:
             return Silence(str(reach))
 
-        # 7. The day is claimed, then the message is sent. Claiming is one
+        # 7. How it is said, and this is the last step before anything is spent.
+        #    Composing here rather than after the claim is what makes a failed
+        #    generation cost no day: the main gets a quiet morning instead of a
+        #    spent one, and nothing is queued or retried.
+        composed = await self.voice.compose(
+            context,
+            main_id=main_id,
+            sample=sample_from(view.beliefs),
+            withheld=withheld_wordings(material, ceiling=view.ceiling),
+        )
+        if not isinstance(composed, Spoken):
+            return Silence(composed.reason)
+        text = composed.text
+
+        # 8. The day is claimed, then the message is sent. Claiming is one
         #    serialized operation: it re-asserts the mode, re-reads the marker
         #    and appends, all inside one acquire.
         claim = await self._claim(main_id, now=now, day=today, choice=choice)
@@ -612,27 +690,18 @@ class MorningSurface:
             )
             return UNRECORDED
 
-    def _speech(self, view: SurfaceView, *, choice: Choice, now: Now) -> str:
-        """The text this choice licenses, or the empty string.
+    def _material(
+        self, view: SurfaceView, *, choice: Choice
+    ) -> tuple[RankedBelief, ...]:
+        """The belief records this choice names, as the builder takes them.
 
-        The material is the belief records the choice names — **all** of them,
-        never narrowed to one loop's — handed to the context builder with this
-        main's ceiling. What comes back is split into three channels; a surface
-        speaks from two of them and never from the third, so a `behave` belief
-        shapes what is said and is never quoted in it.
-
-        The rendering is the builder's own (``Context.render``), over a context
-        with the directive channel removed. Rendering the whole context would
-        put internal shaping vocabulary on the wire; re-rendering the two
-        channels by hand would be a second renderer outside the guard that makes
-        AD-18 true. Dropping a channel cannot introduce a leak, because every
-        line that survives already passed the guard.
-
-        The empty string is where a main capped at `behave` lands, and where a
-        main whose only material is `behave` lands, and this function cannot
-        tell them apart. That is the point.
+        **All** of them, never narrowed to one loop's. Held as a value rather
+        than built twice because two things are computed from it — the context
+        the composer writes from, and the withheld set the tripwire reads — and
+        a second construction is a second chance for the two to disagree about
+        what was in the material.
         """
-        material = tuple(
+        return tuple(
             RankedBelief(
                 id=ident,
                 claim=_claim_of(view.beliefs.get(ident)),
@@ -642,14 +711,6 @@ class MorningSurface:
             )
             for ident in choice.entries
         )
-        # No ``bought`` argument, and that is the rule rather than an omission:
-        # the channel is bought by what the builder is *handed*, and this caller
-        # hands it nothing, so a morning cannot carry a question however the
-        # ladder resolves its material (CAP-4).
-        context = build_context(material, now=now.stamp, ceiling=view.ceiling)
-        if not speech(context):
-            return ""
-        return replace(context, directives=()).render()
 
 
 class ConsolidationPass(Protocol):

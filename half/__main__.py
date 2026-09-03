@@ -40,12 +40,17 @@ from half.errors import HalfError, ModelError
 from half.model.anthropic import AnthropicProvider
 from half.model.anthropic_transport import SDKTransport
 from half.model.budget import Budget
-from half.model.port import Classifier
+from half.model.port import Classifier, Generator
 from half.model.tier import Tiers
 from half.questions.engine import QuestionEngine
 from half.schedule.tick import Scheduler
 from half.surface.morning import MorningPass, Mornings, MorningSurface
 from half.secrets import FileSecretStore
+from half.voice.gate import (
+    PER_CALL_MICRO_USD as VOICE_PER_CALL_MICRO_USD,
+    PER_PASS_MICRO_USD as VOICE_PER_PASS_MICRO_USD,
+    Voice,
+)
 from half.store.sources import LocalSourceStore
 from half.store.store import Store
 
@@ -90,6 +95,15 @@ class Wiring:
     #: supported shape rather than a broken one — the table acts alone and no
     #: model is anywhere on the path that removes a belief.
     corrections: Widening
+    #: Who writes the morning's sentence (CAP-8, story 13a). Always constructed
+    #: and possibly empty — and here an empty one has a **visible** consequence,
+    #: which the other two do not: a main with no generator receives no
+    #: unprompted message at all. That is deliberate. Before this story the
+    #: morning put ``Context.render()`` on the wire, so an unequipped deployment
+    #: sent its own internal serialization; sending nothing is the honest
+    #: version of the same state (AD-27), and a template is the one fallback
+    #: this product cannot ship worldwide.
+    voice: Voice
 
 
 def build(config: Config, token: str) -> Wiring:
@@ -136,8 +150,13 @@ def build(config: Config, token: str) -> Wiring:
     # it may be said, and sends it — or, on most mornings, sends nothing, which
     # is the ordinary outcome and not a degraded one (AD-27).
     #
-    # No model call anywhere on this path. Composing the sentence is a later
-    # story; what runs here decides *what* to say and whether it may be said.
+    # **Half speaks here** (story 13a). Until then this path put
+    # ``Context.render()`` on the wire — ``content[b_1]: has not walked that
+    # plot since March`` — so the last launch blocker that could be closed by
+    # building was open in the shipped composition. ``voices`` below equips each
+    # main with the port's narrow generator; the surface composes through it
+    # after asking the platform and before claiming the day, and says nothing at
+    # all when it cannot.
     #
     # Wired **by value**: the surface is handed this wiring's own registry and
     # this wiring's own channel, so that "the morning surface reaches the
@@ -150,6 +169,12 @@ def build(config: Config, token: str) -> Wiring:
     # second write to one main — that is still the actor's mutex, and the tick
     # goes through it like everything else.
     mornings = Mornings()
+    # Who writes the sentence (story 13a). Built before the scheduler because
+    # the surface holds it, and wired **by value** for the reason everything
+    # else here is: *"Half speaks in the shipped product"* has to be assertable
+    # by identity rather than by finding a keyword in the source, which is how
+    # story 6d's identical claim passed with the value set to ``None``.
+    voice = voices(config, secrets)
     scheduler = Scheduler(
         registry=registry,
         mains=tuple(config.mains.values()),
@@ -162,7 +187,13 @@ def build(config: Config, token: str) -> Wiring:
             # scheduler tick is not a conversation. Delivery is the runtime's,
             # below.
             surface=MorningSurface(
-                ledger=registry, channel=channel, mornings=mornings
+                ledger=registry, channel=channel, mornings=mornings,
+                # **The composer reaches the shipped product here and nowhere
+                # else.** Without it the surface holds a ``Voice`` with no
+                # holders and is silent for everybody — the fail-closed default,
+                # and the right one: a Half that cannot compose must not fall
+                # back to putting its own scaffolding on the wire.
+                voice=voice,
             ),
         ),
     )
@@ -171,7 +202,80 @@ def build(config: Config, token: str) -> Wiring:
                   sources=sources, scheduler=scheduler, mornings=mornings,
                   second=second_opinion(config, secrets),
                   questions=QuestionEngine(ledger=registry),
-                  corrections=widening(config, secrets))
+                  corrections=widening(config, secrets), voice=voice)
+
+
+def voices(config: Config, secrets: FileSecretStore) -> Voice:
+    """The morning composer, for the mains a deployment has equipped (13a).
+
+    Built beside ``second_opinion`` and ``widening`` and on exactly their terms
+    — a per-main narrow holder, its own budget, every failure leaving that main
+    unequipped and the process running — with three differences worth stating.
+
+    **The narrow holder is a ``Generator``, and it is the widest holder in this
+    file.** ``generator()`` hands back an object with one method that returns
+    text: no ledger to reset, no batcher to reach, no classifier to borrow.
+    ``Voice`` refuses anything wider, so this is checked rather than intended.
+    The crisis path takes an object that *cannot* produce text; this one takes
+    the object that can, and nothing beyond it.
+
+    **The tier is the main's own** (AD-20), where crisis pins one tier for
+    everybody and correction pins the cheap one. Those two are detection
+    quality, which CAP-12 forbids gating on payment and which is the same
+    question for every main. This is the sentence the main reads, and what a
+    deployment pays for a main's conversation is exactly the decision AD-20 puts
+    on the main.
+
+    **A main with no tier is refused rather than defaulted**, which is AD-20's
+    own rule and has a consequence worth being explicit about: a deployment that
+    sets ``HALF_MAINS`` and not ``HALF_MODEL_TIERS`` sends no unprompted
+    mornings. A silent fallback tier is either a bill nobody authorised or a
+    quality regression nobody sees, and a silent fallback *template* is the
+    thing this story exists to refuse.
+
+    **Its own provider, and therefore its own ledger.** A provider's spend is
+    shared by everything it hands out, so reusing the crisis one would let a
+    morning draw down the budget the crisis path runs on.
+    """
+    holders: dict[str, Generator] = {}
+    for main_id in config.mains.values():
+        tier = config.tier_for(main_id)
+        if tier is None:
+            logger.warning(
+                "main=%s has no model tier configured; Half will not send them "
+                "an unprompted morning. There is no default tier by design "
+                "(AD-20), and no written fallback message by design (AD-27)",
+                main_id,
+            )
+            continue
+        try:
+            provider = AnthropicProvider(
+                SDKTransport.from_secrets(secrets, main_id),
+                tiers=Tiers.parse({main_id: tier}),
+                budget=Budget(
+                    per_call_micro_usd=VOICE_PER_CALL_MICRO_USD,
+                    per_pass_micro_usd=VOICE_PER_PASS_MICRO_USD,
+                ),
+            )
+            holders[main_id] = provider.generator()
+        except Exception as exc:  # noqa: BLE001 - a boot must not die here
+            # No key, an unreadable credential file, an unknown tier, a missing
+            # SDK. Each is a deployment that has not equipped this main for an
+            # unprompted message, and none is a reason to hold up a Half that
+            # still answers everything they say. The class only — a provider's
+            # own message can quote what it was sent (AD-22).
+            logger.warning(
+                "main=%s has no usable model (%s); they receive no unprompted "
+                "morning", main_id, type(exc).__name__,
+            )
+    try:
+        return Voice(holders)
+    except Exception as exc:  # noqa: BLE001 - nor here
+        logger.error(
+            "the morning composer could not be assembled (%s); no main "
+            "receives an unprompted morning", type(exc).__name__,
+        )
+        return Voice()
 
 
 def widening(config: Config, secrets: FileSecretStore) -> Widening:
@@ -344,6 +448,11 @@ async def serve(config: Config, token: str) -> None:
         # that ran for a week proposing a candidate on every turn and having
         # none confirmed would otherwise end with nothing anywhere saying so.
         wiring.corrections.flush()
+        # And what the composer did — counts only (AD-22). A process that ran
+        # for a week composing nothing that passed the judge would otherwise end
+        # with nothing anywhere saying so, which looks exactly like a week in
+        # which nobody had anything worth hearing.
+        wiring.voice.flush()
         wiring.registry.close()
 
 

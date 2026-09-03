@@ -58,6 +58,99 @@ def seed_belief(
     return store.state().beliefs[ident]
 
 
+#: The one sentence the shared morning double writes. It shares **no adjacent
+#: word pair** with any claim any fixture in this suite seeds, which is
+#: load-bearing twice over: the AD-18 tripwire refuses a morning that repeats a
+#: withheld wording, and a double whose output happened to collide with one
+#: would silence every morning in the suite for a reason nobody would look for.
+COMPOSED: Final[str] = "sunlight on the veranda, and a whole Tuesday ahead"
+
+#: The main's own last message, as ``half.actor.runtime`` records it. Present so
+#: the composer has a language to answer in — a fixture without one is a main
+#: Half has never heard from, and gets no unprompted message at all.
+LAST_MESSAGE: Final[str] = "morning — still turning that over"
+
+
+def seed_message(store, text=LAST_MESSAGE, *, ident="b_said", t="2026-08-31T00:00:00Z"):
+    """The main's own message, exactly as the turn path writes one.
+
+    ``half.actor.runtime._pipeline`` appends every inbound message as a
+    `stated`-ledger belief whose claim is the main's own words, admitted at the
+    weakest rung. That record is what ``half.channel.window`` rebuilds
+    reachability from and what ``half.voice.compose.sample_from`` reads the
+    language off, so a fixture that omits it is not a simplified main — it is a
+    main who has never written, whom Half may not contact at all.
+    """
+    return seed_belief(store, ident, t, subject="self", claim=text,
+                       **{"ledger": "stated"})
+
+
+def quotable_of(work) -> str:
+    """The ``may-be-said`` block out of a generation request, as a model sees it.
+
+    Read off the assembled turn rather than off the ``Context``, because that is
+    the only thing a generator is ever handed — so a double built on it cannot
+    accidentally quote material the composer withheld, and a test that asserts a
+    claim reached the wire is asserting it reached the *prompt* first.
+    """
+    from half.voice.compose import MAY_BE_SAID
+
+    for block in work.prompt.turns[0].text.split("\n\n"):
+        if block.startswith(MAY_BE_SAID):
+            return block[len(MAY_BE_SAID):].strip()
+    return ""
+
+
+def stub_voice(text=None, *, mains=("vidit",), **kwargs):
+    """A ``Voice`` that composes for ``mains`` and for nobody else.
+
+    The double holds the port's narrow ``Generator`` — one public method — so it
+    is held to exactly the shape ``Voice`` refuses anything wider than. Every
+    surface fixture in the suite goes through this rather than each file
+    inventing its own, for the reason the door predicate above lives here: a
+    double worth having twice is worth having once.
+
+    **By default it writes ``COMPOSED`` and then repeats the quotable block**,
+    which is what a real generator does with material it is licensed to state.
+    That default is doing work: it makes the suite's *"this claim reached the
+    wire"* and *"that claim did not"* assertions real ones. A double that
+    answered a fixed sentence would satisfy the second for every claim in the
+    tree — including the ones AD-18 is supposed to be withholding — so the
+    behave-material cases would have passed with the two channels merged.
+
+    ``text`` overrides it with a fixed string, or with a callable taking the
+    ``Generate`` and returning whatever a case needs.
+    """
+    from half.model.port import Completion, Usage
+    from half.voice.gate import Voice
+
+    def echo(work):
+        said = quotable_of(work)
+        return f"{COMPOSED} {said}".strip()
+
+    answer = echo if text is None else text
+
+    class _Holder:
+        def __init__(self, reply):
+            self._reply = reply
+            self._seen = []
+
+        async def generate(self, work):
+            self._seen.append(work)
+            reply = self._reply(work) if callable(self._reply) else self._reply
+            if isinstance(reply, str):
+                return Completion(text=reply, usage=Usage(micro_usd=9_000))
+            return reply
+
+        @property
+        def _requests(self):
+            return self._seen
+
+    return Voice(
+        {main: _Holder(answer) for main in mains}, bound_seconds=1.0, **kwargs
+    )
+
+
 @pytest.fixture
 def store(tmp_path):
     with Store(tmp_path / "main") as s:

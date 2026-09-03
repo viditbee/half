@@ -38,6 +38,7 @@ import ast
 import asyncio
 import inspect
 import logging
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -91,7 +92,14 @@ from half.surface.touch import Origin
 from half.surface.view import VISIBLE, SurfaceView, narrowed, view_fields
 from half.tensions.states import STATE, TensionState
 
-from tests.conftest import FakeTransport, msg, seed_belief
+from tests.conftest import (
+    COMPOSED,
+    FakeTransport,
+    msg,
+    seed_belief,
+    seed_message,
+    stub_voice,
+)
 
 pytestmark = pytest.mark.cap8
 
@@ -227,12 +235,23 @@ def seed_tension(store, *, ident="x_1", pair=("b_1", "b_2"), moves=None,
                     support=[f"s_{side}", f"s_more_{side}"], **fields)
 
 
-def a_main(root, main_id="vidit", **kwargs):
-    """A main with one loop and one tension over two entries on it."""
+def a_main(root, main_id="vidit", *, written=True, **kwargs):
+    """A main with one loop, one tension over two entries on it, and a message.
+
+    **The message is not decoration.** ``half.actor.runtime`` records every
+    inbound message as a `stated`-ledger belief, and story 13a reads the
+    language a morning is written in off the newest of them. A fixture without
+    one is a main who has never written — whom story 2's ``capability_query``
+    forbids Half from contacting unprompted anyway — so leaving it out would
+    have made every case below assert silence for a reason none of them is
+    about.
+    """
     with Store(Path(root) / main_id) as store:
         if kwargs.get("loop", "swim-weekly") is not None:
             seed_loop(store)
         seed_tension(store, **kwargs)
+        if written:
+            seed_message(store)
 
 
 def run_pass(registry, main_id="vidit", now=NOW):
@@ -240,11 +259,21 @@ def run_pass(registry, main_id="vidit", now=NOW):
 
 
 def surface(registry, channel, *, main_id="vidit", now=NOW, candidates=None,
-            mornings=None):
+            mornings=None, voice=None):
+    """One morning, driven end to end.
+
+    ``voice`` defaults to the suite's shared double (``tests/conftest``), which
+    composes one fixed sentence through the port's narrow generator. It is not
+    optional in the way it looks: a ``MorningSurface`` built without one holds a
+    ``Voice`` with no holders and is silent for everybody, which is the
+    fail-closed default story 13a ships — so a case that wants a message must
+    say who writes it.
+    """
     if candidates is None:
         candidates = run_pass(registry, main_id, now).candidates
     made = MorningSurface(
-        ledger=registry, channel=channel, mornings=mornings or Mornings()
+        ledger=registry, channel=channel, mornings=mornings or Mornings(),
+        voice=voice if voice is not None else stub_voice(mains=(main_id,)),
     )
     return asyncio.run(made.surface(main_id, now=now, candidates=candidates))
 
@@ -372,6 +401,7 @@ def test_a_candidate_that_names_no_loop_is_bounded_by_the_day_and_the_pass(
     """
     with Store(tmp_path / "vidit") as store:
         seed_tension(store, loop=None)
+        seed_message(store)
     channel = FakeChannel()
     first = surface(registry, channel)
     assert isinstance(first, Surfaced) and first.loops == ()
@@ -474,6 +504,7 @@ def test_several_candidates_send_exactly_one(registry, tmp_path):
         seed_loop(store, "learn-tabla", timescale="months", ident="l_2")
         seed_tension(store, ident="x_1", pair=("b_1", "b_2"), loop="swim-weekly")
         seed_tension(store, ident="x_2", pair=("b_3", "b_4"), loop="learn-tabla")
+        seed_message(store)
 
     result = run_pass(registry)
     assert len(result.candidates) == 2, "fixture produced fewer than two"
@@ -996,6 +1027,7 @@ def test_a_surface_speaks_exactly_when_the_capped_rung_reaches_speaks_at(
     with Store(tmp_path / "vidit") as store:
         seed_loop(store)
         seed_tension(store, rungs=(own, own))
+        seed_message(store)
     if cap is not ladder.TOP:
         set_ceiling(registry, "vidit", cap)
 
@@ -1194,6 +1226,7 @@ def test_behave_material_shapes_the_surface_and_is_never_quoted(
                     claim="has swum twice this month", loop="swim-weekly",
                     support=["s_b_1", "s_more"], topics=["swimming"],
                     rung=License.ASSERT)
+        seed_message(store)
 
     channel = FakeChannel()
     assert isinstance(surface(registry, channel), Surfaced)
@@ -1244,6 +1277,7 @@ def test_a_tension_across_two_loops_is_spoken_with_both_its_entries(
         seed_belief(store, "b_1", MOVED, subject="self", claim=a_claim("b_1"),
                     loop="swim-weekly", rung=License.ASSERT,
                     support=["s_b_1", "s_more"], topics=["swimming"])
+        seed_message(store)
 
     channel = FakeChannel()
     outcome = surface(registry, channel)
@@ -1338,7 +1372,8 @@ def test_a_main_who_enters_the_mode_mid_morning_is_still_suspended(
             return await self.inner.claim_day(main_id, **kwargs)
 
     channel = FakeChannel()
-    made = MorningSurface(ledger=EnteringMidway(registry), channel=channel)
+    made = MorningSurface(ledger=EnteringMidway(registry), channel=channel,
+                             voice=stub_voice())
     outcome = asyncio.run(
         made.surface("vidit", now=NOW, candidates=candidates)
     )
@@ -1365,7 +1400,8 @@ def test_the_scheduler_also_refuses_to_run_the_pass_for_a_main_in_the_mode(
         clock=FrozenClock(at=NOON),
         work=MorningPass(
             consolidate=TensionPass(ledger=registry),
-            surface=MorningSurface(ledger=registry, channel=channel),
+            surface=MorningSurface(ledger=registry, channel=channel,
+                                   voice=stub_voice()),
         ),
     ).tick())
     assert result.suspended == ("vidit",) and result.ran == ()
@@ -1518,7 +1554,8 @@ def test_a_missed_window_sends_nothing_and_queues_nothing(registry, tmp_path):
     ))
     work = MorningPass(
         consolidate=TensionPass(ledger=registry),
-        surface=MorningSurface(ledger=registry, channel=channel),
+        surface=MorningSurface(ledger=registry, channel=channel,
+                               voice=stub_voice()),
     )
     missed = asyncio.run(Scheduler(
         registry=registry, mains=("vidit",), root=tmp_path,
@@ -1650,7 +1687,8 @@ def test_only_a_fault_is_logged_as_an_error(registry, tmp_path, caplog):
             outcome = surface(registry, channel)
             assert isinstance(outcome, Silence) and not outcome.fault
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
-    assert FAULTS == {"unreadable", "unrecorded", "unsent"}
+    assert FAULTS == {"unreadable", "unrecorded", "unsent", "leaked",
+                      "raised"}
 
 
 def test_a_surface_that_raises_never_fails_the_tick(registry, tmp_path):
@@ -1670,7 +1708,8 @@ def test_a_surface_that_raises_never_fails_the_tick(registry, tmp_path):
         clock=FrozenClock(at=NOON),
         work=MorningPass(
             consolidate=TensionPass(ledger=registry),
-            surface=MorningSurface(ledger=registry, channel=Exploding()),
+            surface=MorningSurface(ledger=registry, channel=Exploding(),
+                                   voice=stub_voice()),
         ),
     ).tick())
     assert result.ran == ("vidit",) and result.failed == ()
@@ -1720,7 +1759,8 @@ def test_two_overlapping_mornings_send_once(registry, tmp_path):
     candidates = run_pass(registry).candidates
 
     async def both():
-        made = MorningSurface(ledger=Interleaving(registry), channel=channel)
+        made = MorningSurface(ledger=Interleaving(registry), channel=channel,
+                              voice=stub_voice())
         return await asyncio.gather(
             made.surface("vidit", now=NOW, candidates=candidates),
             made.surface("vidit", now=NOW, candidates=candidates),
@@ -1761,7 +1801,8 @@ def test_a_day_that_cannot_be_claimed_stops_the_send(registry, tmp_path):
     a_main(tmp_path)
     channel = FakeChannel()
     outcome = asyncio.run(
-        MorningSurface(ledger=NoWrite(registry), channel=channel).surface(
+        MorningSurface(ledger=NoWrite(registry), channel=channel,
+                       voice=stub_voice()).surface(
             "vidit", now=NOW, candidates=run_pass(registry).candidates
         )
     )
@@ -1835,7 +1876,8 @@ def test_a_derived_view_behind_the_log_does_not_lose_the_day(
     fresh = ActorRegistry(tmp_path)
     try:
         outcome = asyncio.run(
-            MorningSurface(ledger=fresh, channel=channel).surface(
+            MorningSurface(ledger=fresh, channel=channel,
+                           voice=stub_voice()).surface(
                 "vidit", now=NOW,
                 candidates=[Candidate(origin=TENSION_ORIGIN,
                                       entries=("b_1", "b_2"))],
@@ -1875,7 +1917,8 @@ def test_a_ceiling_the_derived_view_has_not_caught_up_to_still_caps(
     channel = FakeChannel()
     try:
         outcome = asyncio.run(
-            MorningSurface(ledger=fresh, channel=channel).surface(
+            MorningSurface(ledger=fresh, channel=channel,
+                           voice=stub_voice()).surface(
                 "vidit", now=NOW,
                 candidates=[Candidate(origin=TENSION_ORIGIN,
                                       entries=("b_1", "b_2"))],
@@ -1911,7 +1954,8 @@ def test_a_raise_the_derived_view_has_not_caught_up_to_still_bounds(
     channel = FakeChannel()
     try:
         outcome = asyncio.run(
-            MorningSurface(ledger=fresh, channel=channel).surface(
+            MorningSurface(ledger=fresh, channel=channel,
+                           voice=stub_voice()).surface(
                 "vidit", now=NOW,
                 candidates=[Candidate(origin=TENSION_ORIGIN,
                                       entries=("b_1", "b_2"))],
@@ -1973,7 +2017,8 @@ def test_the_surface_runs_before_the_pass_reports_itself_incomplete(
     channel = FakeChannel()
     work = MorningPass(
         consolidate=Incomplete(),
-        surface=MorningSurface(ledger=registry, channel=channel),
+        surface=MorningSurface(ledger=registry, channel=channel,
+                               voice=stub_voice()),
     )
     with pytest.raises(TensionPassIncomplete):
         asyncio.run(work.run("vidit", NOW))
@@ -1985,7 +2030,8 @@ def test_a_complete_pass_surfaces_and_returns_none(registry, tmp_path):
     channel = FakeChannel()
     work = MorningPass(
         consolidate=TensionPass(ledger=registry),
-        surface=MorningSurface(ledger=registry, channel=channel),
+        surface=MorningSurface(ledger=registry, channel=channel,
+                               voice=stub_voice()),
     )
     assert asyncio.run(work.run("vidit", NOW)) is None
     assert len(channel.sent) == 1
@@ -2011,6 +2057,11 @@ def test_the_surface_is_wired_into_the_shipped_composition_by_value(tmp_path):
         assert work.surface.channel is wiring.channel
         # The counter is the process's, so every morning has somewhere to go.
         assert work.surface.mornings is wiring.mornings
+        # Story 13a: and *this* wiring's composer, by identity. A surface built
+        # with a voice of its own would be a Half that speaks in a test and is
+        # silent in the product, which is the failure this whole case exists
+        # for, one story on.
+        assert work.surface.voice is wiring.voice
     finally:
         wiring.registry.close()
 
@@ -2030,6 +2081,17 @@ def test_the_shipped_wiring_actually_sends_one_morning_message(tmp_path):
         # recipient rule (AD-25), the reachability check (AD-7) and the
         # chunking all live in the adapter.
         wiring.channel.transport = transport
+        # And the *provider* is replaced, at exactly the same seam and for
+        # exactly the same reason (story 13a). This deployment has no key and
+        # no tier, so ``voices`` equipped nobody and the shipped morning is
+        # correctly silent — which is asserted on its own terms in
+        # ``tests/test_morning_words.py``. Everything above the provider is the
+        # object the product built: this wiring's registry, channel, counter,
+        # scheduler, pass and surface.
+        wiring.scheduler.work = replace(
+            wiring.scheduler.work,
+            surface=replace(wiring.scheduler.work.surface, voice=stub_voice()),
+        )
         wiring.channel.reach.note_inbound("vidit", epoch=NOON - 3600)
         asyncio.run(wiring.registry.note_pass(
             "vidit", t=stamp(NOON - 600),
@@ -2055,7 +2117,12 @@ def test_the_shipped_wiring_says_nothing_to_a_main_who_has_never_written(
     from half.__main__ import build
     from half.config import MAINS_ENV, ROOT_ENV, load
 
-    a_main(tmp_path)
+    # **Never written**, which is what makes the platform refuse — and, since
+    # story 13a, also what leaves Half with no language to answer in. The two
+    # are the same fact seen from two sides (``half.voice.compose``), and this
+    # case is about the first: the *platform* is asked and says no, before
+    # anything is composed.
+    a_main(tmp_path, written=False)
     config = load({ROOT_ENV: str(tmp_path), MAINS_ENV: "123:vidit"})
     wiring = build(config, token="123:fake")
     transport = FakeTransport()
@@ -2083,12 +2150,21 @@ def test_the_shipped_wiring_says_nothing_to_a_main_who_has_never_written(
 
 @pytest.mark.offline
 @pytest.mark.cap8_structure
-def test_no_model_is_reachable_from_the_surface_package():
-    """*"No model call — composing the sentence is a later story."*
+def test_the_surface_reaches_a_model_only_through_the_voice():
+    """*"The choice is this module's; the words are ``half.voice``'s."*
 
-    Asserted structurally, because *"it does not call a model today"* decays
-    the first time somebody reaches for one — and the reach would be invisible:
-    a morning message composed by a model still looks like a morning message.
+    The rule this case was written for — *no model call at all* — was right
+    while composing the sentence was a later story, and story 13a is that
+    story. What replaces it is **narrower rather than looser**: the surface
+    still names no model, no provider and no SDK anywhere. It holds a ``Voice``
+    it was handed, and that object holds one narrow generator per main which
+    ``half.voice.gate`` refused unless ``generate`` was its only public method.
+
+    So a surface that constructed a provider of its own, resolved a tier of its
+    own or reached a transport would fail here exactly as it did before — and
+    the thing that made the old rule worth having still holds, because the reach
+    would be invisible: a morning composed by a model still looks like a
+    morning.
     """
     imported: set[str] = set()
     for path in sorted((ROOT / "half" / "surface").rglob("*.py")):
@@ -2102,6 +2178,10 @@ def test_no_model_is_reachable_from_the_surface_package():
         if name.startswith("half.model") or name in {"anthropic", "httpx"}
     )
     assert not offenders, f"the surface package can reach a model: {offenders}"
+    # And the one door it does have is the voice package, named rather than
+    # merely permitted: a surface that stopped importing it would be a surface
+    # that has stopped speaking, and this says so out loud.
+    assert {"half.voice.compose", "half.voice.gate"} <= imported
 
 
 @pytest.mark.offline
