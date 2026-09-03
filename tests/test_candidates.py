@@ -28,6 +28,7 @@ import pytest
 
 from half.consolidate.candidates import (
     BOTH,
+    CEILING,
     Couple,
     Entry,
     couples,
@@ -96,6 +97,29 @@ def filler(count, *, at=BEFORE, prefix="b_pad"):
     ]
 
 
+def as_production_writes(count, *, at=AFTER, prefix="b_self"):
+    """Beliefs shaped the way ``half/actor/runtime.py:700`` shapes them.
+
+    **One subject, ``"self"``, on every one of them** — which is what the only
+    production belief-subject writer sets, and therefore the ledger every real
+    main has. ``filler`` above gives each padding belief its own subject, which
+    is the single shape that keeps the subject set from growing; every growth
+    case that pads with it is asserting a fact about the fixture as much as
+    about ``couples``, and review found exactly that. So this is the companion:
+    the same growth questions asked against the data Half actually writes,
+    where the subject set *is* the ledger and only the ceiling bounds anything.
+
+    Stamped ``AFTER`` rather than ``BEFORE``, because on real data these are
+    also all candidates — the degenerate case is both comparison sets and the
+    candidate set being the same whole ledger at once.
+    """
+    return [
+        row(f"{prefix}_{index}", at=at, subject="self",
+            ledger="revealed" if index % 2 else "stated")
+        for index in range(count)
+    ]
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # matrix: new or changed — the candidate set
 # ═════════════════════════════════════════════════════════════════════════════
@@ -112,7 +136,7 @@ def test_nothing_changed_produces_no_candidates_and_no_couples():
     and no mint — the whole of an ordinary night."""
     known = table(row("b_1", at=BEFORE), row("b_2", at=BEFORE))
     assert fresh(known, since=since(LAST_PASS)) == ()
-    assert couples(known, since=since(LAST_PASS), loops=()) == ()
+    assert couples(known, since=since(LAST_PASS), loops=()).within == ()
 
 
 def test_a_first_pass_with_no_watermark_treats_everything_as_new():
@@ -162,7 +186,7 @@ def test_a_changed_entry_is_compared_against_this_mains_loops():
         row("b_changed", at=AFTER, subject="paragliding"),
         row("b_wanting", at=BEFORE, subject="flying", loop="fly-more"),
     )
-    found = couples(known, since=since(LAST_PASS), loops=("fly-more",))
+    found = couples(known, since=since(LAST_PASS), loops=("fly-more",)).within
     assert names_of(found) == {frozenset({"b_changed", "b_wanting"})}
 
 
@@ -172,7 +196,7 @@ def test_a_changed_entry_is_compared_against_beliefs_sharing_its_subject():
         row("b_changed", at=AFTER, subject="farmland"),
         row("b_mate", at=BEFORE, subject="farmland"),
     )
-    found = couples(known, since=since(LAST_PASS), loops=())
+    found = couples(known, since=since(LAST_PASS), loops=()).within
     assert names_of(found) == {frozenset({"b_changed", "b_mate"})}
 
 
@@ -191,7 +215,7 @@ def test_a_changed_entry_is_never_compared_against_anything_else():
         row("b_subject", at=BEFORE, subject="farmland"),
         row("b_other", at=BEFORE, subject="knives"),
     )
-    found = names_of(couples(known, since=since(LAST_PASS), loops=("fly-more",)))
+    found = names_of(couples(known, since=since(LAST_PASS), loops=("fly-more",)).within)
     assert found == {
         frozenset({"b_changed", "b_loop"}),
         frozenset({"b_changed", "b_subject"}),
@@ -216,12 +240,12 @@ def test_an_entry_with_no_subject_shares_one_with_nobody():
         row("b_2", at=BEFORE, subject=None),
     )
     assert sharing_subject(known, subject=None) == ()
-    assert couples(known, since=since(LAST_PASS), loops=()) == ()
+    assert couples(known, since=since(LAST_PASS), loops=()).within == ()
 
 
 def test_a_candidate_is_never_compared_with_itself():
     known = table(row("b_1", at=AFTER, subject="self"))
-    assert couples(known, since=None, loops=()) == ()
+    assert couples(known, since=None, loops=()).within == ()
 
 
 def test_one_pair_is_one_couple_however_many_ways_it_is_reached():
@@ -231,7 +255,7 @@ def test_one_pair_is_one_couple_however_many_ways_it_is_reached():
         row("b_1", at=AFTER, subject="farmland", loop="buy-farmland"),
         row("b_2", at=AFTER, subject="farmland", loop="buy-farmland"),
     )
-    found = couples(known, since=since(LAST_PASS), loops=("buy-farmland",))
+    found = couples(known, since=since(LAST_PASS), loops=("buy-farmland",)).within
     assert len(found) == 1
 
 
@@ -249,7 +273,7 @@ def grown(pad, *, loops=("buy-farmland",)):
         row("b_subject", at=BEFORE, subject="farmland", ledger="revealed"),
         *filler(pad),
     )
-    return couples(known, since=since(LAST_PASS), loops=loops)
+    return couples(known, since=since(LAST_PASS), loops=loops).within
 
 
 @pytest.mark.cap7_minting
@@ -312,7 +336,7 @@ def test_the_count_grows_with_the_comparison_sets_and_not_with_the_ledger():
             ],
             *filler(40),
         )
-        assert len(couples(known, since=since(LAST_PASS), loops=())) == mates
+        assert len(couples(known, since=since(LAST_PASS), loops=()).within) == mates
 
 
 @pytest.mark.cap7_minting
@@ -332,8 +356,114 @@ def test_the_count_grows_with_the_candidate_set_and_not_with_the_ledger():
         # Every changed entry against the one mate, plus the changed entries
         # among themselves — which is the candidate set's own size, and never
         # the ledger's.
-        found = couples(known, since=since(LAST_PASS), loops=())
+        found = couples(known, since=since(LAST_PASS), loops=()).within
         assert len(found) == changed + changed * (changed - 1) // 2
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# matrix: a first pass on real data — the ceiling, on the shape production writes
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.cap7_minting
+@pytest.mark.parametrize("size", [20, 40, 80, 200])
+def test_the_ceiling_bounds_the_count_on_the_shape_production_writes(size):
+    """Matrix: *a first pass on real data*. **Never all-pairs, in fact.**
+
+    Every growth case above pads with ``filler``, which gives each padding
+    belief its own subject — the one shape that keeps the subject set from
+    growing. That makes those cases assertions about the fixture as much as
+    about ``couples``, and it hid this: with ``since is None`` and every belief
+    on ``subject="self"``, which is what the only production belief-subject
+    writer sets, ``couples`` produced exactly ``n(n-1)/2``. Not *"scaling with
+    the ledger"* — literally the complete pair set, 20 → 190, 40 → 780,
+    80 → 3160, and 398k couples in 8.9s and 79MB at four thousand beliefs.
+
+    So this asserts an **upper bound** rather than an equality, because on this
+    shape there is no fixed number to assert: the count may be anything up to
+    the ceiling and must never be past it.
+    """
+    known = table(*as_production_writes(size))
+    assert len(known) == size
+    found = couples(known, since=None, loops=())
+
+    all_pairs = size * (size - 1) // 2
+    assert len(found.within) <= CEILING
+    assert len(found.within) == min(all_pairs, CEILING)
+    assert found.ceiling_reached is (all_pairs > CEILING)
+
+
+@pytest.mark.cap7_minting
+def test_the_ceiling_case_would_fail_against_the_unbounded_bound():
+    """Non-vacuity for the case above: at the largest size the unbounded code
+    produced a number the ceiling forbids, so the assertion is a difference
+    rather than an arithmetic identity."""
+    assert 200 * 199 // 2 == 19_900 > CEILING
+    # And the ceiling is not so loose that the sweep never reaches it: the
+    # smallest size in it is under the ceiling and the largest is well over.
+    assert 20 * 19 // 2 < CEILING < 200 * 199 // 2
+
+
+@pytest.mark.cap7_minting
+def test_the_ceiling_is_spent_before_it_is_exceeded_and_not_trimmed_after():
+    """CAP-7's amended row: *spent before it is exceeded, like the judgement
+    budget*.
+
+    A build that produced the whole pair set and then sliced it would satisfy
+    every count above while holding all 398k couples in memory first — which is
+    the cost the ceiling exists to refuse, and the 79MB was held before any
+    trimming could have run. Asserted the only way a pure function can be:
+    with a ceiling of two over a ledger whose pair set is far larger, the
+    couples returned are the first two the bound produced in the belief table's
+    own order, which is only true of a build that stopped.
+    """
+    known = table(*as_production_writes(30))
+    stopped = couples(known, since=None, loops=(), ceiling=2)
+    whole = couples(known, since=None, loops=(), ceiling=CEILING)
+
+    assert len(stopped.within) == 2 and stopped.ceiling_reached
+    assert len(whole.within) == 435 and not whole.ceiling_reached
+    assert [item.id for item in stopped.within] == [
+        item.id for item in whole.within[:2]
+    ]
+
+
+@pytest.mark.cap7_minting
+def test_a_pass_that_does_not_reach_the_ceiling_does_not_report_it():
+    """Non-vacuity: a build that always said ``ceiling_reached`` would pass
+    every case above. And ``reached`` is not ``exactly full`` — a bound with
+    nothing further to offer has not reached anything."""
+    known = table(*as_production_writes(4))
+    assert not couples(known, since=None, loops=()).ceiling_reached
+    # Six couples, a ceiling of six: full, and not reached, because nothing was
+    # refused.
+    exact = couples(known, since=None, loops=(), ceiling=6)
+    assert len(exact.within) == 6 and not exact.ceiling_reached
+    assert couples(known, since=None, loops=(), ceiling=5).ceiling_reached
+
+
+@pytest.mark.cap7_minting
+def test_the_ceiling_is_pinned_by_value():
+    """Pinned the way ``JUDGEMENTS`` is: the number is a cost bound, so raising
+    it is a red test and a deliberate edit rather than a quiet widening of
+    every main's nightly arithmetic."""
+    assert CEILING == 2048
+
+
+@pytest.mark.cap7_minting
+def test_the_ceiling_does_not_depend_on_either_comparison_set():
+    """CAP-7's amended row says *independent of those sets*, and that is what
+    makes it a real bound: a later fix to the degenerate subject set, or a
+    widening of the loop set, must not be able to move it."""
+    known = table(
+        *as_production_writes(40),
+        *[row(f"b_loop_{index}", at=AFTER, subject=f"own-{index}",
+              loop="buy-farmland") for index in range(40)],
+    )
+    wide = couples(known, since=None, loops=("buy-farmland",), ceiling=100)
+    narrow = couples(known, since=None, loops=(), ceiling=100)
+    assert len(wide.within) == len(narrow.within) == 100
+    assert wide.ceiling_reached and narrow.ceiling_reached
 
 
 # ═════════════════════════════════════════════════════════════════════════════

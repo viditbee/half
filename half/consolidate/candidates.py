@@ -16,6 +16,15 @@ one line — an entry reaches ``couples`` only through ``on_a_loop`` or
 ``sharing_subject`` — and it is the line to read if this file is ever
 rewritten.
 
+**And growth is not the whole bound, because CAP-7's second comparison set is
+degenerate.** Every production belief carries ``subject="self"``, so *"beliefs
+sharing a subject"* is the whole stated ledger and a first pass produced the
+complete pair set — ``n(n-1)/2``, measured. ``CEILING`` is the bound that does
+not depend on either comparison set, spent before it is exceeded, and reported
+when it is reached. The degenerate subject set is CAP-7's own defect and is
+recorded as deferred; the ceiling is what makes the pass safe regardless of how
+it is eventually fixed.
+
 **Nothing here is expensive and nothing here decides.** No model, no store, no
 clock: ``now`` and the log's own stamps are arguments (AD-30), and the whole
 module is a pure function from four narrowed mappings to a tuple of couples.
@@ -52,6 +61,42 @@ from half.store.records import CLAIM, LEDGER, SUBJECT
 #: so the pairing and ``half.tensions.widening.SIDES`` cannot drift into
 #: disagreeing about what a tension *is*.
 BOTH: Final[int] = 2
+
+#: How many couples one pass may produce, **whatever its comparison sets come
+#: to**. The second bound CAP-7 needs and does not name, added by the spec's
+#: 2026-09-04 amendment.
+#:
+#: CAP-7's two comparison sets cannot hold the count down on the data Half
+#: actually writes: ``half/actor/runtime.py:700`` sets ``subject="self"`` on
+#: every inbound belief and is the only production belief-subject writer, so
+#: *"beliefs sharing a subject"* is the whole stated ledger. On a first pass
+#: — ``since is None``, every belief on one subject — ``couples`` therefore
+#: produced exactly ``n(n-1)/2``: not *"scaling with the ledger"* but literally
+#: the complete pair set, measured at 20 → 190, 40 → 780, 80 → 3160, and 398k
+#: couples in 8.9s and 79MB at four thousand beliefs. The judgement budget
+#: bounded the *bill* while the memory and the CPU were unbounded. That subject
+#: set being degenerate is CAP-7's defect and is recorded as deferred; this is
+#: the bound that makes the pass safe in the meantime, and it is deliberately
+#: **independent of both comparison sets** so that no widening or narrowing of
+#: either can move it.
+#:
+#: **Two thousand and forty-eight.** The judgement budget is twenty-four and
+#: roughly half of what the bound produces survives the cheap filter, so a queue
+#: of about fifty already saturates the spending — this is forty times that, so
+#: no ordinary night and no busy one reaches it, and only the degenerate shape
+#: above does. It is half a percent of the pair set an unbounded first pass on
+#: four thousand beliefs built, and it holds the arithmetic to single-digit
+#: milliseconds.
+#:
+#: **It cuts before the ranking, and that is the honest trade.** The surprisal
+#: order can only rank what the ceiling admitted, so a pass that reaches the
+#: ceiling ranks the couples the fold happened to list first rather than the
+#: whole set. A ceiling that ranked first would have to build the whole set to
+#: rank it, which is the cost this exists to refuse. The pass says when it
+#: reached the ceiling for exactly this reason.
+#:
+#: Pinned by value in ``tests/test_candidates.py`` the way ``JUDGEMENTS`` is.
+CEILING: Final[int] = 2048
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +150,26 @@ class Couple:
         under a fresh id. Nothing here reads a clock or a counter.
         """
         return key_of(*self.names)
+
+
+@dataclass(frozen=True, slots=True)
+class Comparison:
+    """Every pair one pass may compare, and whether the ceiling cut it short.
+
+    A value rather than a bare tuple, for the reason ``mint.Slate`` is one: a
+    pass that stopped at its ceiling and a pass that had exactly that many
+    couples to make are different nights, and ``len(within) == CEILING`` cannot
+    tell them apart. CAP-7's amended row asks the pass to *say* when it reached
+    the ceiling, and a caller can only say what it was told.
+    """
+
+    #: The couples, in the belief table's order — which is the fold's, which is
+    #: the log's. Never longer than the ceiling.
+    within: tuple[Couple, ...] = ()
+    #: Whether the ceiling stopped this from producing more. **Not** *"the
+    #: ceiling was exactly filled"*: false when the bound had nothing further
+    #: to offer, however full it came out.
+    ceiling_reached: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,7 +328,8 @@ def couples(
     *,
     since: float | None,
     loops: Collection[str],
-) -> tuple[Couple, ...]:
+    ceiling: int = CEILING,
+) -> Comparison:
     """Every pair one pass may compare, **and nothing else** (CAP-7).
 
     One candidate — new or changed — against the loop set and against the
@@ -278,6 +344,15 @@ def couples(
     the loop set and the subject set is produced once. Order is the belief
     table's, which is the fold's, which is the log's — deterministic, and
     nothing sorts.
+
+    **And it stops at ``ceiling``, which is spent before it is exceeded.** The
+    two comparison sets cannot bound this on real data — every production belief
+    carries ``subject="self"``, so the subject set is the whole stated ledger and
+    a first pass built the complete pair set — so the return is capped, and the
+    cap is enforced by *not building* couple number ``ceiling + 1`` rather than
+    by trimming a list that was built first. Trimming afterwards would be a
+    report rather than a bound, and the 79MB the unbounded version held at four
+    thousand beliefs was held before any trimming could have run.
     """
     against = on_a_loop(known, loops=loops)
     found: dict[str, Couple] = {}
@@ -286,8 +361,15 @@ def couples(
             if other.id == item.id:
                 continue
             couple = Couple(both=(item, other))
-            found.setdefault(couple.id, couple)
-    return tuple(found.values())
+            if couple.id in found:
+                continue
+            if len(found) >= ceiling:
+                # Spent before it is exceeded: this couple is not built, not
+                # held, and not counted.
+                return Comparison(within=tuple(found.values()),
+                                  ceiling_reached=True)
+            found[couple.id] = couple
+    return Comparison(within=tuple(found.values()))
 
 
 def _after(at: object, since: float | None) -> bool:
@@ -307,6 +389,8 @@ def _text(value: object) -> str | None:
 
 __all__ = [
     "BOTH",
+    "CEILING",
+    "Comparison",
     "Couple",
     "Entry",
     "MintView",

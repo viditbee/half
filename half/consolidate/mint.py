@@ -31,6 +31,15 @@ absence is what it looked like in story 8 too. Also rejected: its edge-level
 its index-space handling for a model that names candidates by position, which
 this port has no way to express and therefore no way to get wrong.
 
+**There are two bounds and they bound different things.** ``CEILING``
+(``half.consolidate.candidates``) is how many couples a pass may *build*;
+``JUDGEMENTS`` below is how many it may *buy*. The budget alone bounded the
+bill while the memory and the CPU were unbounded — CAP-7's subject set is the
+whole stated ledger on the data Half writes, so a first pass built the complete
+pair set — and a pass can reach either bound without reaching the other, which
+is why each has its own field on the result rather than sharing the budget's
+vocabulary.
+
 **The bound is per main and per pass, and it is spent before it is exceeded.**
 ``JUDGEMENTS`` is a count of *consultations*, because the consultation is the
 cost — everything either side of it is arithmetic. A pass with more survivors
@@ -62,6 +71,7 @@ from typing import Any, Final, Protocol
 from half.consolidate import filter as relevance
 from half.consolidate.candidates import (
     BOTH,
+    CEILING,
     Couple,
     MintView,
     couples,
@@ -140,8 +150,13 @@ class Slate:
     #: rejections nothing can see is a filter nothing can assert.
     turned_away: int = 0
     #: Couples the bound produced at all — the number *"never all-pairs"* is a
-    #: statement about.
+    #: statement about. **Never more than ``candidates.CEILING``.**
     considered: int = 0
+    #: Whether the couple ceiling stopped the bound producing more. A separate
+    #: fact from ``budget_reached``: the budget is what a pass may *buy*, the
+    #: ceiling is what it may *build*, and a pass can reach either without the
+    #: other.
+    ceiling_reached: bool = False
 
     @property
     def budget_reached(self) -> bool:
@@ -181,8 +196,13 @@ class MintResult:
     turned_away: int = 0
     #: Couples the filter admitted that the budget could not reach.
     unbudgeted: int = 0
-    #: Couples the comparison bound produced at all.
+    #: Couples the comparison bound produced at all. **Never more than
+    #: ``candidates.CEILING``**, which is what makes *"never all-pairs, in
+    #: fact"* true on the ledger production writes rather than only on the one
+    #: CAP-7 describes.
     considered: int = 0
+    #: Whether the couple ceiling stopped the bound producing more.
+    ceiling_reached: bool = False
 
     @property
     def budget_reached(self) -> bool:
@@ -257,23 +277,30 @@ def slate(view: MintView, *, now: str) -> Slate:
     The order of the four steps is CAP-7's own, and each one narrows what the
     next may see:
 
-    1. the **bound** — new or changed against the loop set and the subject set;
+    1. the **bound** — new or changed against the loop set and the subject set,
+       and never more than ``candidates.CEILING`` couples however wide those
+       two sets come out;
     2. **already linked** — recognised here, so a standing disagreement costs
        nothing at all, not even a filter pass;
     3. the **cheap filter** — before any model comparison, always;
     4. the **budget** — most surprising first, cut at ``JUDGEMENTS``.
+
+    Two of those four are bounds and they bound different things. The ceiling
+    is what a pass may *build*; the budget is what it may *buy*. A pass can
+    reach either without the other, so each has its own field.
     """
     known = read(view.beliefs)
     offered = couples(
         known,
         since=watermark(view.passes, now=now),
         loops=view.loops,
+        ceiling=CEILING,
     )
     already = linked(view.tensions)
     standing: list[str] = []
     admitted: list[Couple] = []
     turned_away = 0
-    for couple in offered:
+    for couple in offered.within:
         if frozenset(couple.names) in already:
             standing.append(couple.id)
             continue
@@ -295,7 +322,8 @@ def slate(view: MintView, *, now: str) -> Slate:
         unbudgeted=max(len(queue) - JUDGEMENTS, 0),
         standing=tuple(standing),
         turned_away=turned_away,
-        considered=len(offered),
+        considered=len(offered.within),
+        ceiling_reached=offered.ceiling_reached,
     )
 
 
@@ -366,6 +394,17 @@ async def consider(
             continue
         minted.append(couple.id)
 
+    if plan.ceiling_reached:
+        # The other bound, and it is not the budget's. Said because CAP-7's
+        # amended row asks a pass that reaches the ceiling to say so, and
+        # because the ceiling cuts *before* the surprisal ranking: a night that
+        # reached it ranked the couples the fold listed first rather than the
+        # whole set, and that is worth being able to see in a log.
+        logger.info(
+            "minting for main=%s reached its couple ceiling of %d; the bound "
+            "produced no more pairs this pass", main_id, CEILING,
+        )
+
     if plan.budget_reached:
         # Said, rather than reported after the fact: the couples beyond the
         # bound were never consulted, so nothing was overspent to learn this.
@@ -386,6 +425,7 @@ async def consider(
         turned_away=plan.turned_away,
         unbudgeted=plan.unbudgeted,
         considered=plan.considered,
+        ceiling_reached=plan.ceiling_reached,
     )
 
 

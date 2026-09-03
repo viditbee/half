@@ -34,6 +34,7 @@ from pathlib import Path
 import pytest
 
 from half.actor.registry import ActorRegistry
+from half.consolidate import candidates
 from half.consolidate import filter as relevance
 from half.consolidate import mint as minting
 from half.consolidate.candidates import Couple, Entry, MintView, key_of
@@ -618,6 +619,68 @@ def test_the_growth_case_would_fail_against_an_all_pairs_pass(
     assert total * (total - 1) // 2 == 861
 
 
+def a_ledger_production_writes(size):
+    """``size`` beliefs on ``subject="self"``, which is what every production
+    belief carries and what neither growth fixture above has.
+
+    ``a_ledger_of`` pads with one subject per padding belief — the single shape
+    that keeps the subject set from growing — so it asserts a fact about the
+    fixture as much as about the bound. This is the same question asked of the
+    ledger Half actually writes.
+    """
+    def seed(store):
+        for index in range(size):
+            entry(store, f"b_self_{index}", at=STIRRED, subject="self",
+                  ledger="revealed" if index % 2 else "stated",
+                  claim=f"the {index}th thing this main has said or done")
+    return seed
+
+
+@pytest.mark.cap7_minting
+@pytest.mark.parametrize("size", [16, 32, 64])
+def test_the_pass_reports_an_upper_bound_on_what_it_compared(
+    registry, tmp_path, size
+):
+    """Matrix: *a first pass on real data*. **Never all-pairs, in fact.**
+
+    Every belief on one subject and no prior pass, which is the shape a real
+    main's first pass has. The comparison count here is the complete pair set
+    and always was; what is new is that it cannot pass the ceiling however far
+    the ledger grows, and that the pass says which of the two bounds it hit.
+
+    Asserted as an upper bound at every size — an equality would be a fact
+    about the fixture, which is the defect this case was written for.
+    """
+    seeded(registry, tmp_path, seed=a_ledger_production_writes(size),
+           marked=False)
+    result = run_pass(registry, "vidit", judge=Judge(False))
+
+    assert result.minted.considered <= candidates.CEILING
+    assert result.minted.considered == min(size * (size - 1) // 2,
+                                           candidates.CEILING)
+    assert result.minted.consulted <= minting.JUDGEMENTS
+
+
+@pytest.mark.cap7_minting
+def test_a_pass_that_reaches_the_couple_ceiling_says_so(registry, tmp_path):
+    """Matrix: *the cost is what is bounded*, and the amended row's *"a pass
+    that reaches it says so"*.
+
+    The ceiling is a separate fact from the budget: this pass reaches both, and
+    the two are asserted apart, because a build that reported one for the other
+    would make an unbounded comparison look like an ordinary full budget.
+    """
+    seeded(registry, tmp_path, seed=a_ledger_production_writes(80),
+           marked=False)
+    result = run_pass(registry, "vidit", judge=Judge(False))
+
+    assert 80 * 79 // 2 == 3160 > candidates.CEILING
+    assert result.minted.considered == candidates.CEILING
+    assert result.minted.ceiling_reached
+    assert result.minted.budget_reached
+    assert result.minted.consulted == minting.JUDGEMENTS
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # matrix: the budget — spent before it is exceeded
 # ═════════════════════════════════════════════════════════════════════════════
@@ -650,7 +713,16 @@ def test_a_pass_that_would_exceed_its_bound_stops_minting_and_says_so(
     assert result.minted.consulted == minting.JUDGEMENTS
     assert result.minted.budget_reached
     assert result.minted.unbudgeted > 0
-    assert result.minted.considered > minting.JUDGEMENTS
+
+    # Sixteen beliefs, all of them on ``subject="self"`` and all of them
+    # changed: 120 couples, which is 16·15/2 — the complete pair set. That was
+    # the only assertion on this fixture and ``considered > JUDGEMENTS`` is
+    # satisfied by all-pairs, so the shape the ceiling exists for was sitting
+    # inside the budget's own case. Both halves now: what the bound produced,
+    # and the bound on it.
+    assert result.minted.considered == 120 == 16 * 15 // 2
+    assert result.minted.considered <= candidates.CEILING
+    assert not result.minted.ceiling_reached
 
 
 @pytest.mark.cap7_minting
@@ -1280,7 +1352,10 @@ def test_no_log_line_in_the_minting_can_carry_content():
                     marker in text
                     for marker in ("main_id", "len(", "type(", "tension_id",
                                    "couple.id", "sorted(set(", "consulted",
-                                   "plan.unbudgeted")
+                                   "plan.unbudgeted",
+                                   # A pinned module constant, not a value out
+                                   # of anybody's log.
+                                   "CEILING")
                 ), f"{name}:{node.lineno} may carry content: {text!r}"
 
 
