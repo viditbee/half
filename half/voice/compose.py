@@ -70,6 +70,7 @@ __all__ = [
     "MAX_SAMPLE_CHARS",
     "MAY_BE_SAID",
     "RETRY",
+    "WORD_FOR_WORD",
     "Sample",
     "language_block",
     "prompt_for",
@@ -129,7 +130,7 @@ MAX_OUTPUT_TOKENS: Final[int] = 1_024
 #: this morning's prompt.
 MAX_SAMPLE_CHARS: Final[int] = 200
 
-#: The four labels of the assembled turn. **Format vocabulary, not phrasing
+#: The five labels of the assembled turn. **Format vocabulary, not phrasing
 #: about the main**: they name which channel a block came out of, exactly as
 #: ``half.context.channels`` labels its own rendering, and they are hyphenated
 #: machine words rather than sentences so that nothing here reads as a style
@@ -138,6 +139,25 @@ LANGUAGE_SAMPLE: Final[str] = "language-sample:"
 MAY_BE_SAID: Final[str] = "may-be-said:"
 BE_MINDFUL_OF: Final[str] = "be-mindful-of:"
 ASK_ABOUT: Final[str] = "ask-about:"
+
+#: The one string a message must carry **unchanged**, or nothing (story 13b).
+#:
+#: Filled on a correction turn and empty on every other, including every
+#: morning. CAP-11's success criterion is that the main can *see the belief
+#: actually change*, and story 12's aim can mis-target — so the reply has to
+#: carry the removed claim in the main's own words or it verifies nothing.
+#: *"Say one thing from it, in your own words or in its words"* is the right
+#: instruction for a morning and the wrong one here: a paraphrase is exactly
+#: what the main cannot check.
+#:
+#: **The claim is in the may-be-said block as well**, and the duplication is
+#: deliberate. Every derived rule in this package reads the quotable channel —
+#: ``question_budget`` counts the marks it was handed there,
+#: ``half.voice.gate.scaffolding`` drops the tokens it contains — and a claim
+#: that reached the prompt through a block those rules cannot see would silence
+#: the main the first time it ended in a question mark. One extra line in a
+#: prompt is cheaper than a second set of rules about a second door.
+WORD_FOR_WORD: Final[str] = "word-for-word:"
 
 #: The label a regeneration carries, with the judge's own closed reason after
 #: it. A **closed enum name**, never a sentence: a regeneration that explained
@@ -394,13 +414,22 @@ INSTRUCTIONS: Final[tuple[str, ...]] = (
 
     "The may-be-said block is the only thing you may state. Say one thing from "
     "it, in your own words or in its words, whichever reads better in that "
-    "language.",
+    "language. If there is no may-be-said block, state nothing about the "
+    "person at all: nothing has been given to you to say, and the message is "
+    "then only what the ask-about block asks.",
+
+    "If there is a word-for-word block, your message must contain that text "
+    "exactly as it is written, character for character, unchanged. Write the "
+    "message around it. Do not translate it, shorten it, correct it or "
+    "re-punctuate it: the person is being shown their own words so that they "
+    "can check them.",
 
     "The be-mindful-of block names things to be careful about. It is not "
     "material to say. Do not name, quote, paraphrase or allude to anything in "
     "it. It exists so that what you do say is said gently.",
 
-    "If there is an ask-about block, end with exactly one question about it. "
+    "If there is an ask-about block, ask exactly one question about it, as "
+    "part of the message rather than as a line, a heading or a form under it. "
     "If there is not, ask nothing. Never more than one question.",
 
     f"Keep the whole message under {MAX_CHARS} characters. This is a length, "
@@ -417,8 +446,10 @@ INSTRUCTIONS: Final[tuple[str, ...]] = (
 )
 
 
-def turn_text(context: Context, sample: Sample, *, because: str = "") -> str:
-    """The one user turn, assembled from four blocks that never mix.
+def turn_text(
+    context: Context, sample: Sample, *, because: str = "", verbatim: str = ""
+) -> str:
+    """The one user turn, assembled from five blocks that never mix.
 
     Each block is produced by its own function from its own source, and they are
     joined here and nowhere else. Empty blocks emit nothing at all rather than a
@@ -427,12 +458,16 @@ def turn_text(context: Context, sample: Sample, *, because: str = "") -> str:
 
     ``because`` is the judge's reason for refusing the previous attempt, from
     the closed set in ``half.voice.gate``. It is a token, not a sentence.
+
+    ``verbatim`` is the one string the message must carry unchanged, and it is
+    empty on every path but a correction turn. See ``WORD_FOR_WORD``.
     """
     blocks = (
         (LANGUAGE_SAMPLE, language_block(sample)),
         (MAY_BE_SAID, quotable_block(context)),
         (BE_MINDFUL_OF, shaping_block(context)),
         (ASK_ABOUT, question_block(context)),
+        (WORD_FOR_WORD, verbatim if isinstance(verbatim, str) else ""),
         (RETRY, because if isinstance(because, str) else ""),
     )
     return "\n\n".join(
@@ -441,12 +476,17 @@ def turn_text(context: Context, sample: Sample, *, because: str = "") -> str:
 
 
 def prompt_for(
-    context: Context, *, sample: Sample, main_id: str, because: str = ""
+    context: Context,
+    *,
+    sample: Sample,
+    main_id: str,
+    because: str = "",
+    verbatim: str = "",
 ) -> Prompt:
     """The whole of what a morning is composed from.
 
     The reviewed instructions as the system blocks, and one user turn carrying
-    the four material blocks. ``main_id`` travels on the prompt because the port
+    the five material blocks. ``main_id`` travels on the prompt because the port
     resolves this main's tier from it (AD-20); it appears in no payload.
 
     **No cache breakpoint is stated** (AD-19). The instructions are stable and
@@ -465,6 +505,11 @@ def prompt_for(
         main_id=main_id,
         system=INSTRUCTIONS,
         turns=(
-            Turn(role=Role.USER, text=turn_text(context, sample, because=because)),
+            Turn(
+                role=Role.USER,
+                text=turn_text(
+                    context, sample, because=because, verbatim=verbatim
+                ),
+            ),
         ),
     )

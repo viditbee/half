@@ -167,6 +167,7 @@ from half.voice.compose import (
     MAX_OUTPUT_TOKENS,
     MAY_BE_SAID,
     RETRY,
+    WORD_FOR_WORD,
     Sample,
     prompt_for,
     quotable_block,
@@ -454,7 +455,7 @@ def scaffolding(context: Context) -> frozenset[str]:
       so ``content[b_1]`` is refused as a unit as well as ``b_1`` alone;
     * the context's own **stamp**, which is the ``now:`` line's whole payload.
 
-    The prompt's four block labels join them, imported from
+    The prompt's five block labels join them, imported from
     ``half.voice.compose`` rather than respelled, so renaming one there cannot
     leave this scan looking for a word that no longer exists.
 
@@ -469,7 +470,10 @@ def scaffolding(context: Context) -> frozenset[str]:
     two-character token nor a string the main's own `assert` claim contains is
     evidence of that.
     """
-    labels = {LANGUAGE_SAMPLE, MAY_BE_SAID, BE_MINDFUL_OF, ASK_ABOUT, RETRY}
+    labels = {
+        LANGUAGE_SAMPLE, MAY_BE_SAID, BE_MINDFUL_OF, ASK_ABOUT, WORD_FOR_WORD,
+        RETRY,
+    }
     if not isinstance(context, Context):
         return frozenset(labels)
     found: set[str] = set(labels)
@@ -712,8 +716,10 @@ class Voice:
         main_id: str,
         sample: Sample,
         withheld: frozenset[str] | set[str],
+        bound_seconds: float | None = None,
+        verbatim: str = "",
     ) -> Composed:
-        """One morning's words, or a reason there are none. Never raises.
+        """One send's words, or a reason there are none. Never raises.
 
         ``context`` is what the builder already split under this main's ceiling;
         ``sample`` is their most recent words, for language only; ``withheld``
@@ -735,8 +741,34 @@ class Voice:
         Every path out is a ``Composed``: there is no exception here that could
         reach the scheduler, and no branch that could return a template.
 
+        ``bound_seconds`` overrides the construction bound **for this call
+        only**, and exists so that story 13b's turn can share this gate rather
+        than fork it. A morning has nobody waiting and a turn has somebody
+        waiting, which is one number's worth of difference — and the manifest's
+        own argument for taking gbrain's row was that *tuning belongs in one
+        rubric rather than in forked gate implementations*. A second ``Voice``
+        for the turn would be a second tally, a second breaker and a second
+        holder check, which is three ways for the two to drift.
+
+        **An unusable value falls back to the construction bound rather than
+        raising**, because this method never raises and a main's reply must not
+        depend on an argument being well formed. It is logged, so it cannot be
+        silent. The only caller that passes one reads a module constant checked
+        at import (``half.voice.turn``), so the branch is a guard rather than a
+        path.
+
+        ``verbatim`` is the one string the composition must carry unchanged, and
+        it is empty everywhere but a correction turn
+        (``half.voice.compose.WORD_FOR_WORD``). **It is told to the model and
+        not adjudicated here**, which is deliberate and is the same split the
+        register instruction gets: a judge rule would make a paraphrase cost
+        three attempts and three bounds in front of somebody who is waiting,
+        for an outcome — the claim alone — that ``half.voice.turn`` already has
+        in hand before the first call. The requirement is checked once, at the
+        one place that can act on it, immediately before the send.
+
         ``CancelledError`` is deliberately not caught — it is a
-        ``BaseException`` and shutdown is not a failed morning.
+        ``BaseException`` and shutdown is not a failed send.
         """
         # **The breaker's clock is mornings, and it ticks on every one of
         # them.** Review round 1 found it decremented only on mornings that
@@ -768,7 +800,8 @@ class Voice:
         self._tally.composed += 1
         outcome = await self._attempt_all(
             context, holder=holder, main_id=main_id, sample=sample,
-            withheld=withheld,
+            withheld=withheld, bound=self._bound_for(main_id, bound_seconds),
+            verbatim=verbatim,
         )
         self._note(main_id, outcome)
         # On every path out, and that ordering is the point: a summary reached
@@ -776,6 +809,28 @@ class Voice:
         # failing, which looks identical to a product with nothing to say.
         self._report()
         return outcome
+
+    def _bound_for(self, main_id: str, given: float | None) -> float:
+        """The wall-clock bound for one call. The construction one unless a
+        caller asked for another, and never a value that is not a bound.
+
+        A refusal here would cost a main their reply for a mistake in an
+        argument, which is the one thing this class does not do — so an
+        unusable value is logged and the construction bound stands. The number
+        itself is not repeated in the line: it came from a caller, and the log
+        on this path carries counts and ids only (AD-22).
+        """
+        if given is None:
+            return self._bound
+        if isinstance(given, bool) or not isinstance(given, (int, float)) or (
+            given <= 0
+        ):
+            logger.warning(
+                "the composer was given a bound it cannot use for main=%s; the "
+                "one it was built with stands", main_id,
+            )
+            return self._bound
+        return float(given)
 
     async def _attempt_all(
         self,
@@ -785,6 +840,8 @@ class Voice:
         main_id: str,
         sample: Sample,
         withheld: frozenset[str] | set[str],
+        bound: float,
+        verbatim: str = "",
     ) -> Composed:
         """Generate, judge, regenerate, stop. The bounded loop.
 
@@ -820,17 +877,18 @@ class Voice:
             try:
                 work = Generate(
                     prompt=prompt_for(
-                        context, sample=sample, main_id=main_id, because=because
+                        context, sample=sample, main_id=main_id,
+                        because=because, verbatim=verbatim,
                     ),
                     max_tokens=MAX_OUTPUT_TOKENS,
                 )
-                async with asyncio.timeout(self._bound):
+                async with asyncio.timeout(bound):
                     answered = await holder.generate(work)
 
                 if isinstance(answered, Failure):
                     self._tally.count_failure(answered)
                     logger.warning(
-                        "the morning composer did not answer for main=%s: %s/%s",
+                        "the composer did not answer for main=%s: %s/%s",
                         main_id, answered.kind, answered.because,
                     )
                     if answered.because in (
@@ -844,8 +902,8 @@ class Voice:
                 if not isinstance(answered, Completion):
                     self._tally.unreadable += 1
                     logger.warning(
-                        "the morning composer returned something this build "
-                        "cannot read for main=%s", main_id,
+                        "the composer returned something this build cannot "
+                        "read for main=%s", main_id,
                     )
                     because, terminal = "", REFUSED
                     continue
@@ -877,7 +935,7 @@ class Voice:
                 if refusal is not None:
                     self._tally.count_refusal(refusal)
                     logger.debug(
-                        "the morning composed for main=%s was refused: %s",
+                        "the text composed for main=%s was refused: %s",
                         main_id, refusal,
                     )
                     because, terminal = refusal, JUDGED
@@ -890,7 +948,7 @@ class Voice:
                 # for the next attempt too, and nobody is owed three bounds.
                 self._tally.bound_exceeded += 1
                 logger.warning(
-                    "the morning composer passed its bound for main=%s; "
+                    "the composer passed its bound for main=%s; "
                     "nothing is sent", main_id,
                 )
                 return self._silent(main_id, PAST_THE_BOUND)
@@ -903,7 +961,7 @@ class Voice:
                 # request carries this main's claims and their own words.
                 self._tally.raised += 1
                 logger.warning(
-                    "the morning composer could not run for main=%s (%s); "
+                    "the composer could not run for main=%s (%s); "
                     "nothing is sent", main_id, type(exc).__name__,
                 )
                 return self._silent(main_id, RAISED)
