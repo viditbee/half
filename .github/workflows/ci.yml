@@ -261,12 +261,19 @@ jobs:
         # pass — and the floor moves with it to 1242 for the same reason. It is
         # protected by `cap7_minting`, whose margin is zero, exactly as the
         # cases above are protected by `cap4_gates`.
+        #
+        # **Story 9d's review adds one and the floor moves with it, to 1243.**
+        # A main crisis-suspended for a night used to resume with everything
+        # they had said that night already behind the minter's watermark, for
+        # ever, because the scheduler wrote one indistinguishable `schedule`
+        # record for the main whose pass ran and for the suspended one whose
+        # did not. The case drives it end to end through a real tick.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap12 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-12 cases collected: $collected"
-          if [ "$collected" -lt 1242 ]; then
+          if [ "$collected" -lt 1243 ]; then
             echo "::error::the CAP-12 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -734,6 +741,16 @@ jobs:
         # protects them — this floor's margin of 41 could not protect any 41
         # named cases and never claimed to.
         #
+        # **Story 9d's review adds 39 more and the floor moves again, from 370
+        # to 409, so the margin stays 41.** 450 selected. They are the couple
+        # ceiling on the shape production actually writes, the minting
+        # arithmetic leaving the event loop, the watermark that now means *"the
+        # pass ran"* rather than *"the scheduler passed through"*, the ordered
+        # restatement filter, the budget's three corrected reports, and the
+        # mint door's stray-field guard. Thirty-one of the thirty-nine carry
+        # `cap7_minting` and are gated below at margin zero, which is again
+        # what actually protects them.
+        #
         # **Review round 1 of this story found that a floor is not enough on
         # its own, twice over.** A tension frozen on its first transition — two
         # separate one-line mutations in ``widening.drift`` — passed all 2950
@@ -748,7 +765,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap7 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-7 cases collected: $collected"
-          if [ "$collected" -lt 370 ]; then
+          if [ "$collected" -lt 409 ]; then
             echo "::error::the CAP-7 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -853,13 +870,28 @@ jobs:
         # cleanly. The set is pinned by value now, the way the persistence
         # window is.
         #
-        # 118 selected, 100 required.
+        # **Story 9d's review adds six and the floor moves with them, from 100
+        # to 106, so the margin stays 18.** ``Couple`` travels as ``both`` and
+        # offers ``names``, and neither was in the positional scan's
+        # vocabulary — so replacing ``relevance.weight``'s body with
+        # ``return surprisal(couple.both[0], ...)``, which reads the pair
+        # positionally and ranks one side over the other in the function the
+        # budget's ordering runs through, left the whole suite green. Probing
+        # the widened guard then found a third spelling: ``fields["between"]``,
+        # which is how every door in the registry and the append gate reaches
+        # the pair, and which the scan knew as a *name* and never as a *key*.
+        # Both are bypass rows now, and a behavioural case asserts the weight
+        # and the priority order are unchanged when the ledger is built the
+        # other way round — the AST scan catches the spelling, and only the
+        # arithmetic catches the arithmetic.
+        #
+        # 124 selected, 106 required.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap7_neutrality -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-7 neutrality cases collected: $collected"
-          if [ "$collected" -lt 100 ]; then
+          if [ "$collected" -lt 106 ]; then
             echo "::error::the neutrality gate collected $collected cases; a tension may now rank its two sides"
             exit 1
           fi
@@ -919,7 +951,24 @@ jobs:
         # record; all-pairs; the loop set dropped; the subject set dropped; and
         # the watermark ignored. Every one is red.
         #
-        # **The margin is deliberately zero: 62 selected, 62 required.** Every
+        # **Story 9d's review added thirty-one, and every one of them owes this
+        # number an edit.** 93 selected, 93 required. The eleven mutations run
+        # against them, each with a purged bytecode cache and a green baseline
+        # asserted on both sides: the positional read of the couple in
+        # ``weight``; the pair sorted inside ``note_mint``; ``sorted(fields
+        # ["between"])`` in the same place, which the widened guard was itself
+        # probed to find; a tension function added to an outpost unregistered;
+        # the couple ceiling disabled; the minting arithmetic put back on the
+        # event loop; the ``corpus`` short-circuit removed; the judgement
+        # billed after the ``except`` rather than before; the no-judge check
+        # pushed back inside the loop; the old *"left for the next pass"* log
+        # line; ``note_mint``'s stray-field guard dropped; ``KEY_DIGITS``
+        # narrowed back to twelve; and ``on_a_loop`` and the membership tests
+        # unguarded. Every one is red. Review's own ``fields_for(couple)``
+        # mutation, which used to leave three cases green, now reddens
+        # fourteen.
+        #
+        # **The margin is deliberately zero: 93 selected, 93 required.** Every
         # case in this gate is the only one asserting its rule, which is the
         # condition under which a zero margin is right — and it is why the CAP-7
         # floor above was not inflated instead. It also means every case added
@@ -933,7 +982,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap7_minting -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-7 minting cases collected: $collected"
-          if [ "$collected" -lt 62 ]; then
+          if [ "$collected" -lt 93 ]; then
             echo "::error::the minting gate collected $collected cases; the comparison bound or its budget has stopped being asserted"
             exit 1
           fi
