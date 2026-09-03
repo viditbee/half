@@ -963,6 +963,42 @@ def test_an_engine_that_raises_costs_the_question_and_never_the_reply(
 
 @pytest.mark.cap4
 @pytest.mark.cap4_bought
+def test_a_buy_that_raises_through_the_runtime_costs_only_the_question(
+    registry, tmp_path
+):
+    """**The other handler, driven — and it was the one still unrun.**
+
+    Story 13b split ``_attach_question``'s single broad handler into
+    ``_offered`` and ``_bought``. The sibling case above drives ``_offered``
+    (its ``buy`` is marked never-reached), and the spend case below calls
+    ``QuestionEngine.buy`` *directly*, so it exercises the engine's own handler
+    and never the runtime's. Replacing ``_bought``'s handler body with ``raise``
+    therefore left the suite green while a working turn sent nothing — the exact
+    defect the sibling's docstring was written about, recurring on the handler
+    this story added.
+
+    The offer succeeds, so the prose is already composed when the spend blows
+    up: the main is owed that reply, and the question is what the bug costs.
+    """
+    seed(tmp_path, favours=1, sayable=SAYABLE)
+    honest = QuestionEngine(ledger=registry)
+
+    class BreaksOnBuy:
+        async def offer(self, main_id, **kwargs):
+            return await honest.offer(main_id, **kwargs)
+
+        async def buy(self, main_id, **kwargs):
+            raise RuntimeError("the spend is broken")
+
+    transport = _turn_with(registry, BreaksOnBuy())
+
+    assert transport.sent, "a broken spend cost the main their reply"
+    body = sent(transport)
+    assert SAYABLE in body, body
+    assert "question[" not in body
+    assert spends(tmp_path) == [], "a raise must not leave a favour spent"
+
+
 def test_a_spend_that_raises_costs_the_question_and_never_the_reply(
     registry, tmp_path
 ):
