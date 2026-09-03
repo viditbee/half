@@ -116,7 +116,14 @@ jobs:
         # refuse, and the tripwire must not be switchable off by omission. Each
         # of the four was a live route by which an AD-18 breach went quiet.
         #
-        # 78 selected, 63 required. **The margin is fifteen and it is not zero
+        # **Story 13b's review loop adds one**: a reply is still produced when
+        # nothing is quotable. It belongs here because it is the *other* half of
+        # AD-18's second named failure — material a rung does not permit must
+        # not be filtered away, and a context left with nothing quotable must
+        # still produce a reply rather than silence. It was removed during that
+        # story's first build and restored by the second review-loop amendment.
+        #
+        # 79 selected, 64 required. **The margin is fifteen and it is not zero
         # on purpose**: several cases here are neighbours inside one sweep — the
         # nine malformed-license parameters, the script cases — so pruning a
         # redundant parameter should be possible without editing this number,
@@ -135,7 +142,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m ad18 -q --collect-only \
             | grep -c '::' || true)
           echo "AD-18 cases collected: $collected"
-          if [ "$collected" -lt 63 ]; then
+          if [ "$collected" -lt 64 ]; then
             echo "::error::the AD-18 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -930,15 +937,19 @@ jobs:
         #   and that all three attributions read the same after the derived view
         #   is deleted and replayed (AD-4).
         #
-        # **Margin zero: 257 selected, 257 required.** Sized against the subset
+        # **Margin zero: 260 selected, 260 required.** Sized against the subset
         # it protects rather than against a total, and every case here is the
         # only one asserting its rule.
         #
-        # Story 13b added two, and the floor moves with them so the margin stays
-        # zero: that the inclusion check CAP-11 now runs over a composed reply is
-        # defined over the fallback it falls back to — so the check can never
-        # refuse everything the turn is able to send — and that a removal with no
-        # readable claim shows nothing and refuses nothing.
+        # Story 13b added three, and the floor moves with them so the margin
+        # stays zero: that the inclusion check CAP-11 now runs over a composed
+        # reply is defined over the fallback it falls back to — so the check can
+        # never refuse everything the turn is able to send — that a removal with
+        # no readable claim shows nothing and refuses nothing, and that a
+        # *proposal* holds no claim at all while the removal the main's answer
+        # produces does. The floor said 257 while 260 were collected for one
+        # commit of that story's review, which is how a zero-margin gate quietly
+        # stops being one.
         #
         # Three blocks of it are sweeps rather than single cases — twelve
         # op-by-stamp crossings, ten scripts twice over, and forty-odd ordinary
@@ -960,7 +971,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap11 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-11 correction cases collected: $collected"
-          if [ "$collected" -lt 257 ]; then
+          if [ "$collected" -lt 260 ]; then
             echo "::error::the CAP-11 gate collected $collected cases; a main may not be able to tell Half it is wrong"
             exit 1
           fi
@@ -1273,13 +1284,23 @@ jobs:
         # sample depending on fold order, a hardcoded tier, the price of a real
         # morning on both tiers, and the flush at shutdown.
         #
-        # 300 selected, 300 required.
+        # **Story 13b's review loop added twenty-four**, all in
+        # `tests/test_voice.py` and all about the one composer the turn now
+        # shares: the gate's three bounds — one attempt per run, each bound
+        # finite, a question only where a favour bought one — and the judge's
+        # scaffolding set reading its labels from `half.voice.compose` rather
+        # than respelling them. They belong to the morning gate because they are
+        # the *composer's* rules and the composer is shared.
+        #
+        # The floor moves with them: **324 selected, 324 required.** It stood at
+        # 300 while 324 were collected, which is a margin of twenty-four on a
+        # gate whose own comment two paragraphs up says its margin is zero.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap8_voice -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-8 wire-text cases collected: $collected"
-          if [ "$collected" -lt 300 ]; then
+          if [ "$collected" -lt 324 ]; then
             echo "::error::the wire-text gate collected $collected cases; Half may have stopped speaking, or started speaking scaffolding"
             exit 1
           fi
@@ -1297,9 +1318,12 @@ jobs:
         # **A sibling of the ``cap8_voice`` gate rather than an extension of
         # it**, and that is deliberate. That gate protects the morning: its
         # margin is zero and every case in it is the only one asserting its
-        # rule, so folding ninety-five turn cases into it would have taken its
-        # floor from 300 to 395 and left a later reader unable to tell which
-        # half of the number protected which surface. A gate that reports itself
+        # rule, so folding this gate's turn cases into it would take its floor
+        # from 324 to 462 and leave a later reader unable to tell which half of
+        # the number protected which surface. (An earlier revision did that
+        # addition against stale counts on both sides and got 395, which is
+        # neither the sum then nor the sum now — a gate that cannot add up the
+        # protection it claims is the shape of defect the floors exist for.) A gate that reports itself
         # as covering more than it does is the defect this file has had to fix
         # three times. The morning and the turn share one composer and one
         # judge — that identity is itself asserted, here — and they are two
@@ -1355,19 +1379,26 @@ jobs:
         # the fallback reading the last quotable claim rather than the top-ranked
         # one; and the model-free branch, which needed a structural case.
         #
-        # **Margin zero: 100 selected, 100 required.** Every case is the only one
+        # **Margin zero: 138 selected, 138 required.** Every case is the only one
         # asserting its rule, including each of the fourteen scripts — a script
         # pruned is a script nobody checks, which is how story 12 shipped a
         # correction path that deleted beliefs on ordinary Thai and Japanese
         # sentences with the suite green. There is no redundant parameter in
         # here to prune, so there is no room left for pruning one. Adding cases
         # moves this number with them; nothing else may.
+        #
+        # It moved 95 -> 100 -> 138 across this story's review loop, and the
+        # middle step lagged the cases: the gate collected 138 against a floor
+        # of 100 while this comment said the margin was zero.
+        # `tests/test_turn_words.py` carries `pytestmark = [cap1_turn]`, so every
+        # case added to that file is a case added to this gate, and this number
+        # has to be re-read off a collection rather than reasoned about.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap1_turn -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-1 turn wire-text cases collected: $collected"
-          if [ "$collected" -lt 100 ]; then
+          if [ "$collected" -lt 138 ]; then
             echo "::error::the turn wire-text gate collected $collected cases; a main may be receiving Half's internals again"
             exit 1
           fi
