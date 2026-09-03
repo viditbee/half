@@ -245,24 +245,48 @@ def read(rows: Mapping[str, Mapping[str, Any]] | None) -> dict[str, Entry]:
 
 
 def watermark(stamps: Iterable[object], *, now: object) -> float | None:
-    """When this main's **last** pass ran, or ``None`` if none ever has.
+    """When this main's **last pass ran**, or ``None`` if none ever has.
 
-    The newest schedule stamp strictly before ``now``. The scheduler writes a
-    main's next due time *before* it runs their work (``half.schedule.tick``'s
-    at-most-once rule), so the newest stamp of all is this pass's own marker and
-    the one before it is the previous pass — which is exactly the line *"new or
-    changed since this main's last pass"* has to be drawn at.
+    The newest stamp strictly before ``now``. The scheduler writes a main's next
+    due time *before* it runs their work (``half.schedule.tick``'s at-most-once
+    rule), so the newest stamp of all is this pass's own marker and the one
+    before it is the previous pass — which is exactly the line *"new or changed
+    since this main's last pass"* has to be drawn at.
+
+    **The stamps are the ones whose tick actually ran a pass**, filtered at the
+    door in ``ActorRegistry.mint_view``. They used to be every schedule stamp,
+    and the scheduler writes one for the unscheduled, the missed and the
+    suspended mains too — so this answered *"when did the scheduler last touch
+    this main"*, and a main suspended for one night lost that night's beliefs
+    for ever.
 
     ``None`` means *everything is new*, which is the right answer for a main
     whose first pass this is and the only honest one: a first pass with no prior
     watermark that treated nothing as changed would never mint anything for
     anybody, for ever, and would look exactly like a quiet night.
+
+    **A ``now`` this build cannot read also means ``None``**, and it used to
+    mean the opposite. ``edge`` was ``None``, the guard against reading this
+    pass's own marker was skipped, and the newest stamp of all — the marker the
+    tick had just written — became the watermark: nothing was ever new, and
+    nothing said so. Between the two wrong answers, the one that re-derives
+    what it already knows beats the one that silently mints nothing for ever,
+    and the couple ceiling is what makes it affordable.
+
+    Never raises: a non-iterable ``stamps`` is a view this build cannot read,
+    which costs this main their pass's watermark and not their night.
     """
     edge = instant(now) if isinstance(now, str) else None
+    if edge is None:
+        return None
     found: float | None = None
-    for stamp in stamps:
+    try:
+        offered = list(stamps)
+    except TypeError:
+        return None
+    for stamp in offered:
         at = instant(stamp) if isinstance(stamp, str) else None
-        if at is None or (edge is not None and at >= edge):
+        if at is None or at >= edge:
             continue
         if found is None or at > found:
             found = at
@@ -373,11 +397,24 @@ def couples(
 
 
 def _after(at: object, since: float | None) -> bool:
-    """Whether ``at`` is a readable stamp later than ``since``."""
+    """Whether ``at`` is a readable stamp **at or after** ``since``.
+
+    Inclusive, and it was strict. A stamp carries whole seconds, so an entry
+    written in the same second as the previous pass's marker compared equal and
+    was never a candidate — not on that pass, which had not seen it, and not on
+    any later one, which measures against a mark that has moved past it. One
+    second of a main's log, gone silently.
+
+    The cost of the inclusive reading is that an entry stamped in exactly that
+    second may be offered twice, on two consecutive passes. That costs a
+    filter pass and, at worst, one judgement — and the couple that carries a
+    live tension is recognised before either — which is the failure that stays
+    bounded.
+    """
     when = instant(at) if isinstance(at, str) else None
     if when is None:
         return False
-    return since is None or when > since
+    return since is None or when >= since
 
 
 def _text(value: object) -> str | None:

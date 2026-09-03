@@ -174,6 +174,52 @@ def test_a_schedule_stamp_that_cannot_be_read_is_not_a_watermark():
     assert since("whenever") is None
 
 
+def test_a_now_this_build_cannot_read_makes_everything_new_and_not_nothing():
+    """The failure direction, and it was the wrong one.
+
+    With ``now`` unparseable, ``edge`` was ``None``, the guard that keeps this
+    pass from reading *its own* marker was skipped, and the newest stamp of all
+    — the marker the tick had just written — became the watermark. Nothing was
+    ever new, and nothing said so.
+
+    Between the two wrong answers, the one that re-derives what it already
+    knows beats the one that silently mints nothing for ever; the couple
+    ceiling is what makes it affordable.
+    """
+    assert watermark([BEFORE, LAST_PASS, NOW], now="whenever") is None
+    assert watermark([BEFORE, LAST_PASS, NOW], now=None) is None
+    assert watermark([BEFORE, LAST_PASS, NOW], now=7) is None
+
+    known = table(row("b_1", at=BEFORE), row("b_2", at=LAST_PASS))
+    assert len(fresh(known, since=watermark([NOW], now="whenever"))) == 2
+
+
+def test_the_watermark_never_raises_on_a_view_this_build_cannot_read():
+    """``read`` and ``mint.linked`` guard their argument and this did not, so
+    a ``passes`` that was not a sequence cost a main their whole night rather
+    than that one field."""
+    for stamps in (None, 7, object()):
+        assert watermark(stamps, now=NOW) is None
+
+
+def test_an_entry_stamped_in_the_same_second_as_the_marker_is_a_candidate():
+    """One second of a main's log, gone silently.
+
+    A stamp carries whole seconds, so an entry written in the same second as
+    the previous pass's marker compared equal to it and was never a candidate —
+    not on that pass, which had not seen it, and not on any later one, which
+    measures against a mark that has moved past it.
+
+    The cost of the inclusive reading is that such an entry may be offered
+    twice on two consecutive passes; a couple already carrying a live tension
+    is recognised before the filter and before the judge, so that costs a
+    filter pass at worst.
+    """
+    known = table(row("b_edge", at=LAST_PASS), row("b_older", at=BEFORE))
+    offered = [item.id for item in fresh(known, since=since(LAST_PASS))]
+    assert offered == ["b_edge"]
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # matrix: the loop set and the subject set — and nothing else
 # ═════════════════════════════════════════════════════════════════════════════

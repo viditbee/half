@@ -47,7 +47,13 @@ from half.loops import ledger as loop_ledger
 from half.schedule.clock import FrozenClock, moment, stamp
 from half.schedule.tick import Scheduler
 from half.store.ops import Op
-from half.store.records import NEXT_PASS_AT, TENSION_FIELDS, TOLD_ZONE, ZONE
+from half.store.records import (
+    NEXT_PASS_AT,
+    PASS_RAN,
+    TENSION_FIELDS,
+    TOLD_ZONE,
+    ZONE,
+)
 from half.store.store import Store
 from half.tensions.states import STATE, TensionState
 from half.tensions.widening import BETWEEN, RANKED_FIELDS
@@ -134,13 +140,21 @@ def registry(tmp_path):
     reg.close()
 
 
-def mark_pass(registry, main_id, at):
-    """A schedule record at ``at`` — the marker a pass writes before it runs."""
+def mark_pass(registry, main_id, at, *, ran=True):
+    """A schedule record at ``at`` — the marker a pass writes before it runs.
+
+    ``ran`` is the field that says whether this tick was running the main's
+    *pass* or only moving their due time along. Spelled here rather than left
+    to a default, because a fixture that wrote the marker without it is a
+    fixture asserting the shape the scheduler writes for a **suspended** main
+    while calling it the shape it writes for a pass — which is the defect this
+    field exists to close, reintroduced in the test data.
+    """
     asyncio.run(
         registry.note_pass(
             main_id, t=stamp(at),
             fields={NEXT_PASS_AT: stamp(at + 86_400), ZONE: "UTC",
-                    TOLD_ZONE: False},
+                    TOLD_ZONE: False, PASS_RAN: ran},
         )
     )
 
@@ -183,7 +197,8 @@ def due_now(registry, main_id):
     """
     asyncio.run(registry.note_pass(
         main_id, t=stamp(LAST_PASS),
-        fields={NEXT_PASS_AT: stamp(NOON - 60), ZONE: "UTC", TOLD_ZONE: False},
+        fields={NEXT_PASS_AT: stamp(NOON - 60), ZONE: "UTC", TOLD_ZONE: False,
+                PASS_RAN: True},
     ))
 
 
@@ -1169,6 +1184,93 @@ def test_a_main_in_crisis_mode_is_never_minted_for(registry, tmp_path):
     assert judge.asked == [frozenset({"b_said", "b_did"})]
     assert tensions_of(registry, "vidit") == {}
     assert len(tensions_of(registry, "asha")) == 1
+
+
+@pytest.mark.cap7_minting
+@pytest.mark.cap12
+def test_a_main_who_was_suspended_still_has_everything_they_said_meanwhile(
+    registry, tmp_path
+):
+    """Matrix: *a suspended main resumes*. **Never silently excluded.**
+
+    The scheduler advances the due time of every main whose window has passed
+    — the unscheduled, the missed and the **suspended** ones as well as the one
+    whose pass is about to run — and it wrote one indistinguishable ``schedule``
+    record for all four. So ``watermark`` answered *"when did the scheduler
+    last touch this main"*, and a main crisis-suspended for one night resumed
+    with everything they had said that night already behind the mark. Not for a
+    night: for ever, because the mark only ever moves forward. Verified end to
+    end at ``considered == 0``.
+
+    Three markers here, in the shapes the scheduler actually writes: a real
+    pass two nights ago, the suspended night's advance last night, and this
+    tick. What the main said in between has to survive both of the later two.
+    """
+    real_pass = NOON - 2 * 86_400
+    spoken = stamp(NOON - 100_000)
+
+    def said_between_the_two(store):
+        entry(store, "b_said", at=spoken, ledger="stated",
+              claim="means to buy the farmland this year")
+        entry(store, "b_did", at=spoken, ledger="revealed",
+              claim="has not opened a listing since March")
+
+    seeded(registry, tmp_path, seed=said_between_the_two, marked=False)
+    # A pass that really ran, before the main said either thing.
+    mark_pass(registry, "vidit", real_pass, ran=True)
+    # Last night: crisis-suspended, so the scheduler advanced the due time and
+    # ran nothing. This is the record that used to become the watermark.
+    asyncio.run(registry.note_pass(
+        "vidit", t=stamp(NOON - 86_400),
+        fields={NEXT_PASS_AT: stamp(NOON - 60), ZONE: "UTC", TOLD_ZONE: False,
+                PASS_RAN: False},
+    ))
+
+    # The defect, named: read against *every* schedule stamp — which is what
+    # the minter used to be handed — nothing this main said is new.
+    view = asyncio.run(registry.mint_view("vidit"))
+    every_stamp = (stamp(real_pass), stamp(NOON - 86_400))
+    poisoned = candidates.watermark(every_stamp, now=NOW.stamp)
+    assert poisoned is not None
+    assert candidates.fresh(candidates.read(view.beliefs), since=poisoned) == ()
+
+    judge = Judge(True)
+    result = asyncio.run(Scheduler(
+        registry=registry, mains=("vidit",), root=Path(tmp_path),
+        clock=FrozenClock(at=NOON),
+        work=TensionPass(ledger=registry, judge=judge),
+    ).tick())
+
+    assert result.ran == ("vidit",) and result.suspended == ()
+    assert judge.asked == [frozenset({"b_said", "b_did"})]
+    assert len(tensions_of(registry, "vidit")) == 1
+
+
+@pytest.mark.cap7_minting
+def test_a_main_whose_first_pass_this_is_still_treats_everything_as_new(
+    registry, tmp_path
+):
+    """The documented ``None`` — *"everything is new, for a main whose first
+    pass this is"* — was unreachable, because the tick that finds a main
+    unscheduled writes a marker before their first pass ever runs.
+
+    So the first pass read that marker as a previous pass and found nothing
+    new: a main who joined and said things had no tension minted for them until
+    they said something else, and Half could not tell that from a quiet night.
+    """
+    seeded(registry, tmp_path, marked=False)
+    # The marker an unscheduled tick writes: a due time, and no pass.
+    mark_pass(registry, "vidit", LAST_PASS, ran=False)
+
+    view = asyncio.run(registry.mint_view("vidit"))
+    assert view.passes == ()
+    assert candidates.watermark(view.passes, now=NOW.stamp) is None
+
+    judge = Judge(True)
+    result = run_pass(registry, "vidit", judge=judge)
+    assert judge.calls == 1
+    assert result.minted.considered == 1
+    assert len(tensions_of(registry, "vidit")) == 1
 
 
 # ═════════════════════════════════════════════════════════════════════════════

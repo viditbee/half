@@ -54,6 +54,7 @@ from half.store.records import (
     ABOUT,
     ASKED_FIELDS,
     NEXT_PASS_AT,
+    PASS_RAN,
     QUESTION,
     TOUCH_FIELDS,
     handoff_projection,
@@ -807,11 +808,21 @@ class ActorRegistry:
           entries and never demotes, freezes or refutes a wanting (CAP-6), and
           the way that rule breaks is a minter that could see enough of a loop
           to have an opinion about it.
-        * **the stamp of every schedule record** — when each pass marked itself
-          as having run, which is what *"new or changed since this main's last
+        * **the stamp of every schedule record whose tick actually ran this
+          main's pass** — which is what *"new or changed since this main's last
           pass"* is measured against. Stamps only: a schedule record also
           carries a zone and whether the main told Half one, and neither is any
           of the minter's business (AD-22).
+
+          The filter on ``PASS_RAN`` is the correction. This took *every*
+          schedule stamp, and the scheduler writes one for the unscheduled, the
+          missed and the **suspended** mains as well as for the one whose pass
+          is about to run — so the watermark meant *"when the scheduler last
+          touched this main"*. A main crisis-suspended for one night resumed
+          with that night's beliefs already behind the mark, permanently:
+          ``considered == 0``, for ever. It also made the first-pass case —
+          *"no marker means everything is new"* — unreachable, because the
+          unscheduled tick had already written one.
         * **the erased set**, so an erasure stays an erasure.
         """
         async with self.acquire(main_id) as actor:
@@ -829,6 +840,7 @@ class ActorRegistry:
                 passes=tuple(
                     record.t for record in actor.store.log
                     if record.op is Op.SCHEDULE
+                    and record.data.get(PASS_RAN) is True
                 ),
                 gone=frozenset(state.expunged),
             )

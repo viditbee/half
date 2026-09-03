@@ -464,8 +464,19 @@ class Scheduler:
             main_id=main_id, after=now.epoch, zone=zone
         )
 
-    async def _advance(self, main_id: str, now: Now) -> due_module.Due | None:
+    async def _advance(
+        self, main_id: str, now: Now, *, running: bool = False
+    ) -> due_module.Due | None:
         """Record ``main_id``'s next due time, or ``None`` if it could not be.
+
+        ``running`` says whether this tick is about to run this main's *work*,
+        as against merely moving their due time along. It is written into the
+        record because the two were indistinguishable there, and everything
+        below the scheduler that asks *"when did this main's last pass run"* —
+        ``half.consolidate.candidates.watermark`` — was reading *"when did the
+        scheduler last touch this main"* instead. A main suspended for one
+        night therefore resumed with that night already behind their watermark,
+        for ever.
 
         **``None`` stops the pass**, and that is the whole reason this returns
         anything. Swallowing the failure and running the work anyway leaves the
@@ -484,7 +495,8 @@ class Scheduler:
             due = self.due_for(main_id, now)
             await asyncio.wait_for(
                 self.registry.note_pass(
-                    main_id, t=now.stamp, fields=due_module.scheduled(due)
+                    main_id, t=now.stamp,
+                    fields=due_module.scheduled(due, ran=running),
                 ),
                 timeout=self.timeout,
             )
@@ -537,7 +549,12 @@ class Scheduler:
                 # Advanced inside the gate and before the work, so the durable
                 # "already ran" marker exists before anything can fail — and if
                 # it could not be written, the work does not run at all.
-                due = await self._advance(main_id, now)
+                # ``running=True``: this is the one path that goes on to
+                # call the work, so this is the one marker that means a pass
+                # ran. Written before the work for the reason the due time is —
+                # at-most-once — so it says *"the scheduler committed to this
+                # pass"* rather than *"this pass succeeded"*.
+                due = await self._advance(main_id, now, running=True)
                 if due is None:
                     blocked.append(main_id)
                     return

@@ -216,6 +216,34 @@ ZONE: Final[str] = "zone"
 NEXT_PASS_AT: Final[str] = "next_pass_at"
 TOLD_ZONE: Final[str] = "told_zone"
 
+#: Whether the tick that wrote this record was **running this main's pass**, as
+#: against merely advancing their due time (AD-9, story 9d review).
+#:
+#: The scheduler writes a ``schedule`` record for four different mains: the one
+#: whose pass is about to run, and the unscheduled, the missed and the
+#: *suspended* ones, whose passes are not. Without this the four are one shape,
+#: and *"new or changed since this main's last pass"* — which
+#: ``half.consolidate.candidates.watermark`` reads off these stamps — read as
+#: *"since the scheduler last touched this main"* instead. A main crisis-
+#: suspended for one night resumed with everything they had said that night
+#: already behind the watermark, permanently: verified end to end at
+#: ``considered == 0``, for ever. It also made the documented *"no marker means
+#: this is a first pass"* unreachable, because the unscheduled tick had already
+#: written one.
+#:
+#: **True means the scheduler committed to running the pass**, not that the
+#: pass succeeded — it is written before the work, which is the at-most-once
+#: rule ``next_pass_at`` beside it already lives by and for the same reason: a
+#: marker written afterwards is a marker a crash loses, and a lost marker is
+#: the same window due again on every tick inside the grace hour.
+#:
+#: **Absent means false**, which is the direction that never silently excludes:
+#: a log written before this field existed reads as *"no pass has run"*, so the
+#: next pass treats everything as new and re-derives it, bounded by
+#: ``candidates.CEILING`` and by the judgement budget. The opposite default
+#: would make every such log carry the defect for ever.
+PASS_RAN: Final[str] = "pass_ran"
+
 #: What a ``touch`` record carries besides the loop it raised (CAP-8, story 10).
 #:
 #: Named here for the reason ``ZONE`` and ``NEXT_PASS_AT`` are: the layer that
@@ -668,6 +696,7 @@ _TYPED_FIELDS: Final[dict[str, type | tuple[type, ...]]] = {
     ZONE: str,
     NEXT_PASS_AT: str,
     TOLD_ZONE: bool,
+    PASS_RAN: bool,
     # The morning surface's touch record (CAP-8). ``origin_kind`` and
     # ``origin_id`` are what a surface cites; validated at the append for the
     # reason every field above is, and here the reason is the story's own

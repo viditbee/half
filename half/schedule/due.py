@@ -45,7 +45,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from half.governance import ladder
 from half.governance.ladder import License
 from half.schedule import clock
-from half.store.records import NEXT_PASS_AT, TOLD_ZONE, ZONE
+from half.store.records import NEXT_PASS_AT, PASS_RAN, TOLD_ZONE, ZONE
 
 #: ``ZONE``, ``NEXT_PASS_AT`` and ``TOLD_ZONE`` are **imported** rather than
 #: spelled here, and re-exported for this package's own callers. The direction
@@ -56,9 +56,9 @@ from half.store.records import NEXT_PASS_AT, TOLD_ZONE, ZONE
 #: would close a cycle through ``half.governance.ladder``, which imports
 #: ``half.store.records`` itself.)
 __all__ = [
-    "Due", "FALLBACK_ZONE", "JITTER_SECONDS", "NEXT_PASS_AT", "PRE_DAWN_HOUR",
-    "TOLD_ZONE", "WINDOW_HOURS", "ZONE", "in_window", "jitter", "local_day",
-    "next_pass_at", "resolve", "scheduled", "told", "zone_of",
+    "Due", "FALLBACK_ZONE", "JITTER_SECONDS", "NEXT_PASS_AT", "PASS_RAN",
+    "PRE_DAWN_HOUR", "TOLD_ZONE", "WINDOW_HOURS", "ZONE", "in_window", "jitter",
+    "local_day", "next_pass_at", "resolve", "scheduled", "told", "zone_of",
 ]
 
 #: Local pre-dawn. The pass runs while the main sleeps, so the window sits
@@ -332,15 +332,27 @@ def told(zone: str, *, support: Any) -> dict[str, Any]:
     return fields
 
 
-def scheduled(due: Due) -> dict[str, Any]:
+def scheduled(due: Due, *, ran: bool = False) -> dict[str, Any]:
     """The fields of the ``schedule`` append that records ``due``.
 
     The zone and the told flag travel with the time because a due time alone
     cannot say whether it was chosen or defaulted to, and *"visible as a
     fallback"* is an acceptance criterion rather than a nicety.
+
+    ``ran`` travels with them for the same kind of reason, one story over. The
+    scheduler advances the due time of the main whose pass is about to run and
+    of the unscheduled, the missed and the suspended ones whose passes are not,
+    and it wrote one indistinguishable record for all four — so *"new or
+    changed since this main's last pass"* read as *"since the scheduler last
+    touched this main"*, and a main suspended for one night lost everything
+    they had said that night, permanently. **False is the default** because
+    three of the four callers are the ones that did not run anything, and
+    because a field that defaults to *"a pass ran"* is one whose absence hides
+    the defect it was added to close.
     """
     return {
         NEXT_PASS_AT: clock.stamp(due.at),
         ZONE: due.zone,
         TOLD_ZONE: due.told,
+        PASS_RAN: ran,
     }
