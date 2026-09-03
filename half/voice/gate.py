@@ -54,6 +54,41 @@ the mode before it reaches this module, and nothing under ``half/crisis`` can
 reach this package at all — a crisis reply stays a join of reviewed template
 lines assembled by ``half.crisis.respond``, which takes an ``Assessment`` and
 never a word of text.
+
+**Why this repeats the consultation shape a third time, and what should happen
+about it.** The bound, the ``Tally``, the breaker, the holder allowlist and the
+report/alarm cadence below are the same shape as ``half.crisis.classifier`` and
+``half.correction.candidate``. That module's own docstring records the cost
+honestly at two consumers; this is the third, and the arithmetic has changed
+enough to say so plainly: roughly two hundred lines of the same machinery now
+exist in three places, and a fix to one of them — story 6d's review corrected
+the holder check from a denylist to an allowlist, and separated ``raised`` from
+``unreadable`` — has to be made three times or it is made once and forgotten
+twice.
+
+The obstacle ``candidate.py`` names still stands: ``half.crisis`` is the entry
+gate and is depended upon by no domain module, so the shared code cannot live
+there. But the two differences it gives as reasons *not* to share are both
+policy rather than shape, and both are injectable. What differs between the
+three is the **outcome type** (a ``Verdict`` carrying an action; a ``Verdict``
+carrying an action; a ``Composed`` carrying prose or a reason), the **label or
+judge policy**, and the **numbers**. What is identical is the bounded call, the
+counted fallback, the per-holder breaker and the allowlisted narrow holder.
+
+So the recommendation is unchanged and stronger: a ``half/model/consult.py``
+holding the bounded, counted, breaker-guarded call over a narrow holder, with
+the policy injected — and with two conditions that are not negotiable. Crisis
+behaviour must come out byte-identical, asserted rather than reviewed, because
+``tests/test_crisis_golden.py`` pins that module's label set and instructions by
+digest as clinical-review material. And the extraction must not let anything
+else acquire that status by inheritance: the shared module holds *no* labels,
+*no* instructions and *no* numbers, or the pin becomes a pin on a base class and
+means nothing.
+
+It is not done here because the crisis path is Ask-First for this story and a
+refactor across it is not something to slip into a story about prose. Recorded
+rather than done quietly, which is the same choice ``candidate.py`` made and the
+last time it will be the right one.
 """
 
 from __future__ import annotations
