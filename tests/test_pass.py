@@ -37,6 +37,7 @@ import pytest
 
 from half.actor.registry import ActorRegistry
 from half.civil import instant
+from half.consolidate import mint as minting
 from half.consolidate.pass_ import (
     Ledger,
     PassResult,
@@ -324,7 +325,11 @@ def test_a_main_with_no_tensions_at_all_is_a_normal_quiet_pass(
     with Store(tmp_path / "vidit") as store:
         seed_belief(store, "b_1", SEEDED, subject="self", claim="swims")
     result = asyncio.run(TensionPass(ledger=registry).evaluate("vidit", NOW))
-    assert result == PassResult()
+    # ``minted`` is the shipped build's: no judge is wired until 9e, and the
+    # minting half now says that as its own fact rather than reading as a quiet
+    # night. Everything the *re-evaluation* reports is still the empty default.
+    assert result == PassResult(minted=result.minted)
+    assert result.minted == minting.MintResult(unwired=True)
     assert result.quiet and result.seen == 0
 
 

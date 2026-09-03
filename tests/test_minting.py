@@ -391,8 +391,16 @@ def test_no_port_wired_completes_the_pass_and_mints_nothing(
     assert result.minted.considered == 1
     assert result.minted.turned_away == 0
     assert result.minted.consulted == 0
-    assert result.minted.minted == () and result.minted.quiet
+    assert result.minted.minted == ()
     assert tensions_of(registry, "vidit") == {}
+
+    # **And it says so as its own fact.** An unwired port used to be reported
+    # in the budget's vocabulary and to read as ``quiet``, so the state this
+    # build actually ships in was indistinguishable from a night with nothing
+    # to mint.
+    assert result.minted.unwired
+    assert not result.minted.quiet
+    assert not result.minted.budget_reached
 
 
 @pytest.mark.cap7_minting
@@ -823,6 +831,66 @@ def test_the_bound_stops_the_minting_too_and_not_only_the_asking(
 
     assert len(result.minted.minted) == minting.JUDGEMENTS
     assert len(tensions_of(registry, "vidit")) == minting.JUDGEMENTS
+
+
+@pytest.mark.cap7_minting
+def test_the_couples_beyond_the_bound_are_dropped_and_the_pass_says_dropped(
+    registry, tmp_path, caplog
+):
+    """Matrix: *beyond the budget* — *"reconsidered on a later pass, or
+    reported as dropped, never silently discarded"*.
+
+    It said one and did the other. ``mint.py`` logged *"%d couple(s) left for
+    the next pass"* and there is no backlog: the next pass's watermark excludes
+    the entries that produced them, so nothing reconsiders them ever. Verified
+    here — pass one buys its whole budget with couples left over, pass two
+    considers none of them, and neither ever will.
+
+    CAP-7's matrix allows either answer and asks only that the pass say which
+    one it gave. This build drops, so it says dropped; a backlog would be
+    durable state this story does not add.
+    """
+    seeded(registry, tmp_path, seed=a_crowd(8))
+
+    with caplog.at_level("INFO", logger="half.consolidate.mint"):
+        first = run_pass(registry, "vidit", judge=Judge(False))
+    assert first.minted.budget_reached and first.minted.unbudgeted > 0
+    assert "dropped unjudged and not carried forward" in caplog.text
+    assert "left for the next pass" not in caplog.text
+
+    # The second pass, against the same log at a later instant with a marker
+    # for the first. Nothing changed since, so nothing is reconsidered — which
+    # is the fact the old log line denied.
+    mark_pass(registry, "vidit", NOON, ran=True)
+    second = run_pass(registry, "vidit", judge=Never(),
+                      now=moment(NOON + 3_600))
+    assert second.minted.considered == 0
+    assert second.minted.unbudgeted == 0
+
+
+@pytest.mark.cap7_minting
+def test_a_judgement_that_raised_was_still_bought_and_is_still_billed(
+    registry, tmp_path
+):
+    """The budget's meter read zero on the one night it mattered.
+
+    ``consulted += 1`` sat after the ``except``/``continue``, so a provider
+    failing every call reported ``consulted == 0`` having been asked — and
+    billed — a full budget's worth of times. A bound whose own meter cannot see
+    the spending is not a bound.
+
+    Asserted on a judge that raises every time and counts its calls, so the
+    number the port saw and the number the result reports are two independently
+    measured quantities that have to agree.
+    """
+    seeded(registry, tmp_path, seed=a_crowd(8))
+    judge = Judge(RuntimeError("the provider fell over"))
+    result = run_pass(registry, "vidit", judge=judge)
+
+    assert judge.calls == minting.JUDGEMENTS
+    assert result.minted.consulted == minting.JUDGEMENTS
+    assert len(result.minted.skipped) == minting.JUDGEMENTS
+    assert result.minted.minted == ()
 
 
 @pytest.mark.cap7_minting
@@ -1526,7 +1594,7 @@ def test_no_log_line_in_the_minting_can_carry_content():
                     marker in text
                     for marker in ("main_id", "len(", "type(", "tension_id",
                                    "couple.id", "sorted(set(", "consulted",
-                                   "plan.unbudgeted",
+                                   "plan.unbudgeted", "plan.considered",
                                    # A pinned module constant, not a value out
                                    # of anybody's log.
                                    "CEILING")

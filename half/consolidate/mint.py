@@ -142,6 +142,11 @@ class Slate:
     within: tuple[Couple, ...] = ()
     #: Couples the filter admitted that the budget could not reach. Non-zero is
     #: exactly *"this pass would have exceeded its bound"*.
+    #:
+    #: **Dropped, not deferred.** There is no backlog and the next pass's
+    #: watermark excludes the entries that produced them, so a couple counted
+    #: here is not reconsidered later — which is one of the two answers CAP-7's
+    #: matrix allows, and the one this build gives.
     unbudgeted: int = 0
     #: Couples already carrying a live tension. Recognised before the filter and
     #: long before the port, so nothing is spent on a disagreement Half has
@@ -191,11 +196,16 @@ class MintResult:
     #: failed write must not cost this main the rest of the night — and nothing
     #: was recorded, so the next pass computes the same answer again.
     unrecorded: tuple[str, ...] = ()
-    #: Judgements actually bought. **Never more than ``JUDGEMENTS``.**
+    #: Judgements actually bought. **Never more than ``JUDGEMENTS``**, and
+    #: counted before the call rather than after it: a judgement that raised
+    #: had still been bought, and billing it only on success reported
+    #: ``consulted == 0`` for a provider that failed twenty-four times.
     consulted: int = 0
     #: Couples the filter turned away, before any of them cost anything.
     turned_away: int = 0
-    #: Couples the filter admitted that the budget could not reach.
+    #: Couples the filter admitted that the budget could not reach. **Dropped,
+    #: not deferred** — there is no backlog, and the next pass's watermark
+    #: excludes the entries that produced them.
     unbudgeted: int = 0
     #: Couples the comparison bound produced at all. **Never more than
     #: ``candidates.CEILING``**, which is what makes *"never all-pairs, in
@@ -210,10 +220,26 @@ class MintResult:
         """Whether this pass stopped minting because it had spent its bound."""
         return self.unbudgeted > 0
 
+    #: Whether there was no judge to ask. **A fact of its own**, because it
+    #: used to borrow the budget's: a pass with no port ran the slate, hit the
+    #: cut at ``JUDGEMENTS`` and reported ``budget_reached`` with a count of
+    #: couples it had supposedly not been able to afford, having bought
+    #: nothing. It is also why ``quiet`` reads it — an unwired port and a quiet
+    #: night are not the same night, and this build ships unwired until 9e.
+    unwired: bool = False
+
     @property
     def quiet(self) -> bool:
-        """True when nothing was minted **and nothing failed**."""
-        return not (self.minted or self.unrecorded or self.skipped)
+        """True when nothing was minted, **nothing failed, and somebody was
+        asked**.
+
+        ``unwired`` is in the test because it was not, and an unwired port was
+        therefore indistinguishable from a night with nothing to mint — which
+        is the state this build ships in, so the one that most needed telling
+        apart.
+        """
+        return not (self.minted or self.unrecorded or self.skipped
+                    or self.unwired)
 
 
 def linked(tensions: Mapping[str, Mapping[str, Any]] | None) -> set[frozenset[str]]:
@@ -366,6 +392,28 @@ async def consider(
     # pass doing this on the loop runs past its bound with the tick looking
     # healthy the whole time, in front of every main's inbound turn.
     plan = await asyncio.to_thread(slate, view, now=now)
+
+    if judge is None:
+        # **Hoisted, because the budget's vocabulary was lying about it.** The
+        # check used to sit inside the loop, so a pass with no port ran the
+        # whole slate — including the cut at ``JUDGEMENTS`` — and reported
+        # ``budget_reached=True`` with ``unbudgeted=876`` for a night on which
+        # nothing could be bought at all. The bound, the filter and the ceiling
+        # still run and are still reported, because exercising them on every
+        # pass is what keeps CAP-7's cost rule under test with no provider in
+        # the tree; what is *not* reported is a budget that was never spent.
+        logger.info(
+            "minting for main=%s consulted nobody: no disagreement judge is "
+            "wired. %d couple(s) considered", main_id, plan.considered,
+        )
+        return MintResult(
+            standing=plan.standing,
+            turned_away=plan.turned_away,
+            considered=plan.considered,
+            ceiling_reached=plan.ceiling_reached,
+            unwired=True,
+        )
+
     minted: list[str] = []
     passed: list[str] = []
     unsaid: list[str] = []
@@ -374,8 +422,13 @@ async def consider(
     consulted = 0
 
     for couple in plan.within:
-        if judge is None:
-            break
+        # **Billed before the call, not after.** ``consulted`` used to be
+        # incremented past the ``except``, so a provider that failed every call
+        # reported ``consulted == 0`` after twenty-four billed consultations —
+        # a bound whose own meter read zero on exactly the night it mattered.
+        # A judgement that raises has been bought; whether it answered is what
+        # ``skipped`` says.
+        consulted += 1
         try:
             answer = await judge.disagree(*couple.both)
         except Exception as exc:  # noqa: BLE001 - one couple, not the main
@@ -388,7 +441,6 @@ async def consider(
                 "continues", main_id, type(exc).__name__,
             )
             continue
-        consulted += 1
         if answer is None:
             unsaid.append(couple.id)
             continue
@@ -422,9 +474,17 @@ async def consider(
     if plan.budget_reached:
         # Said, rather than reported after the fact: the couples beyond the
         # bound were never consulted, so nothing was overspent to learn this.
+        #
+        # **And they were dropped, not deferred.** This line said *"left for
+        # the next pass"* and there is no backlog: the next pass's watermark
+        # excludes the entries that produced them, so nothing reconsiders them
+        # ever. Verified — pass one mints twenty-four with forty unbudgeted,
+        # pass two considers none. CAP-7's matrix allows either answer and asks
+        # only that the pass say which one it gave, so this says the one it
+        # gives. A backlog would be durable state this story does not add.
         logger.info(
             "minting for main=%s stopped at its bound: %d judgement(s) bought, "
-            "%d couple(s) left for the next pass",
+            "%d couple(s) dropped unjudged and not carried forward",
             main_id, consulted, plan.unbudgeted,
         )
 
