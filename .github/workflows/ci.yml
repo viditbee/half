@@ -93,19 +93,38 @@ jobs:
         # floor that reports itself twice as well covered as it is, which is a
         # floor telling a lie. It is gated by `cap4_bought` at margin zero.
         #
-        # 65 selected, 50 required. **The margin is fifteen and it is not zero
+        # **Story 13a adds nine, and the floor moves with them.** A model now
+        # writes the morning, which is the first time in this tree that AD-18's
+        # *"never by filtering generated text"* has generated text to be about.
+        # The nine are the construction rule at the prompt — the quotable block
+        # and the shaping block built by two functions from two fields, a
+        # `behave` claim nowhere in the prompt at all, no belief id reaching it
+        # — and the five that make the verbatim tripwire a smoke alarm rather
+        # than enforcement: it fires on a fragment, it is loud, it buys no
+        # regeneration, and no function in the module returns text, so there is
+        # nothing there that could redact.
+        #
+        # **The twenty-eight language-sample cases are deliberately *not* here.**
+        # They are story 13a's own rule — a language signal that can never become
+        # content — and no rung governs a language. Marking them would have taken
+        # this gate from 65 to 102 while adding two rules' worth of AD-18
+        # coverage, which is story 11's forty-eight-case truth table arriving
+        # under a different name. They are gated by `cap8_voice`, at margin zero.
+        #
+        # 74 selected, 59 required. **The margin is fifteen and it is not zero
         # on purpose**: several cases here are neighbours inside one sweep — the
         # nine malformed-license parameters, the script cases — so pruning a
         # redundant parameter should be possible without editing this number,
         # while gutting the gate should not. Every rule with a *single* case
-        # (the rendering-completeness enumeration, the byte-wise leak guard) sits
-        # far enough below the floor that losing it drops the count beneath it.
+        # (the rendering-completeness enumeration, the byte-wise leak guard, each
+        # of story 13a's four construction cases) sits far enough below the floor
+        # that losing it drops the count beneath it.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m ad18 -q --collect-only \
             | grep -c '::' || true)
           echo "AD-18 cases collected: $collected"
-          if [ "$collected" -lt 50 ]; then
+          if [ "$collected" -lt 59 ]; then
             echo "::error::the AD-18 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -1026,18 +1045,18 @@ jobs:
         # wiring and the determinism guarantees among them — fitted inside its
         # own margin.
         #
-        # 185 selected, 175 required. The margin is 10, and it is deliberately
+        # 416 selected, 406 required. The margin is 10, and it is deliberately
         # smaller than every protected subset: silence (83), nagging (72),
-        # structure (13) and the cases held by this gate alone. Deleting any one
-        # of them drops this gate beneath its floor **and** fails whichever
-        # sub-gate names it. Story 11 added one and the floor moves with it, so
-        # the margin does not grow.
+        # structure (13), the wire text (231) and the cases held by this gate
+        # alone. Deleting any one of them drops this gate beneath its floor
+        # **and** fails whichever sub-gate names it. Story 11 added one and story
+        # 13a added 231; the floor moves with them, so the margin does not grow.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap8 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-8 cases collected: $collected"
-          if [ "$collected" -lt 175 ]; then
+          if [ "$collected" -lt 406 ]; then
             echo "::error::the CAP-8 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -1152,6 +1171,61 @@ jobs:
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap8_structure
+
+      - name: 'CAP-8: the morning in words — prose on the wire, or nothing'
+        # The wire-text gate. Until story 13a a main received
+        # `content[b_1]: has not walked that plot since March` — the internal
+        # serialization, label and belief id included — because the morning
+        # surface sent `Context.render()`. That was a launch blocker, and the
+        # thing about it that made it survive three stories is that nothing was
+        # broken: the suite was green, the choice was right, the ladder held, and
+        # the only wrong thing was the string.
+        #
+        # So this gate is over the subset that makes the string right, and it is
+        # marker-selected rather than file-selected for the reason the AD-18,
+        # CAP-6, CAP-7, CAP-8 and CAP-12 steps are: it must not go green because
+        # another step happened to run one of the same files.
+        #
+        # What it covers:
+        #
+        #   that the wire carries prose and no part of the context's own
+        #   serialization — asserted by rendering the context the surface
+        #   actually built and looking for its output, never against an expected
+        #   string; that the judge accepts an ordinary morning in each of
+        #   fourteen writing systems and a question asked without a question mark
+        #   in each of the five languages that routinely ask that way; that two
+        #   question marks are refused and one accepted for every question mark
+        #   Unicode has, with the set re-derived from the Unicode property rather
+        #   than compared to a list; that a language sample in any script reaches
+        #   the generator and cannot reach the quotable channel; that a failed
+        #   generation costs no day; that a provider absent, slow, failing, over
+        #   its cap or raising all produce silence and never a template; that the
+        #   breaker stands one main down without touching another; and that no
+        #   generated string is written to the log, a projection or a log line.
+        #
+        # **The margin is zero, and that is what it means here.** Every case in
+        # this gate is the only one asserting its rule — *including each script
+        # and each question mark*, because a script pruned is a script nobody
+        # checks and that is precisely how story 12 shipped a correction path
+        # that deleted beliefs on ordinary Thai and Japanese sentences with the
+        # suite green. There is no redundant parameter in here to prune, so there
+        # is no room to leave for pruning one. Adding cases moves this number
+        # with them; nothing else may.
+        #
+        # A superset floor cannot protect this: `cap8` collects 416 against 406,
+        # so all 231 of these could be deleted with that step green.
+        #
+        # 231 selected, 231 required.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap8_voice -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-8 wire-text cases collected: $collected"
+          if [ "$collected" -lt 231 ]; then
+            echo "::error::the wire-text gate collected $collected cases; Half may have stopped speaking, or started speaking scaffolding"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap8_voice
 
       - name: 'CAP-4: the trust currency — computed from the log, stakes before the favour'
         # The currency CAP-4 rests on, and every rule in it decays in silence.
@@ -1457,6 +1531,18 @@ jobs:
         # as a string-prefix denylist and both of 5b's known bypasses walked
         # past the copy. A predicate worth having twice is worth having once.
         #
+        # **Story 13a added two more, and the floor moves from 37 to 39.**
+        # half/voice joined the same two parametrized sweeps rather than
+        # carrying a fourth copy of them, with an **empty** door — it is handed a
+        # split context, a language sample and a withheld set, and a store there
+        # would be a second writer while a *read* of one would be a composer
+        # choosing its own material. It lifts the model root and only that root,
+        # because composing the morning's sentence through the port is its whole
+        # subject (story 13a), and pays for the lift in tests/test_voice.py: the
+        # port's narrow generator, refused at construction unless `generate` is
+        # its only public method. The margin stays zero, which is the right size
+        # for a gate where every case is the only one asserting its rule.
+        #
         # **Story 12 added two, and the floor moved from 35 to 37 with it.**
         # half/correction joined the same two parametrized sweeps rather than
         # carrying a third copy of them, with an **empty** door - it has no
@@ -1471,7 +1557,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap4_structure -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-4 structural cases collected: $collected"
-          if [ "$collected" -lt 37 ]; then
+          if [ "$collected" -lt 39 ]; then
             echo "::error::the CAP-4 structure gate collected $collected cases; a rule with one case has lost it"
             exit 1
           fi

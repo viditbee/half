@@ -306,12 +306,19 @@ def test_the_quotable_block_has_no_parameter_a_sample_could_arrive_through():
     )
 
 
-@pytest.mark.ad18
 @pytest.mark.cap8_voice
 @pytest.mark.parametrize("script", sorted(SCRIPTS), ids=sorted(SCRIPTS))
 def test_the_language_sample_never_reaches_the_quotable_block(script):
     """Swept over fourteen writing systems, because the failure this guards
     against is a rule that holds in the one script somebody tested.
+
+    **Deliberately not marked ``ad18``**, and the case above is. AD-18 is about
+    *licenses* — what a rung permits Half to say — and this rule is about a
+    *language signal*, which no rung governs. Twenty-eight parametrized cases
+    under that marker would have taken its gate from 65 to 102 while adding two
+    rules' worth of AD-18 coverage, which is story 11's forty-eight-case truth
+    table arriving under a different name. They are gated by ``cap8_voice``, at
+    margin zero.
 
     Two assertions, and the second is the stronger: the sample is absent from
     the quotable block, **and** the quotable block is byte-identical whatever
@@ -329,7 +336,6 @@ def test_the_language_sample_never_reaches_the_quotable_block(script):
     assert sample.text in language_block(sample)
 
 
-@pytest.mark.ad18
 @pytest.mark.cap8_voice
 @pytest.mark.parametrize("script", sorted(SCRIPTS), ids=sorted(SCRIPTS))
 def test_the_sample_reaches_the_generator_under_its_own_label(script):
