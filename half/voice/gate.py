@@ -310,9 +310,24 @@ QUESTION_MARKS: Final[frozenset[str]] = frozenset(
 
 # ── what a composition comes to ──────────────────────────────────────────────
 
-#: The context had nothing quotable and no bought question. Ordinary: story 10
-#: already answers this before reaching here, and it is checked again because a
-#: caller that did not is a caller paying a provider to write about nothing.
+#: **Nothing reached any channel** — no content, no directives, no bought
+#: question. Ordinary: story 10 already answers this before reaching here, and
+#: it is checked again because a caller that did not is a caller paying a
+#: provider to write about nothing.
+#:
+#: **Widened by story 13b's review loop, and the name is deliberately kept.**
+#: The check used to be *"nothing quotable and nothing bought"*, which refused a
+#: context carrying directives alone — and that is precisely a main under an
+#: aftercare ceiling, whose every license is capped at `behave` for at least
+#: thirty days. Half met them with silence on every message for a month while
+#: CAP-12 says it stays present. The rung is not the question: a directive
+#: shapes *how* Half speaks and is never quoted (AD-18), so a reply shaped by
+#: one and quoting none of it is the rule working rather than a hole in it.
+#:
+#: The constant's *name and value are unchanged* because it is the key an
+#: operator's counter already holds (``half.surface.morning.REASONS`` reads
+#: ``SILENCES`` whole), and because it is still true of every context that now
+#: reaches it: there is nothing quotable, and nothing else either.
 #:
 #: **Spelled differently from ``half.surface.morning.NOTHING_TO_SAY`` on
 #: purpose**, which is review round 1's correction: the two carried the same
@@ -779,12 +794,23 @@ class Voice:
         # was rather than as a stand-down.
         standing_down = self._tick_breaker(main_id)
 
-        if not isinstance(context, Context) or not (
-            context.content or context.question
-        ):
-            # Nothing quotable and nothing bought. Story 10 answers this before
-            # reaching here; checked again because a caller that did not would
-            # be paying a provider to write about nothing.
+        if not isinstance(context, Context) or context.empty:
+            # **Nothing in any channel.** Story 10 answers this before reaching
+            # here; checked again because a caller that did not would be paying
+            # a provider to write about nothing.
+            #
+            # ``Context.empty`` and not *"nothing quotable"*, which is story
+            # 13b's review-loop correction and is the whole of it: a context
+            # carrying directives alone is a main whose every license is capped
+            # at `behave` — an aftercare main, for at least thirty days — and
+            # refusing it here met them with silence on every message for a
+            # month. Directives shape what is said and are never quoted, so a
+            # reply built from one and quoting none of it is AD-18 working.
+            #
+            # **The morning is unaffected**, and by construction rather than by
+            # care: ``half.surface.morning`` gates on ``speech(context)``, which
+            # reads the content and question channels only, so a directives-only
+            # context never reaches this method from there.
             return self._silent(main_id, NOTHING_QUOTABLE, counted=False)
         if not isinstance(sample, Sample) or not sample.present:
             # No language to answer in. Silence rather than a default: choosing

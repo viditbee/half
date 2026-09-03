@@ -391,6 +391,24 @@ def _topics(item: Any) -> str:
 #: Everything after the labels is material, never direction: the sample is
 #: somebody's message and may say anything at all, including something shaped
 #: like an instruction.
+#: **A message with no may-be-said block is the ordinary case, not the edge**
+#: (story 13b, review loop 1). Every belief is admitted at the weakest rung and
+#: promotion needs a receipt *and* the main's prior knowledge, so `assert` is
+#: rare by design — and a main under a crisis-aftercare ceiling has *every*
+#: license capped at `behave` for at least thirty days. On those turns the
+#: prompt carries a be-mindful-of block and nothing to state, and the
+#: instruction above has to be a coherent thing to hand a model rather than a
+#: branch nobody reaches. What it asks for is a **short message that states
+#: nothing**, which is what ``"noted."`` was standing in for — except written in
+#: the person's own language rather than in one language for everybody, which is
+#: the whole reason this module exists.
+#:
+#: *It is deliberately not a rule about what such a message should say.* Naming
+#: the move — acknowledge, reflect, encourage — would be a register rubric, and
+#: a register rubric shipped worldwide is the thing this package refuses. What
+#: is stated is the bound (short, states nothing, invents nothing) and the
+#: direction is left to the language.
+#:
 #: **One line of this was a locale rule and was removed.** The first draft said
 #: *no greeting line, no sign-off*, which sounds like a rule about scaffolding
 #: and is a rule about English: a morning message conventionally opens with a
@@ -414,9 +432,13 @@ INSTRUCTIONS: Final[tuple[str, ...]] = (
 
     "The may-be-said block is the only thing you may state. Say one thing from "
     "it, in your own words or in its words, whichever reads better in that "
-    "language. If there is no may-be-said block, state nothing about the "
-    "person at all: nothing has been given to you to say, and the message is "
-    "then only what the ask-about block asks.",
+    "language.",
+
+    "If there is no may-be-said block, you have been told nothing you may "
+    "state about the person. Say nothing about them: do not guess, do not "
+    "infer, and do not fill the gap. Still write a message — a short one, and "
+    "one that states nothing about them. An empty answer is not an answer, and "
+    "an invented one is worse than a brief one.",
 
     "If there is a word-for-word block, your message must contain that text "
     "exactly as it is written, character for character, unchanged. Write the "
@@ -426,7 +448,8 @@ INSTRUCTIONS: Final[tuple[str, ...]] = (
 
     "The be-mindful-of block names things to be careful about. It is not "
     "material to say. Do not name, quote, paraphrase or allude to anything in "
-    "it. It exists so that what you do say is said gently.",
+    "it. It exists so that whatever you do say is said gently — including when "
+    "there is nothing you may state and the message is short.",
 
     "If there is an ask-about block, ask exactly one question about it, as "
     "part of the message rather than as a line, a heading or a form under it. "

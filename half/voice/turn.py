@@ -24,7 +24,19 @@ in their language, because it came from them; sending it degrades to *Half
 echoes what it knows*, which is honest, rather than to *Half emits its
 internals*, which is the blocker this story exists to close. A template is the
 one thing this product cannot ship worldwide (``half.context.channels`` records
-the objection); silence is kept for the one case where there is no claim.
+the objection); silence is kept for the case where there is nothing at all.
+
+**And the top rung does not need anything quotable** (review loop 1). The
+composer may write a reply shaped by the **directive channel alone**, quoting
+none of it — so a turn with no `assert` material is prose rather than the
+fallback, and the fallback is what a *failed generation* costs rather than what
+a weak ledger costs. The first version of this module ranked those the other way
+round and the arithmetic was brutal: `assert` requires a receipt *and* the main's
+prior knowledge, so it is rare by design, and a main under a crisis-aftercare
+ceiling has every license capped at `behave` for at least thirty days. Half met
+them with silence on every message for a month, while CAP-12 says it stays
+present. The rung was never the question — a directive shapes what is said and
+is never quoted (AD-18), and ``half.voice.leak`` is already the alarm on that.
 
 **The fallback is a branch that never entered the gate.** It is not *"whatever
 ``Voice.compose`` returns on failure"*: a main whose deployment has equipped

@@ -11,7 +11,16 @@ walked that plot since March"``, a bought question arrived as
 who has just written is waiting, so silence reads as broken rather than as
 quiet — the asymmetry that makes 13a's answer wrong here. Every rung below is a
 separate case: prose when the composer works, the claim alone when it does not,
-and silence only when there is no claim.
+and silence only when there is nothing at all.
+
+**The top rung does not require anything quotable**, which is review loop 1's
+amendment and the largest thing in this file. A reply may be shaped by the
+directive channel alone, quoting none of it — AD-18 working as written, because
+a directive has always shaped *how* Half speaks without being quoted. The first
+version of this story went silent instead, which meant silence on most turns for
+most mains and silence on **every** turn for thirty days for a main coming out
+of a crisis, whose licenses are all capped at `behave`. Several cases here exist
+to hold that open.
 
 **The fallback must be reachable with no model call**, so the cases that assert
 it use a holder that *counts* rather than one that raises. Story 13a's review
@@ -361,25 +370,76 @@ def test_a_leaked_behave_claim_falls_back_to_the_claim_rather_than_to_silence():
     assert voice.tally.leaked == 1
 
 
-def test_no_claim_and_a_failed_generation_is_silence_and_not_scaffolding():
-    """The one rung where a waiting main is answered with nothing.
+def test_nothing_in_any_channel_is_silence_before_a_provider_is_paid():
+    """Matrix: *nothing at all*. The one rung that ends in silence.
 
-    *"Silence only when there is no claim to send."* A context with no quotable
-    content and no bought question is answered before a provider is paid, and
-    the answer is nothing at all — never ``noted.``, which is a template in one
-    language, and never the serialization.
+    No content, no directives, no bought question: there is nothing to state,
+    nothing to shape a message, and nothing to fall back to. It is answered
+    before a provider is reached — the counter is the signal, because
+    ``Voice._attempt_all`` turns a raise into ``Unspoken(RAISED)`` and a double
+    that only raised would let this pass with the provider paid.
     """
     never = NeverGenerates()
     voice = Voice({MAIN: never}, bound_seconds=0.5)
-    empty = a_context(
-        candidate("b_2", WITHHELD, rung=License.BEHAVE, topics=["family"])
-    )
 
-    turned = spoke(voice, empty, withheld=ordinary_withheld())
+    turned = spoke(voice, a_context(), withheld=frozenset())
 
     assert turned.silent
     assert turned.text == ""
     assert never.calls == 0
+    assert voice.tally.composed == 0
+
+
+def test_a_directives_only_context_is_composed_for_and_never_refused():
+    """Matrix: *nothing quotable, directives present*. **The review loop's
+    finding, at the gate that caused it.**
+
+    The composer used to refuse a context with nothing quotable and nothing
+    bought — and that is exactly a main under an aftercare ceiling, whose every
+    license is capped at `behave` for at least thirty days. They were met with
+    silence on every message for a month, while CAP-12 says Half stays present.
+
+    A directive shapes what is said and is never quoted, so a reply built from
+    one and quoting none of it is AD-18 working rather than a hole in it. The
+    generator is reached, the prose goes out, and the directive's own claim is
+    nowhere in it.
+    """
+    voice, holder = a_voice("still here, and no rush")
+    shaped = a_context(
+        candidate("b_2", WITHHELD, rung=License.BEHAVE, topics=["family"])
+    )
+    assert shaped.content == () and shaped.question is None
+    assert shaped.directives, "the fixture must carry a directive"
+
+    turned = spoke(voice, shaped, withheld=ordinary_withheld())
+
+    assert holder.calls == 1, "the composer was refused before it was reached"
+    assert turned.composed
+    assert turned.text == "still here, and no rush"
+    assert WITHHELD not in turned.text
+    for word in WITHHELD.split():
+        if len(word) > 6:
+            assert word not in turned.text
+
+
+def test_a_directives_only_context_whose_generation_fails_is_silence():
+    """The other side of the same rung, and it is not the same as the row above.
+
+    There is something shaping a message and nothing to fall back to, so a
+    failed generation ends in silence rather than in a template. What must not
+    happen is scaffolding: ``noted.`` is a template in one language, and the
+    serialization is what this story exists to remove.
+    """
+    voice, holder = a_voice("")                     # judged empty, every time
+    shaped = a_context(
+        candidate("b_2", WITHHELD, rung=License.BEHAVE, topics=["family"])
+    )
+
+    turned = spoke(voice, shaped, withheld=ordinary_withheld())
+
+    assert holder.calls >= 1, "the composer must have been reached"
+    assert turned.silent
+    assert turned.text == ""
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -864,8 +924,15 @@ def test_a_correction_reply_carries_the_removed_claim_and_no_marker(
     """
     root = tmp_path / "mains"
     a_main(root, sayable="")
+    # **The double composes from the prompt rather than from a constant.** It
+    # echoes the ``word-for-word`` block when there is one, which is what a real
+    # generator does with a claim it has been told to carry unchanged — and it
+    # matters since the review loop: the ordinary turn *before* this one now
+    # composes too, and a double that emitted the removed claim on every turn
+    # would trip the tripwire there, where that claim is a withheld directive,
+    # and pollute the counter this case reads.
     voice, holder = a_voice(
-        lambda work: f"{WITHHELD} — taken out of what I hold."
+        lambda work: f"{_verbatim(work) or 'still here'} — taken out."
     )
 
     transport = turns(registry, ["farmland again please", "thats wrong"],
@@ -883,7 +950,9 @@ def test_a_correction_reply_carries_the_removed_claim_and_no_marker(
     # composed path would be dead, permanently, with this file green.
     assert body != WITHHELD, "the fallback went out, not the composed reply"
     assert voice.tally.leaked == 0, "the removed claim was withheld from itself"
-    assert voice.tally.spoken == 1
+    # Both turns speak: the ordinary one from a directive alone, this one from
+    # the removal. Neither is the fallback.
+    assert voice.tally.spoken == 2
 
 
 def test_the_removed_claim_is_the_only_thing_a_correction_reply_may_state(
@@ -910,6 +979,13 @@ def test_the_removed_claim_is_the_only_thing_a_correction_reply_may_state(
     said = [_said(work) for work in holder.requests]
     assert said[-1] == WITHHELD, said
     assert SAYABLE not in said[-1], "the reply may state the removal, and no more"
+
+
+def _verbatim(work):
+    for block in work.prompt.turns[0].text.split("\n\n"):
+        if block.startswith(WORD_FOR_WORD):
+            return block[len(WORD_FOR_WORD):].strip()
+    return ""
 
 
 def _said(work):

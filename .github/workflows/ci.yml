@@ -1308,8 +1308,12 @@ jobs:
         # What it covers:
         #
         #   the fallback ladder, rung by rung — prose when the composer works,
-        #   the claim alone when it does not, and silence only when there is no
-        #   claim; that the claim rung is reachable with **no model call**,
+        #   the claim alone when it does not, and silence only when there is
+        #   nothing at all; that a context carrying **directives alone** is
+        #   composed for rather than refused, which is review loop 1's amendment
+        #   and the difference between a present Half and a month of silence for
+        #   a main coming out of a crisis; that the claim rung is reachable with
+        #   **no model call**,
         #   asserted structurally because deleting the guard changes nothing
         #   observable today and everything the first time a step is added to
         #   the gate; that a dead provider costs one bound and never three, and
@@ -1351,7 +1355,7 @@ jobs:
         # the fallback reading the last quotable claim rather than the top-ranked
         # one; and the model-free branch, which needed a structural case.
         #
-        # **Margin zero: 98 selected, 98 required.** Every case is the only one
+        # **Margin zero: 100 selected, 100 required.** Every case is the only one
         # asserting its rule, including each of the fourteen scripts — a script
         # pruned is a script nobody checks, which is how story 12 shipped a
         # correction path that deleted beliefs on ordinary Thai and Japanese
@@ -1363,7 +1367,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap1_turn -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-1 turn wire-text cases collected: $collected"
-          if [ "$collected" -lt 98 ]; then
+          if [ "$collected" -lt 100 ]; then
             echo "::error::the turn wire-text gate collected $collected cases; a main may be receiving Half's internals again"
             exit 1
           fi
