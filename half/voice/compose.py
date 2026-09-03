@@ -55,14 +55,18 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from half.context.channels import Context, sanitize
+from half.governance.ladder import quarantined
 from half.model.port import Prompt, Role, Turn
 from half.store.records import LEDGER, STATED
+from half.text import clusters
 
 __all__ = [
     "ASK_ABOUT",
     "BE_MINDFUL_OF",
     "INSTRUCTIONS",
     "LANGUAGE_SAMPLE",
+    "MAX_CHARS",
+    "MAX_OUTPUT_TOKENS",
     "MAX_SAMPLE_CHARS",
     "MAY_BE_SAID",
     "RETRY",
@@ -76,6 +80,37 @@ __all__ = [
     "turn_text",
 ]
 
+
+#: The most characters a morning may be.
+#:
+#: A bound on the *message*, not on the writing. CAP-8 says at most one thing,
+#: and this is the loosest ceiling that still refuses an essay: roughly a
+#: hundred words of Latin prose, about the same of Devanagari or Thai, and
+#: rather more of Han — so the inequality runs toward *more* room for the
+#: scripts that need it least, and no script's ordinary one-thing morning comes
+#: near it. It is counted in characters rather than words because a word count
+#: is not a thing every script has.
+#:
+#: **It lives here rather than beside the judge that enforces it, because the
+#: model is told it.** Review found that ``half.voice.gate`` refused anything
+#: past six hundred characters while the instructions said only *"one short
+#: message"* — so a model that habitually writes seven hundred burns all three
+#: attempts and the main gets silence, for ever, with nothing anywhere saying
+#: why. Stating a length is *format*, not register, so it is inside the rule
+#: this module sets itself.
+MAX_CHARS: Final[int] = 600
+
+#: The output ceiling handed to the port, in tokens.
+#:
+#: **Derived from ``MAX_CHARS`` at the worst measured tokens-per-character, so
+#: no script is truncated where another is not.** ``half.model.budget`` measured
+#: 1,600 Japanese characters against 2,400 real tokens — three tokens for every
+#: two characters — which is the top of the band for CJK, Thai and the Indic
+#: scripts. Six hundred characters at that rate is nine hundred tokens, and this
+#: sits above it. A ceiling sized on English prose would have cut a Thai morning
+#: off mid-sentence while an English one of the same length fitted, which is the
+#: shape of failure this tree has shipped before.
+MAX_OUTPUT_TOKENS: Final[int] = 1_024
 
 #: How much of the main's last message travels, in characters.
 #:
@@ -131,7 +166,7 @@ class Sample:
 
     def __post_init__(self) -> None:
         cleaned = sanitize(self.text) if isinstance(self.text, str) else ""
-        object.__setattr__(self, "text", cleaned[:MAX_SAMPLE_CHARS].strip())
+        object.__setattr__(self, "text", _trimmed(cleaned).strip())
 
     @property
     def present(self) -> bool:
@@ -142,6 +177,36 @@ class Sample:
         inference this product does not do.
         """
         return bool(self.text)
+
+
+def _trimmed(text: str) -> str:
+    """``text`` cut to ``MAX_SAMPLE_CHARS`` **on a cluster boundary**.
+
+    Review round 1's finding, and it is the exact class of failure this package
+    already went out of its way to avoid one function over: a slice at a
+    codepoint offset lands inside a grapheme cluster, so a Devanagari matra, a
+    Khmer dependent vowel or a Hangul jamo is separated from the letter it
+    belongs to and the sample ends in a fragment that is not a character anybody
+    typed. ``half.text.clusters`` already solves this — it is what stops the
+    index shattering Indic words — so it is imported rather than approximated,
+    which is the same reason the withheld rule is imported from
+    ``half.context.build``.
+
+    The bound is on *characters* and is applied by counting them, so the result
+    is never longer than the bound and may be shorter by up to one cluster.
+    Shorter is the safe direction: this is a language sample, and one cluster
+    changes nothing about which language it is.
+    """
+    if len(text) <= MAX_SAMPLE_CHARS:
+        return text
+    kept: list[str] = []
+    length = 0
+    for cluster in clusters(text):
+        if length + len(cluster) > MAX_SAMPLE_CHARS:
+            break
+        kept.append(cluster)
+        length += len(cluster)
+    return "".join(kept)
 
 
 #: The empty sample. A main who has never written, or whose message this build
@@ -161,9 +226,27 @@ def sample_from(beliefs: Mapping[str, Mapping[str, Any]] | Any) -> Sample:
     Newest by stamp, with the id breaking a tie, so two records written in the
     same instant do not make a morning depend on dictionary order (AD-30).
 
+    **A quarantined record is skipped**, which is review round 1's finding and a
+    real breach: quarantine is a belief permanently pinned at `behave` because
+    Half has been asked to leave that topic alone, and handing its text to a
+    provider is touching the topic in the one way that cannot be taken back.
+    ``half.governance.ladder.quarantined`` is asked rather than the field read,
+    so the pin's own spelling stays in one place.
+
+    **The rung is deliberately *not* checked**, and that is the half of the same
+    finding this function refuses. Every inbound message is admitted at the
+    weakest rung — ``half.actor.runtime`` writes ``ladder.admitted()`` on it,
+    which is `behave` — so requiring `assert` here would find nothing for
+    anybody, ever, and Half would be permanently silent. That is not a
+    conservative reading of AD-18; it is the whole reason a language sample is a
+    separate concept from quotable content. What the rung governs is whether
+    Half may *state* a claim. What is happening here is answering somebody in
+    the language they wrote to you in, which no rung has ever governed and which
+    the frozen block names explicitly.
+
     Never raises. A belief with no claim, a claim that is not text, a record
-    that is not a mapping and a fold with no `stated` record at all are one
-    outcome: no sample, and therefore silence.
+    that is not a mapping, a quarantined record, and a fold with no `stated`
+    record at all are one outcome: no sample, and therefore silence.
     """
     if not isinstance(beliefs, Mapping):
         return NO_SAMPLE
@@ -171,6 +254,8 @@ def sample_from(beliefs: Mapping[str, Mapping[str, Any]] | Any) -> Sample:
     found = ""
     for ident, record in beliefs.items():
         if not isinstance(record, Mapping) or record.get(LEDGER) != STATED:
+            continue
+        if quarantined(record):
             continue
         claim = record.get("claim")
         if not isinstance(claim, str) or not claim.strip():
@@ -317,6 +402,10 @@ INSTRUCTIONS: Final[tuple[str, ...]] = (
 
     "If there is an ask-about block, end with exactly one question about it. "
     "If there is not, ask nothing. Never more than one question.",
+
+    f"Keep the whole message under {MAX_CHARS} characters. This is a length, "
+    "not a style: write however that language writes, and stop before that "
+    "many characters.",
 
     "Never write an identifier, a label, a bracketed code, a timestamp or any "
     "of the block names above. The person sees only what you write.",

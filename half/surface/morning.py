@@ -109,8 +109,7 @@ from typing import Any, Final, Protocol
 
 from half.channel.port import Channel, Reachability, SendResult
 from half.consolidate.pass_ import PassResult, completed
-from half.context.build import build as build_context
-from half.context.build import withheld as withheld_wordings
+from half.context.build import split as split_context
 from half.context.channels import Context, Item
 from half.context.channels import CHANNELS as CHANNEL_NAMES
 from half.governance.ladder import License, height
@@ -128,8 +127,7 @@ from half.surface.view import (
 )
 from half.voice.compose import sample_from
 from half.voice.gate import (
-    LEAKED,
-    RAISED,
+    FAULTS as VOICE_FAULTS,
     SILENCES,
     Spoken,
     Voice,
@@ -191,8 +189,14 @@ UNREADABLE: Final[str] = "unreadable"
 #: launch-blocking defect that must not look like a quiet morning. ``RAISED`` is
 #: not ordinary either: the port answers a provider fault with a *value*, so a
 #: raise out of it is a mistake in this build.
+#:
+#: **Read from ``half.voice.gate.FAULTS`` rather than spelled again**, which is
+#: review round 1's correction: the same two names in two modules is a fault
+#: this build can forget to treat as one, and the composer already has to know
+#: which of its reasons are faults — it is what decides whether the breaker may
+#: arm on them.
 FAULTS: Final[frozenset[str]] = frozenset(
-    {UNREADABLE, UNRECORDED, UNSENT, LEAKED, RAISED}
+    {UNREADABLE, UNRECORDED, UNSENT, *VOICE_FAULTS}
 )
 
 #: Every reason a morning can be silent, beside the platform's own. Closed, so
@@ -552,7 +556,13 @@ class MorningSurface:
         #    (``half.actor.runtime``), and this call hands the builder no bought
         #    belief, so no morning can carry one.
         material = self._material(view, choice=choice)
-        context = build_context(material, now=now.stamp, ceiling=view.ceiling)
+        # One resolution of the ladder, two answers: what may be said, and the
+        # wordings nothing said may echo. Computing them apart meant resolving
+        # twice and passing the same ceiling to two functions by convention,
+        # which is two chances for the tripwire to watch for the wrong words.
+        context, withheld = split_context(
+            material, now=now.stamp, ceiling=view.ceiling
+        )
         if not speech(context):
             return Silence(NOTHING_MAY_BE_SAID)
 
@@ -572,11 +582,22 @@ class MorningSurface:
             context,
             main_id=main_id,
             sample=sample_from(view.beliefs),
-            withheld=withheld_wordings(material, ceiling=view.ceiling),
+            withheld=withheld,
         )
         if not isinstance(composed, Spoken):
             return Silence(composed.reason)
         text = composed.text
+
+        # 7b. **And the platform is asked again**, which is review round 1's
+        #     finding. Composing may take three attempts at the bound — a minute
+        #     — and WhatsApp's window is a rolling twenty-four hours that can
+        #     close inside one. Without this the day was claimed and the send
+        #     went into a shut window, spending the day on a message nobody
+        #     received. The first ask stays where it is because it does a
+        #     different job: it stops Half paying to write at all.
+        reach = self.channel.capability_query(main_id)
+        if not reach.may_send_freeform:
+            return Silence(str(reach))
 
         # 8. The day is claimed, then the message is sent. Claiming is one
         #    serialized operation: it re-asserts the mode, re-reads the marker

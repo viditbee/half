@@ -68,8 +68,11 @@ from half.voice.compose import (
     shaping_block,
     turn_text,
 )
+from tests.conftest import GeneratorDouble, NeverGenerates
+
 from half.voice.gate import (
     ATTEMPTS,
+    FAULTS,
     BREAK_AFTER,
     BREAK_FOR,
     EMPTY,
@@ -79,7 +82,7 @@ from half.voice.gate import (
     MAX_OUTPUT_TOKENS,
     NO_LANGUAGE,
     NO_MODEL,
-    NOTHING_TO_SAY,
+    NOTHING_QUOTABLE,
     OVER_BUDGET,
     PAST_THE_BOUND,
     QUESTION_MARKS,
@@ -148,52 +151,6 @@ UNMARKED_QUESTIONS: Final[dict[str, str]] = {
 # ── the doubles ──────────────────────────────────────────────────────────────
 
 
-class Holder:
-    """The port's narrow generator, and nothing wider.
-
-    One method, returning a ``Completion`` or one of the four failures. Private
-    attributes, because ``Voice`` refuses a holder with any public callable but
-    ``generate`` — the double is held to the same shape as the real thing, which
-    is the whole point of the check.
-    """
-
-    def __init__(self, *answers: object, sleep: float = 0.0) -> None:
-        self._answers = list(answers) or [None]
-        self._sleep = sleep
-        self._seen: list[Generate] = []
-
-    async def generate(self, work: Generate):
-        self._seen.append(work)
-        if self._sleep:
-            await asyncio.sleep(self._sleep)
-        answer = (
-            self._answers[len(self._seen) - 1]
-            if len(self._seen) <= len(self._answers)
-            else self._answers[-1]
-        )
-        if isinstance(answer, BaseException):
-            raise answer
-        if callable(answer):
-            return answer(work)
-        return answer
-
-    @property
-    def _requests(self) -> list[Generate]:
-        return self._seen
-
-    @property
-    def _calls(self) -> int:
-        return len(self._seen)
-
-
-class Exploding:
-    """A holder that must never be reached, so every *no model call* case
-    asserts the call did not happen rather than that a counter stayed at zero."""
-
-    async def generate(self, work: Generate):  # pragma: no cover - never run
-        raise AssertionError("a model was consulted where none may be")
-
-
 def wrote(text: str) -> Completion:
     return Completion(text=text, usage=Usage(input_tokens=400, micro_usd=9_000))
 
@@ -252,7 +209,7 @@ SAMPLE = Sample("morning, thinking about the plot again")
 
 
 def voice(*answers, main=MAIN, **kw) -> Voice:
-    return Voice({main: Holder(*answers)}, bound_seconds=0.5, **kw)
+    return Voice({main: GeneratorDouble(*answers)}, bound_seconds=0.5, **kw)
 
 
 def compose(v: Voice, *, context=None, sample=SAMPLE, main=MAIN, withheld=None):
@@ -484,12 +441,12 @@ def test_a_leak_buys_no_regeneration():
     the judge. Regenerating past one would be a redaction with extra steps: the
     model would eventually produce something clean, the send would succeed, and
     the broken construction rule underneath would stay invisible."""
-    holder = Holder(wrote("avoids the conversation with his brother"),
+    holder = GeneratorDouble(wrote("avoids the conversation with his brother"),
                     wrote("a perfectly clean second attempt"))
     v = Voice({MAIN: holder}, bound_seconds=0.5)
 
     assert compose(v) == Unspoken(LEAKED)
-    assert holder._calls == 1, "the leak was retried"
+    assert holder.calls == 1, "the leak was retried"
 
 
 @pytest.mark.ad18
@@ -654,32 +611,32 @@ def test_a_judge_rejection_is_regenerated_within_the_bound():
     """The matrix row. And the regeneration carries the judge's own token, from
     the closed set, so a *re*-generation is actually different from the call
     before it without an English sentence explaining what was wrong."""
-    holder = Holder(wrote("x" * (MAX_CHARS + 1)), wrote("a quiet morning"))
+    holder = GeneratorDouble(wrote("x" * (MAX_CHARS + 1)), wrote("a quiet morning"))
     v = Voice({MAIN: holder}, bound_seconds=0.5)
 
     assert compose(v) == Spoken("a quiet morning")
-    assert holder._calls == 2
+    assert holder.calls == 2
     assert v.tally.refusals == {TOO_LONG: 1}
     assert v.tally.spoken == 1
-    assert f"{RETRY}\n{TOO_LONG}" in holder._requests[1].prompt.turns[0].text
-    assert RETRY not in holder._requests[0].prompt.turns[0].text
+    assert f"{RETRY}\n{TOO_LONG}" in holder.requests[1].prompt.turns[0].text
+    assert RETRY not in holder.requests[0].prompt.turns[0].text
 
 
 @pytest.mark.cap8_voice
 def test_a_judge_that_refuses_every_attempt_ends_in_silence():
     """*Never a template.* The bound is the attempt count, the outcome is
     deterministic, and what comes back is a reason rather than a sentence."""
-    holder = Holder(wrote("x" * (MAX_CHARS + 1)))
+    holder = GeneratorDouble(wrote("x" * (MAX_CHARS + 1)))
     v = Voice({MAIN: holder}, bound_seconds=0.5)
 
     assert compose(v) == Unspoken(JUDGED)
-    assert holder._calls == ATTEMPTS
+    assert holder.calls == ATTEMPTS
     assert v.tally.silences == {JUDGED: 1}
 
 
 @pytest.mark.cap8_voice
 def test_a_main_with_no_model_gets_silence_and_no_call():
-    v = Voice({MAIN: Exploding()}, bound_seconds=0.5)
+    v = Voice({MAIN: NeverGenerates()}, bound_seconds=0.5)
     assert compose(v, main="asha") == Unspoken(NO_MODEL)
     assert v.tally.composed == 0
     assert not v.holds("asha")
@@ -687,21 +644,21 @@ def test_a_main_with_no_model_gets_silence_and_no_call():
 
 @pytest.mark.cap8_voice
 def test_a_provider_past_the_bound_is_abandoned_and_never_waited_on_twice():
-    holder = Holder(wrote("too late"), sleep=5.0)
+    holder = GeneratorDouble(wrote("too late"), sleep=5.0)
     v = Voice({MAIN: holder}, bound_seconds=0.05)
 
     assert compose(v) == Unspoken(PAST_THE_BOUND)
-    assert holder._calls == 1, "a slow provider was asked again"
+    assert holder.calls == 1, "a slow provider was asked again"
     assert v.tally.bound_exceeded == 1
 
 
 @pytest.mark.cap8_voice
 def test_a_failing_provider_is_retried_within_the_bound_and_then_silent():
-    holder = Holder(Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED))
+    holder = GeneratorDouble(Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED))
     v = Voice({MAIN: holder}, bound_seconds=0.5)
 
     assert compose(v) == Unspoken(REFUSED)
-    assert holder._calls == ATTEMPTS
+    assert holder.calls == ATTEMPTS
     assert v.tally.failures == {"unavailable/transport-failed": ATTEMPTS}
 
 
@@ -714,16 +671,16 @@ def test_over_the_cap_refuses_rather_than_overspending(reason):
     """Refused before the transport is touched, and terminal: the second call
     costs exactly what the first one did, so retrying is spending to learn
     something already known."""
-    holder = Holder(Failure(Kind.OVER_BUDGET, reason))
+    holder = GeneratorDouble(Failure(Kind.OVER_BUDGET, reason))
     v = Voice({MAIN: holder}, bound_seconds=0.5)
 
     assert compose(v) == Unspoken(OVER_BUDGET)
-    assert holder._calls == 1
+    assert holder.calls == 1
 
 
 @pytest.mark.cap8_voice
 def test_a_holder_that_raises_costs_one_morning_and_never_the_pass():
-    holder = Holder(RuntimeError("a build mistake"))
+    holder = GeneratorDouble(RuntimeError("a build mistake"))
     v = Voice({MAIN: holder}, bound_seconds=0.5)
 
     assert compose(v) == Unspoken(RAISED)
@@ -734,7 +691,9 @@ def test_a_holder_that_raises_costs_one_morning_and_never_the_pass():
 def test_an_answer_this_build_cannot_read_is_counted_apart_from_a_raise():
     """A holder that threw and a provider that broke its own contract want
     different responses, which is why they are two counters."""
-    holder = Holder("just a string, not a Completion")
+    # A tuple: not a ``Completion``, not a ``Failure``, and — unlike a bare
+    # string — not something the double will quietly wrap into one.
+    holder = GeneratorDouble(("not", "a", "completion"))
     v = Voice({MAIN: holder}, bound_seconds=0.5)
 
     assert compose(v) == Unspoken(REFUSED)
@@ -747,15 +706,15 @@ def test_the_breaker_stands_a_main_down_and_then_tries_again():
     """Counted in **mornings**, per main, because nothing here reads a clock
     (AD-30) and because one main's provider being down says nothing about
     another's."""
-    holder = Holder(Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED))
+    holder = GeneratorDouble(Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED))
     v = Voice({MAIN: holder}, bound_seconds=0.5)
 
     for _ in range(BREAK_AFTER):
         assert compose(v) == Unspoken(REFUSED)
-    calls_before = holder._calls
+    calls_before = holder.calls
 
     assert compose(v) == Unspoken(STANDING_DOWN)
-    assert holder._calls == calls_before, "the breaker still made a call"
+    assert holder.calls == calls_before, "the breaker still made a call"
     assert v.tally.skipped == 1
     assert v.tally.silences.get(STANDING_DOWN) is None, (
         "the breaker's own silence must stay outside the failure rate"
@@ -769,8 +728,8 @@ def test_the_breaker_stands_a_main_down_and_then_tries_again():
 @pytest.mark.cap8_voice
 def test_one_mains_outage_leaves_another_main_alone():
     holders = {
-        MAIN: Holder(Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED)),
-        "asha": Holder(wrote("a quiet morning for asha")),
+        MAIN: GeneratorDouble(Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED)),
+        "asha": GeneratorDouble(wrote("a quiet morning for asha")),
     }
     v = Voice(holders, bound_seconds=0.5)
     for _ in range(BREAK_AFTER + 1):
@@ -788,7 +747,7 @@ def test_a_main_with_no_sample_gets_silence_and_no_call():
     """Never a default language. A main Half has no sample for is a main Half
     has no language for, and picking one would be the locale inference this
     product does not do."""
-    v = Voice({MAIN: Exploding()}, bound_seconds=0.5)
+    v = Voice({MAIN: NeverGenerates()}, bound_seconds=0.5)
     assert compose(v, sample=Sample("")) == Unspoken(NO_LANGUAGE)
     assert v.tally.composed == 0
 
@@ -872,26 +831,60 @@ def test_the_only_text_this_package_can_produce_came_from_a_completion():
     """*Never a template, in any language.*
 
     Asserted structurally rather than by reading: every construction of
-    ``Spoken`` in the package takes an attribute off the provider's own answer,
-    so there is no expression anywhere under ``half/voice`` that could put a
-    written sentence in front of a main. A hand-written fallback would have to
-    pass a literal here, and this fails when it does.
+    ``Spoken`` in the package is handed either the provider's own ``.text`` or a
+    local whose *every* assignment in that function came from one. So there is
+    no expression anywhere under ``half/voice`` that could put a written
+    sentence in front of a main, and a name is not a place to launder a literal
+    through — which matters now that the text is sanitized on the way past, so
+    the argument is a local rather than the attribute itself.
     """
-    built: list[str] = []
+    literals: list[str] = []
+    unsourced: list[str] = []
+    built = 0
     for path in sorted((ROOT / "half" / "voice").rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "Spoken"
-            ):
-                built.extend(ast.unparse(arg) for arg in node.args)
-                built.extend(ast.unparse(kw.value) for kw in node.keywords)
+        for scope in ast.walk(tree):
+            if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(scope):
+                if not (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "Spoken"
+                ):
+                    continue
+                for arg in [*node.args, *(kw.value for kw in node.keywords)]:
+                    built += 1
+                    rendered = ast.unparse(arg)
+                    if isinstance(arg, ast.Attribute) and arg.attr == "text":
+                        continue
+                    if not isinstance(arg, ast.Name):
+                        # A literal, an f-string, a concatenation, a call to
+                        # anything else — every shape a written sentence could
+                        # arrive in.
+                        literals.append(rendered)
+                        continue
+                    # A local. Every assignment to it in this function must come
+                    # from the provider's own answer, so a name is not a place
+                    # to launder a literal through.
+                    sources = [
+                        ast.unparse(a.value)
+                        for a in ast.walk(scope)
+                        if isinstance(a, ast.Assign)
+                        and any(
+                            isinstance(t, ast.Name) and t.id == arg.id
+                            for t in a.targets
+                        )
+                    ]
+                    if not sources or not all(".text" in src for src in sources):
+                        unsourced.append(f"{rendered} <- {sources}")
     assert built, "nothing in the package builds a Spoken; the gate is dead"
-    assert all(
-        expression.endswith(".text") for expression in built
-    ), f"a morning was composed from something other than an answer: {built}"
+    assert not literals, (
+        f"a morning was composed from something that is not an answer: {literals}"
+    )
+    assert not unsourced, (
+        f"a morning was composed from a local with another source: {unsourced}"
+    )
 
 
 @pytest.mark.cap8_voice
@@ -906,8 +899,8 @@ def test_every_silence_carries_a_reason_from_the_closed_set():
 
 @pytest.mark.cap8_voice
 def test_an_empty_context_is_answered_before_a_provider_is_paid():
-    v = Voice({MAIN: Exploding()}, bound_seconds=0.5)
-    assert compose(v, context=a_context()) == Unspoken(NOTHING_TO_SAY)
+    v = Voice({MAIN: NeverGenerates()}, bound_seconds=0.5)
+    assert compose(v, context=a_context()) == Unspoken(NOTHING_QUOTABLE)
     assert v.tally.composed == 0
 
 
@@ -964,7 +957,7 @@ def test_the_narrow_holder_is_accepted_and_a_non_generator_is_not():
 
 @pytest.mark.cap8_voice
 def test_a_voice_is_sealed_after_construction():
-    v = Voice({MAIN: Holder(wrote("hello"))})
+    v = Voice({MAIN: GeneratorDouble(wrote("hello"))})
     with pytest.raises(VoiceError):
         v._holders = {MAIN: object()}
 
@@ -993,10 +986,10 @@ def test_the_output_ceiling_holds_the_character_bound_in_every_script():
 
 @pytest.mark.cap8_voice
 def test_the_generation_asks_the_port_for_the_derived_ceiling():
-    holder = Holder(wrote("a quiet morning"))
+    holder = GeneratorDouble(wrote("a quiet morning"))
     v = Voice({MAIN: holder}, bound_seconds=0.5)
     compose(v)
-    work = holder._requests[0]
+    work = holder.requests[0]
     assert work.max_tokens == MAX_OUTPUT_TOKENS
     assert isinstance(work.prompt, Prompt)
     assert work.prompt.main_id == MAIN
@@ -1034,7 +1027,7 @@ def test_no_log_line_on_this_path_carries_a_word_of_it(caplog, script):
             Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED),
             RuntimeError("provider said: " + words),
         ):
-            v = Voice({MAIN: Holder(answer)}, bound_seconds=0.5)
+            v = Voice({MAIN: GeneratorDouble(answer)}, bound_seconds=0.5)
             compose(v, sample=Sample(words))
             v.flush()
             v.flush(alarming=True)

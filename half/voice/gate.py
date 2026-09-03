@@ -33,10 +33,20 @@ is why story 13b's turn reply will use this judge and not a second one.
 **Bounded, capped, breakered and counted as story 6d bounds its consultation.**
 A wall-clock bound per attempt, a per-call and per-pass ceiling enforced by the
 port's budget *before the transport is touched*, a breaker that stands a main
-down after a run of failures, and a tally an operator can read. The numbers
-differ from the crisis path's because the situation does: nobody is waiting for
-a morning, so the bound is generous where a turn's must be short; and a morning
-happens once a day, so the breaker counts mornings rather than turns.
+down after a run of failures, and a tally an operator can read.
+
+*Two of the numbers differ from the crisis path's because the situation does*:
+nobody is waiting for a morning, so ``BOUND_SECONDS`` is generous where a turn's
+must be short, and a morning happens once a day, so ``BREAK_AFTER`` and
+``BREAK_FOR`` count mornings rather than turns. **The two ceilings are
+byte-identical to the crisis and correction ones and that is not a coincidence
+worth dressing up** — an earlier version of this paragraph claimed all the
+numbers differed, which was true of two and false of two. They are the same
+because they are answering the same question (*what is an absurd amount to spend
+on one call, and on one process*) and nobody has yet had a reason to answer it
+differently here. If a reason appears, the number moves; until then the honest
+account is that a third module repeats a figure, which is one more argument for
+the extraction recorded at the end of this docstring.
 
 **The tripwire is not one of the judge's rules**, and that separation is
 deliberate. A judge rejection means *try again*; a leak means **stop**. A leak
@@ -101,7 +111,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Final
 
-from half.context.channels import Context, render_line
+from half.context.channels import Context, render_line, sanitize
 from half.errors import VoiceError
 from half.model.port import (
     Completion,
@@ -115,10 +125,13 @@ from half.voice.compose import (
     ASK_ABOUT,
     BE_MINDFUL_OF,
     LANGUAGE_SAMPLE,
+    MAX_CHARS,
+    MAX_OUTPUT_TOKENS,
     MAY_BE_SAID,
     RETRY,
     Sample,
     prompt_for,
+    quotable_block,
 )
 
 #: Structured, and content-free. Every value logged from this module is a closed
@@ -129,8 +142,9 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "ALARM_AFTER", "ALARM_RATE", "ALLOWED_METHODS", "ATTEMPTS",
     "BOUND_SECONDS", "BREAK_AFTER", "BREAK_FOR", "Composed", "EMPTY",
-    "JUDGED", "LEAKED", "MAX_CHARS", "MAX_OUTPUT_TOKENS", "NOTHING_TO_SAY",
-    "NO_LANGUAGE", "NO_MODEL", "OVER_BUDGET", "PAST_THE_BOUND",
+    "FAULTS", "JUDGED", "LEAKED", "MAX_CHARS", "MAX_OUTPUT_TOKENS",
+    "NOTHING_QUOTABLE", "NO_LANGUAGE", "NO_MODEL", "OVER_BUDGET",
+    "PAST_THE_BOUND",
     "PER_CALL_MICRO_USD", "PER_PASS_MICRO_USD", "QUESTION_MARKS", "RAISED",
     "REFUSALS", "REFUSED", "REPORT_EVERY", "SCAFFOLDING", "SILENCES",
     "STANDING_DOWN", "Spoken", "TOO_LONG", "TWO_QUESTIONS", "Tally",
@@ -163,28 +177,14 @@ BOUND_SECONDS: Final[float] = 20.0
 #: seconds, one morning.
 ATTEMPTS: Final[int] = 3
 
-#: The most characters a morning may be.
-#:
-#: A bound on the *message*, not on the writing. CAP-8 says at most one thing,
-#: and this is the loosest ceiling that still refuses an essay: roughly a
-#: hundred words of Latin prose, about the same of Devanagari or Thai, and
-#: rather more of Han — so the inequality runs toward *more* room for the
-#: scripts that need it least, and no script's ordinary one-thing morning comes
-#: near it. It is counted in characters rather than words because a word count
-#: is not a thing every script has.
-MAX_CHARS: Final[int] = 600
-
-#: The output ceiling handed to the port, in tokens.
-#:
-#: **Derived from ``MAX_CHARS`` at the worst measured tokens-per-character, so
-#: no script is truncated where another is not.** ``half.model.budget`` measured
-#: 1,600 Japanese characters against 2,400 real tokens — three tokens for every
-#: two characters — which is the top of the band for CJK, Thai and the Indic
-#: scripts. Six hundred characters at that rate is nine hundred tokens, and this
-#: sits above it. A ceiling sized on English prose would have cut a Thai morning
-#: off mid-sentence while an English one of the same length fitted, which is the
-#: shape of failure this tree has shipped before.
-MAX_OUTPUT_TOKENS: Final[int] = 1_024
+#: ``MAX_CHARS`` and ``MAX_OUTPUT_TOKENS`` are ``half.voice.compose``'s, not
+#: this module's, and the move is review round 1's. The judge enforces the
+#: character bound and the port is handed the token ceiling, but the *model is
+#: told* the character bound — and a constant the instructions interpolate has
+#: to live beside the instructions or the two drift, which is how a model that
+#: habitually writes seven hundred characters burned all three attempts and
+#: silenced a main for ever with nothing anywhere saying why. Re-exported below
+#: so every existing reader is unaffected.
 
 #: Ceilings for one generation and for one process's worth of them, in
 #: millionths of a dollar.
@@ -271,10 +271,17 @@ QUESTION_MARKS: Final[frozenset[str]] = frozenset(
 
 # ── what a composition comes to ──────────────────────────────────────────────
 
-#: The context had nothing to say from. Ordinary: story 10 already answers this
-#: before reaching here, and it is checked again because a caller that did not
-#: is a caller paying a provider to write about nothing.
-NOTHING_TO_SAY: Final[str] = "nothing-to-say"
+#: The context had nothing quotable and no bought question. Ordinary: story 10
+#: already answers this before reaching here, and it is checked again because a
+#: caller that did not is a caller paying a provider to write about nothing.
+#:
+#: **Spelled differently from ``half.surface.morning.NOTHING_TO_SAY`` on
+#: purpose**, which is review round 1's correction: the two carried the same
+#: string, so ``Mornings.silences`` merged *"the night's pass produced no
+#: candidate"* with *"the composer was handed an empty context"* under one
+#: number — and the second is not an ordinary quiet night, it is the surface
+#: having built an empty context and paid to find out.
+NOTHING_QUOTABLE: Final[str] = "nothing-quotable"
 #: No sample of the main's own language. Silence, never a default language.
 NO_LANGUAGE: Final[str] = "no-language"
 #: This main has no generator configured. A supported deployment, not a fault.
@@ -297,11 +304,31 @@ RAISED: Final[str] = "raised"
 #: The tripwire fired. Terminal, loud, and nothing is cleaned up.
 LEAKED: Final[str] = leak.LEAKED
 
+#: The two silences that are faults in **this build** rather than a provider
+#: being unavailable.
+#:
+#: **They never arm the breaker**, and review round 1 found why that matters.
+#: ``_note`` used to arm on any non-``Spoken`` outcome, so five consecutive
+#: leaks stood the main down for twenty mornings — during which ``leak.check``
+#: was never reached, no ``error`` was logged and ``Tally.leaked`` stopped
+#: rising. A live AD-18 breach would have gone quiet for twenty of every
+#: twenty-five mornings: an alarm with a snooze button wired to the alarm.
+#:
+#: The breaker exists to stop paying a provider that is down. A leak means the
+#: provider answered perfectly and *this build* is wrong; a raise means the port
+#: was handed something it cannot run. Neither is an outage, neither gets
+#: quieter by waiting, and both are logged every single time they happen, which
+#: is what an operator needs instead.
+#:
+#: Read by ``half.surface.morning.FAULTS`` rather than spelled again there, so a
+#: reason added here cannot become a fault this build forgets to treat as one.
+FAULTS: Final[frozenset[str]] = frozenset({LEAKED, RAISED})
+
 #: Every way a morning ends in silence. Closed, so ``half.surface.morning``
 #: counts a constant and never a string a main's own ledger produced (AD-22).
 SILENCES: Final[frozenset[str]] = frozenset(
     {
-        NOTHING_TO_SAY, NO_LANGUAGE, NO_MODEL, STANDING_DOWN, PAST_THE_BOUND,
+        NOTHING_QUOTABLE, NO_LANGUAGE, NO_MODEL, STANDING_DOWN, PAST_THE_BOUND,
         OVER_BUDGET, REFUSED, JUDGED, RAISED, LEAKED,
     }
 )
@@ -337,10 +364,17 @@ class Unspoken:
 
     def __post_init__(self) -> None:
         if self.reason not in SILENCES:
+            # **The rejected value is deliberately not in the message**, which
+            # is review round 1's finding and a hole in the rule this guard
+            # exists to keep: a caller that reached here with a string out of a
+            # main's own ledger would have had it interpolated into an exception
+            # somebody logs. What an operator needs is the closed set, and every
+            # member of it is a constant in this module (AD-22).
             raise VoiceError(
-                f"{self.reason!r} is not one of the reasons a morning can be "
-                "silent. The set is closed so that a counter counts constants "
-                "and never a message (AD-22)"
+                "a morning's silence carries a reason from a closed set, and "
+                f"this one is not in it. The set is {sorted(SILENCES)}. The "
+                "value is not repeated here: it came from a caller, and a "
+                "caller on this path holds a main's own words"
             )
 
 
@@ -348,6 +382,19 @@ Composed = Spoken | Unspoken
 
 
 # ── the judge ────────────────────────────────────────────────────────────────
+
+
+#: The shortest token the scaffolding rule will refuse.
+#:
+#: Review round 1's finding: a belief id or a stamp fragment short enough to
+#: occur in ordinary prose refuses **every** attempt, for ever, for that main —
+#: a permanently silent Half with a green suite. Ids are ``b_<hex>``, so three
+#: characters is the shortest one this build can mint and the bound costs
+#: nothing real; what it buys is that a degenerate one-or-two-character id
+#: cannot silence somebody. The trade is named rather than hidden: a token that
+#: short is not a scaffolding signal, because it is not distinctive enough to be
+#: evidence of anything.
+MIN_SCAFFOLDING_CHARS: Final[int] = 3
 
 
 def scaffolding(context: Context) -> frozenset[str]:
@@ -372,11 +419,22 @@ def scaffolding(context: Context) -> frozenset[str]:
     The prompt's four block labels join them, imported from
     ``half.voice.compose`` rather than respelled, so renaming one there cannot
     leave this scan looking for a word that no longer exists.
+
+    **Two things are then removed, and both are review round 1's.** A token
+    shorter than ``MIN_SCAFFOLDING_CHARS`` is dropped, because a token that
+    short can occur in prose and would refuse every attempt for ever. And a
+    token that appears **inside the quotable block** is dropped, because the
+    model was given that text and told it may state it: refusing the candidate
+    for repeating something Half handed it is the same permanent silence
+    arriving from the other side. Both losses are in the safe direction — the
+    thing the rule exists to catch is Half's own serialization, and neither a
+    two-character token nor a string the main's own `assert` claim contains is
+    evidence of that.
     """
-    found: set[str] = {LANGUAGE_SAMPLE, MAY_BE_SAID, BE_MINDFUL_OF, ASK_ABOUT,
-                       RETRY}
+    labels = {LANGUAGE_SAMPLE, MAY_BE_SAID, BE_MINDFUL_OF, ASK_ABOUT, RETRY}
     if not isinstance(context, Context):
-        return frozenset(found)
+        return frozenset(labels)
+    found: set[str] = set(labels)
     if context.now:
         found.add(context.now)
     for item in context:
@@ -385,7 +443,33 @@ def scaffolding(context: Context) -> frozenset[str]:
         head, bracket, _ = render_line(item).partition("]")
         if bracket:
             found.add(head + bracket)
-    return frozenset(token for token in found if token)
+    said = quotable_block(context)
+    return frozenset(
+        token for token in found
+        if len(token) >= MIN_SCAFFOLDING_CHARS and token not in said
+    )
+
+
+def question_budget(context: Context) -> int:
+    """How many question marks a candidate may carry.
+
+    One — the question CAP-4 permits — **plus however many the model was handed
+    in the quotable block**, which is review round 1's correction and a
+    permanent-silence route in its own right: an `assert` claim that itself ends
+    in a question mark (*"asked whether the fence was ever mended?"*) makes a
+    faithful quotation of it look like a second question, every attempt refuses,
+    and that main never hears anything again.
+
+    Counting the marks the model was given rather than trying to tell a quoted
+    mark from an asked one is deliberate: telling them apart needs to know where
+    the quotation ends, which is a parse of somebody's prose in an unknown
+    language. Counting what was handed over is arithmetic, and it errs toward
+    permitting — which is the right direction here, because the thing being
+    guarded against is an *interview*, and one extra mark is not one.
+    """
+    if not isinstance(context, Context):
+        return 1
+    return 1 + sum(1 for char in quotable_block(context) if char in QUESTION_MARKS)
 
 
 def judge(text: object, *, context: Context) -> str | None:
@@ -412,6 +496,9 @@ def judge(text: object, *, context: Context) -> str | None:
     the English ones — which is story 12's negative-recognition defect exactly,
     reappearing on the other side of the same product. So the positive half is
     left to the instruction and the negative half is enforced here.
+
+    **Neither rule can silence a main for ever**, which review round 1 found
+    both of them could: see ``question_budget`` and ``scaffolding``.
     """
     if not isinstance(text, str) or not text.strip():
         return EMPTY
@@ -419,7 +506,8 @@ def judge(text: object, *, context: Context) -> str | None:
         return TOO_LONG
     if any(token in text for token in scaffolding(context)):
         return SCAFFOLDING
-    if sum(1 for char in text if char in QUESTION_MARKS) > 1:
+    marks = sum(1 for char in text if char in QUESTION_MARKS)
+    if marks > question_budget(context):
         return TWO_QUESTIONS
     return None
 
@@ -585,7 +673,7 @@ class Voice:
         *,
         main_id: str,
         sample: Sample,
-        withheld: frozenset[str] | set[str] = frozenset(),
+        withheld: frozenset[str] | set[str],
     ) -> Composed:
         """One morning's words, or a reason there are none. Never raises.
 
@@ -593,6 +681,13 @@ class Voice:
         ``sample`` is their most recent words, for language only; ``withheld``
         is ``half.context.build.withheld`` over the same material, for the
         tripwire.
+
+        **``withheld`` is required and has no default**, which is review round
+        1's correction and the same rule ``half.context.build.resolve`` makes
+        about its ``ceiling``: a caller who forgot it got a tripwire that
+        answered *"no leak"* on an empty set, so AD-18's smoke alarm could be
+        switched off by omission and nothing would say it had been. Forgetting
+        it is now a ``TypeError`` at the call site.
 
         The only things that leave this machine are the context's own quotable
         claims, its directives' structured topics, and the sample. Nothing else
@@ -605,13 +700,22 @@ class Voice:
         ``CancelledError`` is deliberately not caught — it is a
         ``BaseException`` and shutdown is not a failed morning.
         """
+        # **The breaker's clock is mornings, and it ticks on every one of
+        # them.** Review round 1 found it decremented only on mornings that
+        # reached a holder, so a main stood down for twenty mornings and then
+        # having a quiet fortnight stayed silent for a month and a half. The
+        # countdown runs first; what it means is decided below, so a quiet
+        # morning during a stand-down is still reported as the quiet morning it
+        # was rather than as a stand-down.
+        standing_down = self._tick_breaker(main_id)
+
         if not isinstance(context, Context) or not (
             context.content or context.question
         ):
             # Nothing quotable and nothing bought. Story 10 answers this before
             # reaching here; checked again because a caller that did not would
             # be paying a provider to write about nothing.
-            return self._silent(main_id, NOTHING_TO_SAY, counted=False)
+            return self._silent(main_id, NOTHING_QUOTABLE, counted=False)
         if not isinstance(sample, Sample) or not sample.present:
             # No language to answer in. Silence rather than a default: choosing
             # one would be the locale inference this product does not do.
@@ -619,8 +723,9 @@ class Voice:
         holder = self._holders.get(main_id)
         if holder is None:
             return self._silent(main_id, NO_MODEL, counted=False)
-        if self._breaking(main_id):
-            return self._silent(main_id, STANDING_DOWN, counted=False)
+        if standing_down:
+            self._tally.skipped += 1
+            return Unspoken(STANDING_DOWN)
 
         self._tally.composed += 1
         outcome = await self._attempt_all(
@@ -645,25 +750,103 @@ class Voice:
     ) -> Composed:
         """Generate, judge, regenerate, stop. The bounded loop.
 
-        The judge's reason travels into the next attempt as a token from
-        ``REFUSALS`` (``half.voice.compose.RETRY``), which is what makes a
-        regeneration a *re*-generation rather than the same call made three
-        times against a provider that is behaving deterministically. A sentence
-        explaining what was wrong would be the English rubric this package is
-        built without; a closed token is not one.
+        **The whole attempt is inside the handler**, which is review round 1's
+        correction to a guarantee this module's docstring stated absolutely and
+        held by accident. ``prompt_for`` can raise ``BreakpointError`` from
+        ``Prompt.__post_init__``; ``judge`` calls ``render_line`` on every item
+        and normalizes arbitrary text; ``leak.check`` folds strings out of a
+        main's own ledger. All three ran outside the ``try``, so *"never
+        raises"* depended on none of them ever being wrong — and an exception
+        out of here reaches ``MorningSurface._counted``, costs the main their
+        morning, and is counted as an unreadable record rather than as what it
+        is.
+
+        ``because`` is the judge's reason for the previous attempt, and travels
+        into the next prompt as a token from ``REFUSALS``
+        (``half.voice.compose.RETRY``). That is what makes a regeneration a
+        *re*-generation rather than the same call made three times against a
+        provider behaving deterministically. A sentence explaining what was
+        wrong would be the English rubric this package is built without; a closed
+        token is not one.
+
+        ``terminal`` is the reason a *run* of attempts ends on, tracked
+        explicitly rather than inferred from whether ``because`` happens to be
+        set. Review round 1: deleting ``because = ""`` from the failure branch
+        changed a provider outage into a reported judge refusal and no test
+        noticed, because the two facts were being carried by one variable.
         """
         because = ""
+        terminal = REFUSED
         for _ in range(self._attempts):
             self._tally.attempts += 1
-            work = Generate(
-                prompt=prompt_for(
-                    context, sample=sample, main_id=main_id, because=because
-                ),
-                max_tokens=MAX_OUTPUT_TOKENS,
-            )
             try:
+                work = Generate(
+                    prompt=prompt_for(
+                        context, sample=sample, main_id=main_id, because=because
+                    ),
+                    max_tokens=MAX_OUTPUT_TOKENS,
+                )
                 async with asyncio.timeout(self._bound):
                     answered = await holder.generate(work)
+
+                if isinstance(answered, Failure):
+                    self._tally.count_failure(answered)
+                    logger.warning(
+                        "the morning composer did not answer for main=%s: %s/%s",
+                        main_id, answered.kind, answered.because,
+                    )
+                    if answered.because in (
+                        Reason.PER_CALL_BUDGET, Reason.PER_PASS_BUDGET
+                    ):
+                        # Refused before the transport was touched, and the next
+                        # call costs exactly what this one did.
+                        return self._silent(main_id, OVER_BUDGET)
+                    because, terminal = "", REFUSED
+                    continue
+                if not isinstance(answered, Completion):
+                    self._tally.unreadable += 1
+                    logger.warning(
+                        "the morning composer returned something this build "
+                        "cannot read for main=%s", main_id,
+                    )
+                    because, terminal = "", REFUSED
+                    continue
+
+                # **Sanitized with the context's own function**, not a second
+                # one. Every item in a constructed context is neutralized at
+                # construction so that no text can begin a line or steer a
+                # terminal; a completion is the one string on this path that had
+                # never been, so control characters and line separators went
+                # straight to the channel. Format characters (``Cf`` — ZWJ,
+                # ZWNJ, the bidi marks) are deliberately kept, for the reason
+                # ``half.context.channels`` gives: they are meaningful inside
+                # Indic and Arabic words and stripping them would damage the
+                # scripts this product exists to reach. The consequence worth
+                # naming is that a morning becomes one paragraph, which is what
+                # *at most one thing* already meant.
+                text = sanitize(answered.text)
+
+                # **The tripwire runs before the judge**, which is review round
+                # 1's correction and not a tidy-up. A draft that both leaked and
+                # ran long used to be refused for *length*, regenerated away,
+                # and the breach never counted and never logged — the alarm
+                # losing to a spelling check. A leak is not a quality problem to
+                # be regenerated past, so it is asked first and it is terminal.
+                if not leak.check(text, withheld, main_id=main_id):
+                    return self._silent(main_id, LEAKED)
+
+                refusal = judge(text, context=context)
+                if refusal is not None:
+                    self._tally.count_refusal(refusal)
+                    logger.debug(
+                        "the morning composed for main=%s was refused: %s",
+                        main_id, refusal,
+                    )
+                    because, terminal = refusal, JUDGED
+                    continue
+
+                self._tally.spoken += 1
+                return Spoken(text)
             except TimeoutError:
                 # Past the bound. Terminal: a provider that is slow now is slow
                 # for the next attempt too, and nobody is owed three bounds.
@@ -676,7 +859,8 @@ class Voice:
             except Exception as exc:
                 # The port answers a provider fault with a value; a raise here
                 # is a build mistake — an unknown tier, a budget admitting
-                # nothing. **The class, and never the exception's own text**
+                # nothing, a breakpoint past the prompt, a guard this build got
+                # wrong. **The class, and never the exception's own text**
                 # (AD-22): a provider quotes the request it rejected, and the
                 # request carries this main's claims and their own words.
                 self._tally.raised += 1
@@ -686,80 +870,39 @@ class Voice:
                 )
                 return self._silent(main_id, RAISED)
 
-            if isinstance(answered, Failure):
-                self._tally.count_failure(answered)
-                logger.warning(
-                    "the morning composer did not answer for main=%s: %s/%s",
-                    main_id, answered.kind, answered.because,
-                )
-                if answered.because in (
-                    Reason.PER_CALL_BUDGET, Reason.PER_PASS_BUDGET
-                ):
-                    # Refused before the transport was touched, and the next
-                    # call costs exactly what this one did.
-                    return self._silent(main_id, OVER_BUDGET)
-                because = ""
-                continue
-            if not isinstance(answered, Completion):
-                self._tally.unreadable += 1
-                logger.warning(
-                    "the morning composer returned something this build cannot "
-                    "read for main=%s", main_id,
-                )
-                because = ""
-                continue
+        return self._silent(main_id, terminal)
 
-            refusal = judge(answered.text, context=context)
-            if refusal is not None:
-                self._tally.count_refusal(refusal)
-                logger.debug(
-                    "the morning composed for main=%s was refused: %s",
-                    main_id, refusal,
-                )
-                because = refusal
-                continue
-
-            # The tripwire, and it is **not** a judge rule: a leak stops the
-            # send rather than buying another attempt. Regenerating past one
-            # would be a redaction with extra steps — the model would eventually
-            # produce something clean, the send would succeed, and the broken
-            # construction rule underneath it would stay invisible.
-            if not leak.check(answered.text, withheld, main_id=main_id):
-                return self._silent(main_id, LEAKED)
-
-            self._tally.spoken += 1
-            return Spoken(answered.text)
-
-        return self._silent(main_id, JUDGED if because else REFUSED)
-
-    def _silent(
-        self, main_id: str, reason: str, *, counted: bool = True
-    ) -> Unspoken:
+    def _silent(self, main_id: str, reason: str, *, counted: bool = True) -> Unspoken:
         """One silent morning, counted.
 
-        ``counted`` is false for the four answers reached *before* a holder was
-        consulted — no material, no language, no model, standing down. Counting
-        those in ``silences`` would make the rate a measurement of how many
-        mains a deployment has equipped rather than of whether the composer is
-        working, which is exactly the number an operator must not be given.
-        ``skipped`` counts the breaker's own separately.
+        ``counted`` is false for the three answers reached *before* a holder was
+        consulted — no material, no language, no model. Counting those in
+        ``silences`` would make the rate a measurement of how many mains a
+        deployment has equipped rather than of whether the composer is working,
+        which is exactly the number an operator must not be given. The breaker's
+        own skip is counted separately, in ``skipped``, and outside every rate.
         """
-        if reason == STANDING_DOWN:
-            self._tally.skipped += 1
-        elif counted:
+        if counted:
             self._tally.count_silence(reason)
         return Unspoken(reason)
 
     # -- the breaker ---------------------------------------------------------
 
-    def _breaking(self, main_id: str) -> bool:
-        """Whether this main's composer is standing down. Counted, per main.
+    def _tick_breaker(self, main_id: str) -> bool:
+        """Spend one morning of this main's stand-down, and say whether it is on.
 
         During an outage every morning would otherwise pay three bounds and
         issue three doomed requests. After a run of silent mornings it stops
         asking for a while and then tries again — per main, because one main's
         provider being down says nothing about another's, and in mornings,
         because nothing here reads a clock (AD-30).
+
+        **The tick is separated from the decision**, which is review round 1's
+        correction. This used to be called after the material, language and
+        holder checks, so the countdown only advanced on mornings that had
+        something to say — and a main stood down for twenty mornings who then
+        had a quiet fortnight stayed silent for a month and a half. *Mornings*
+        is the unit, and every morning is one, including the quiet ones.
         """
         left = self._quiet.get(main_id, 0)
         if left <= 0:
@@ -768,7 +911,20 @@ class Voice:
         return True
 
     def _note(self, main_id: str, outcome: Composed) -> None:
-        """Record whether that morning spoke, and trip or clear the breaker."""
+        """Record whether that morning spoke, and trip or clear the breaker.
+
+        **A fault neither arms it nor clears it**, and that is the whole of
+        review round 1's first finding: a leak used to arm the breaker, so five
+        consecutive AD-18 breaches bought twenty mornings during which the
+        tripwire was never reached, nothing was logged at ``error`` and
+        ``Tally.leaked`` stopped rising. See ``FAULTS``.
+
+        Neutral rather than clearing, because a leak says nothing about whether
+        the provider is up: a run of transport failures interrupted by one leak
+        is still a run of transport failures.
+        """
+        if isinstance(outcome, Unspoken) and outcome.reason in FAULTS:
+            return
         if isinstance(outcome, Spoken):
             self._consecutive[main_id] = 0
             return
@@ -787,15 +943,23 @@ class Voice:
     # -- what an operator sees ------------------------------------------------
 
     def _report(self) -> None:
-        """Write the running counts out, every so often. Counts only (AD-22)."""
-        if self._tally.composed % REPORT_EVERY == 0:
-            self.flush()
-        elif (
+        """Write the running counts out, every so often. Counts only (AD-22).
+
+        **The alarm is asked first**, which is review round 1's correction. With
+        the periodic branch first and the alarm on the ``elif``, the two were
+        exclusive — so at the hundredth, two hundredth and every hundredth
+        morning after, a wholly failing composer reported at ``info`` instead of
+        ``error``. The one line an operator is watching for went missing exactly
+        at the round numbers they would look at.
+        """
+        if (
             self._tally.composed >= ALARM_AFTER
             and self._tally.silent_rate >= ALARM_RATE
             and self._tally.composed % ALARM_AFTER == 0
         ):
             self.flush(alarming=True)
+        elif self._tally.composed % REPORT_EVERY == 0:
+            self.flush()
 
     @property
     def quiet(self) -> bool:

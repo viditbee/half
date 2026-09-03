@@ -1341,8 +1341,22 @@ def test_only_the_context_builder_decides_a_rung():
     #: confirmed this?* arriving with its own idea of what counts. No rung is
     #: decided there: a due time is not something Half says, and the writer gate
     #: below still forbids that module spelling a license field into a record.
+    #: ``half/voice/compose.py`` reads ``quarantined`` and nothing else in that
+    #: set, on exactly ``safetyplan.py``'s terms and for the same reason. The
+    #: language sample is the main's own last message, and a quarantined record
+    #: is the main having said *leave this topic alone* — so handing its text to
+    #: a provider is touching the topic in the one way that cannot be taken
+    #: back. Asking the ladder's own predicate is what stops a second reader of
+    #: the pin arriving with its own idea of what counts. **No rung is decided
+    #: there, and deliberately none is read**: every inbound message is admitted
+    #: at the weakest rung by ``half.actor.runtime``, so a rung check would find
+    #: nothing for anybody and Half would be permanently silent — answering
+    #: somebody in the language they wrote to you in is not a claim Half is
+    #: asserting. The writer gate below still forbids that module spelling a
+    #: license field into a record.
     allowed = {"half/context/build.py", "half/crisis/contacts.py",
-               "half/crisis/safetyplan.py", "half/schedule/due.py"}
+               "half/crisis/safetyplan.py", "half/schedule/due.py",
+               "half/voice/compose.py"}
     offenders: list[str] = []
     for module, path in source_modules():
         relative = str(path.relative_to(ROOT))

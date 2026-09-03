@@ -197,6 +197,51 @@ def resolve(belief: Mapping[str, Any] | Any, *, ceiling: Ceiling | None) -> Lice
     return permitted(belief, ceiling=ceiling)
 
 
+def split(
+    ranked: Ranked | Iterable[Candidate] | None,
+    *,
+    now: str,
+    ceiling: Ceiling | None,
+    bought: str | None = None,
+) -> tuple[Context, frozenset[str]]:
+    """The context, **and the wordings it may not carry**, resolved once.
+
+    ``build`` is this function with the second half of the answer thrown away,
+    and it stays the whole of what every caller before story 13a needs. This
+    exists because one caller now needs both: ``half.surface.morning`` hands the
+    context to a generator and the withheld set to the tripwire that watches
+    what comes back, and computing them separately meant resolving the ladder
+    twice over the same material and passing the same ceiling to two functions
+    by convention. Two entry points to one resolution is two chances for them to
+    disagree about what was withheld — which, on this path, is two chances for
+    the tripwire to be watching for the wrong words.
+
+    Everything else — the split, the guard, the ordering, the bought question —
+    is ``build``'s docstring, and it applies here unchanged.
+    """
+    licensed = tuple((c, resolve(c.belief, ceiling=ceiling)) for c in (ranked or ()))
+
+    # Every wording the context may not carry, as adjacent pairs. `ask` sits
+    # here beside `behave`: its material surfaces as a question about a topic,
+    # and its text is withheld exactly as `behave` text is.
+    hidden = _withheld_from(licensed)
+
+    context = Context(
+        now=now,
+        truncated=bool(getattr(ranked, "truncated", False)),
+        rerank=getattr(ranked, "rerank", RerankSource.ABSENT),
+    )
+    for candidate, license_ in licensed:
+        item = _item(candidate, license_, bought=bought)
+        if item is None:
+            continue
+        trial = context.plus(item)
+        if leaks(trial.render(), hidden):
+            continue  # this line would carry a withheld claim's wording
+        context = trial
+    return context, hidden
+
+
 def build(
     ranked: Ranked | Iterable[Candidate] | None,
     *,
@@ -265,26 +310,7 @@ def build(
     Rank order is preserved within each channel. Nothing is re-sorted, so no
     collation — and therefore no locale — is involved in the ordering.
     """
-    licensed = tuple((c, resolve(c.belief, ceiling=ceiling)) for c in (ranked or ()))
-
-    # Every wording the context may not carry, as adjacent pairs. `ask` sits
-    # here beside `behave`: its material surfaces as a question about a topic,
-    # and its text is withheld exactly as `behave` text is.
-    withheld = _withheld_from(licensed)
-
-    context = Context(
-        now=now,
-        truncated=bool(getattr(ranked, "truncated", False)),
-        rerank=getattr(ranked, "rerank", RerankSource.ABSENT),
-    )
-    for candidate, license_ in licensed:
-        item = _item(candidate, license_, bought=bought)
-        if item is None:
-            continue
-        trial = context.plus(item)
-        if leaks(trial.render(), withheld):
-            continue  # this line would carry a withheld claim's wording
-        context = trial
+    context, _ = split(ranked, now=now, ceiling=ceiling, bought=bought)
     return context
 
 

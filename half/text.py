@@ -323,7 +323,7 @@ def _expand(text: object) -> list[list[str]]:
     for word in words(text):
         parts: list[str] = []
         for run, unspaced in _script_runs(word):
-            pieces = _clusters(run) if unspaced else [run]
+            pieces = clusters(run) if unspaced else [run]
             _require_capacity(emitted, len(pieces))
             emitted += len(pieces)
             parts.extend(pieces)
@@ -362,13 +362,20 @@ def _script_runs(word: str) -> list[tuple[str, bool]]:
     return runs
 
 
-def _clusters(run: str) -> list[str]:
-    """One uninterrupted unspaced run, cut into grapheme clusters.
+def clusters(run: str) -> list[str]:
+    """One run of text, cut into grapheme clusters.
 
     A cluster is a base character plus the marks that belong to it, and a virama
     or coeng binds the letter after it into the same cluster. Cutting at raw
     codepoint offsets instead is what stripped Khmer dependent vowels and
     produced fragments beginning on a bare mark.
+
+    **Public because a second consumer arrived**, and a second implementation
+    would have been a codepoint slice: ``half.voice.compose.Sample`` bounds the
+    main's own words to a length, and a bound that cuts at an offset splits the
+    cluster it lands in — which is the exact failure this function exists to
+    have already solved, and the reason the withheld rule was imported rather
+    than reimplemented one package over.
     """
     clusters: list[str] = []
     current = ""

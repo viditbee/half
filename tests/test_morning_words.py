@@ -75,6 +75,7 @@ from half.voice.compose import (
 )
 from half.voice.gate import (
     JUDGED,
+    NOTHING_QUOTABLE,
     LEAKED,
     MAX_CHARS,
     NO_LANGUAGE,
@@ -86,7 +87,14 @@ from half.voice.gate import (
     Voice,
 )
 
-from tests.conftest import COMPOSED, FakeTransport, seed_belief, seed_message
+from tests.conftest import (
+    COMPOSED,
+    FakeTransport,
+    GeneratorDouble,
+    NeverGenerates,
+    seed_belief,
+    seed_message,
+)
 
 pytestmark = [pytest.mark.cap8, pytest.mark.cap8_voice]
 
@@ -157,41 +165,9 @@ class FakeChannel:
         raise AssertionError("the morning surface never receives")
 
 
-class Holder:
-    """The port's narrow generator. One public method, as ``Voice`` requires."""
-
-    def __init__(self, answer, *, sleep=0.0):
-        self._answer = answer
-        self._sleep = sleep
-        self._seen = []
-
-    async def generate(self, work):
-        self._seen.append(work)
-        if self._sleep:
-            await asyncio.sleep(self._sleep)
-        reply = self._answer(work) if callable(self._answer) else self._answer
-        if isinstance(reply, BaseException):
-            raise reply
-        if isinstance(reply, str):
-            return Completion(text=reply, usage=Usage(micro_usd=9_000))
-        return reply
-
-    @property
-    def _requests(self):
-        return self._seen
-
-
-class Exploding:
-    """A generator that must never be reached, so every *no model call* case
-    asserts the call did not happen rather than that a counter stayed at zero."""
-
-    async def generate(self, work):  # pragma: no cover - never run
-        raise AssertionError("a model was consulted where none may be")
-
-
 def a_voice(answer=COMPOSED, *, main=MAIN, sleep=0.0, bound_seconds=1.0, **kw):
     """A ``Voice`` and the holder inside it, so a case can read the prompt."""
-    holder = Holder(answer, sleep=sleep)
+    holder = GeneratorDouble(answer, sleep=sleep)
     return Voice({main: holder}, bound_seconds=bound_seconds, **kw), holder
 
 
@@ -319,7 +295,7 @@ def test_the_sayable_claim_reaches_the_generator_and_the_withheld_one_never_does
     voice, holder = a_voice()
     run(registry, FakeChannel(), voice)
 
-    turn = holder._requests[0].prompt.turns[0].text
+    turn = holder.requests[0].prompt.turns[0].text
     assert SAYABLE in turn
     assert WITHHELD not in turn
     assert "avoiding the" not in turn and "his brother" not in turn
@@ -336,7 +312,7 @@ def test_a_morning_carries_no_question_at_all(registry, tmp_path):
     a_main(tmp_path)
     voice, holder = a_voice()
     run(registry, FakeChannel(), voice)
-    assert ASK_ABOUT not in holder._requests[0].prompt.turns[0].text
+    assert ASK_ABOUT not in holder.requests[0].prompt.turns[0].text
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -394,7 +370,7 @@ def test_a_provider_past_the_bound_is_abandoned_and_the_day_survives(
     voice, holder = a_voice("too late", sleep=5.0, bound_seconds=0.05)
 
     assert run(registry, channel, voice) == Silence(PAST_THE_BOUND)
-    assert len(holder._requests) == 1, "a slow provider was asked again"
+    assert len(holder.requests) == 1, "a slow provider was asked again"
     assert channel.sent == []
     assert view_of(registry).spoke is None
 
@@ -433,9 +409,11 @@ def test_a_main_who_has_never_written_gets_no_morning(registry, tmp_path):
     """
     a_main(tmp_path, message=None)
     channel = FakeChannel()
-    voice = Voice({MAIN: Exploding()}, bound_seconds=1.0)
+    never = NeverGenerates()
+    voice = Voice({MAIN: never}, bound_seconds=1.0)
 
     assert run(registry, channel, voice) == Silence(NO_LANGUAGE)
+    assert never.calls == 0
     assert channel.sent == []
     assert view_of(registry).spoke is None
 
@@ -446,11 +424,20 @@ def test_an_unreachable_main_is_never_composed_for(registry, tmp_path):
     than about a counter."""
     a_main(tmp_path)
     channel = FakeChannel(reach=Reachability.WINDOW_CLOSED)
-    voice = Voice({MAIN: Exploding()}, bound_seconds=1.0)
+    never = NeverGenerates()
+    voice = Voice({MAIN: never}, bound_seconds=1.0)
 
     outcome = run(registry, channel, voice)
-    assert isinstance(outcome, Silence) and outcome.reason in REASONS
-    assert channel.queries == [MAIN]
+    # **The counter is the assertion, and the reason is not.** ``Voice`` catches
+    # ``Exception``, so the double's ``AssertionError`` becomes
+    # ``Unspoken(RAISED)`` — which is in ``REASONS``, so the reason check below
+    # passed whether or not the provider had been paid three times. Swapping the
+    # composer above ``capability_query`` left the whole suite green. Review
+    # round 1 found it; this is the line that catches it.
+    assert never.calls == 0, "an unreachable main was composed for"
+    assert outcome == Silence(str(Reachability.WINDOW_CLOSED))
+    assert outcome.reason in REASONS
+    assert channel.queries == [MAIN], "the platform was asked more than once"
     assert channel.sent == []
 
 
@@ -460,8 +447,10 @@ def test_an_empty_morning_is_answered_before_a_provider_is_paid(
     """Matrix: *empty content*. Story 10 already leaves this silent, and the
     composer must not turn it into a call."""
     a_main(tmp_path)
-    voice = Voice({MAIN: Exploding()}, bound_seconds=1.0)
+    never = NeverGenerates()
+    voice = Voice({MAIN: never}, bound_seconds=1.0)
     assert run(registry, FakeChannel(), voice, cands=[]) == Silence(NOTHING_TO_SAY)
+    assert never.calls == 0
 
 
 def test_a_main_in_crisis_is_never_composed_for(registry, tmp_path):
@@ -472,9 +461,11 @@ def test_a_main_in_crisis_is_never_composed_for(registry, tmp_path):
         MAIN, t="2026-08-31T00:00:00Z", tier="disclosure", score=2
     ))
     channel = FakeChannel()
-    voice = Voice({MAIN: Exploding()}, bound_seconds=1.0)
+    never = NeverGenerates()
+    voice = Voice({MAIN: never}, bound_seconds=1.0)
 
     assert run(registry, channel, voice) == Silence(CRISIS)
+    assert never.calls == 0
     assert channel.sent == [] and channel.queries == []
 
 
@@ -529,7 +520,7 @@ def test_a_leaked_behave_claim_stops_the_send_and_is_loud(
     assert outcome == Silence(LEAKED)
     assert channel.sent == [], "the leaked morning was cleaned up and sent"
     assert view_of(registry).spoke is None, "a leaked morning spent the day"
-    assert len(holder._requests) == 1, "a leak bought a regeneration"
+    assert len(holder.requests) == 1, "a leak bought a regeneration"
 
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert errors, "the tripwire fired silently"
@@ -574,7 +565,7 @@ def test_the_language_the_main_last_wrote_in_reaches_the_generator(
     voice, holder = a_voice()
 
     assert isinstance(run(registry, FakeChannel(), voice), Surfaced)
-    turn = holder._requests[0].prompt.turns[0].text
+    turn = holder.requests[0].prompt.turns[0].text
     language, _, rest = turn.partition(MAY_BE_SAID)
     assert LANGUAGE_SAMPLE in language
     assert words in language
@@ -611,7 +602,7 @@ def test_the_sample_cannot_reach_the_quotable_channel_through_the_surface(
     voice, holder = a_voice()
     run(registry, FakeChannel(), voice)
 
-    turn = holder._requests[0].prompt.turns[0].text
+    turn = holder.requests[0].prompt.turns[0].text
     said = next(
         block[len(MAY_BE_SAID):].strip()
         for block in turn.split("\n\n") if block.startswith(MAY_BE_SAID)
@@ -636,7 +627,7 @@ def test_no_locale_country_or_timezone_is_derived_from_the_sample(
     voice, holder = a_voice()
     run(registry, FakeChannel(), voice)
 
-    prompt = holder._requests[0].prompt
+    prompt = holder.requests[0].prompt
     whole = "\n".join((*prompt.system, *(t.text for t in prompt.turns)))
     for token in ("Asia/", "UTC", "timezone", "country", "locale", "region"):
         assert token not in whole
@@ -884,7 +875,7 @@ def test_the_shipped_tick_sends_one_composed_morning(tmp_path):
         assert asyncio.run(wiring.scheduler.tick()).ran == (MAIN,)
         assert len(transport.sent) == 1
         assert transport.sent[0][1] == COMPOSED
-        assert SAYABLE in holder._requests[0].prompt.turns[0].text
+        assert SAYABLE in holder.requests[0].prompt.turns[0].text
         assert wiring.mornings.sent == 1
     finally:
         wiring.registry.close()

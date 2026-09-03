@@ -101,14 +101,80 @@ def quotable_of(work) -> str:
     return ""
 
 
+class GeneratorDouble:
+    """The port's narrow generator, and nothing wider. **One of these in the
+    tree**, which is the rule the door predicate below states and which story
+    13a's first build broke three times over in a single story: `test_voice`,
+    `test_morning_words` and this file each grew their own.
+
+    One public method, so ``Voice`` — which refuses a holder with any public
+    callable but ``generate`` — is held to the same shape as the real thing.
+    ``calls`` and ``requests`` are public and are deliberately *not* callable:
+    a case that needs to assert a provider was never reached has to be able to
+    ask, and the alternative is the double this replaced, whose only signal was
+    an ``AssertionError`` the gate swallowed into ``Unspoken(RAISED)``.
+
+    ``answers`` are used in order and the last one repeats. A ``str`` becomes a
+    ``Completion``; a ``BaseException`` is raised; a callable is handed the
+    ``Generate``; anything else is returned as-is, so a case can hand back a
+    ``Failure`` or something unreadable.
+    """
+
+    def __init__(self, *answers, sleep: float = 0.0) -> None:
+        self._answers = list(answers) or [None]
+        self._sleep = sleep
+        self._seen: list = []
+
+    async def generate(self, work):
+        from half.model.port import Completion, Usage
+
+        self._seen.append(work)
+        if self._sleep:
+            await __import__("asyncio").sleep(self._sleep)
+        index = min(len(self._seen), len(self._answers)) - 1
+        answer = self._answers[index]
+        if isinstance(answer, BaseException):
+            raise answer
+        if callable(answer):
+            answer = answer(work)
+        if isinstance(answer, str):
+            return Completion(text=answer, usage=Usage(micro_usd=9_000))
+        return answer
+
+    @property
+    def calls(self) -> int:
+        return len(self._seen)
+
+    @property
+    def requests(self) -> list:
+        return list(self._seen)
+
+
+class NeverGenerates:
+    """A holder that must never be reached, **and counts the times it was**.
+
+    Raising alone is not enough and review round 1 proved it: ``Voice`` catches
+    ``Exception`` and turns an ``AssertionError`` into ``Unspoken(RAISED)``,
+    which is a member of ``REASONS``, so a case asserting *"silence, for some
+    reason in the set"* passed whether or not the provider had been paid three
+    times. Swapping the composer above ``capability_query`` left the whole suite
+    green. So the signal is a counter a case can assert on.
+    """
+
+    def __init__(self) -> None:
+        self._seen: list = []
+
+    async def generate(self, work):
+        self._seen.append(work)
+        raise AssertionError("a model was consulted where none may be")
+
+    @property
+    def calls(self) -> int:
+        return len(self._seen)
+
+
 def stub_voice(text=None, *, mains=("vidit",), **kwargs):
     """A ``Voice`` that composes for ``mains`` and for nobody else.
-
-    The double holds the port's narrow ``Generator`` — one public method — so it
-    is held to exactly the shape ``Voice`` refuses anything wider than. Every
-    surface fixture in the suite goes through this rather than each file
-    inventing its own, for the reason the door predicate above lives here: a
-    double worth having twice is worth having once.
 
     **By default it writes ``COMPOSED`` and then repeats the quotable block**,
     which is what a real generator does with material it is licensed to state.
@@ -121,33 +187,15 @@ def stub_voice(text=None, *, mains=("vidit",), **kwargs):
     ``text`` overrides it with a fixed string, or with a callable taking the
     ``Generate`` and returning whatever a case needs.
     """
-    from half.model.port import Completion, Usage
     from half.voice.gate import Voice
 
     def echo(work):
         said = quotable_of(work)
         return f"{COMPOSED} {said}".strip()
 
-    answer = echo if text is None else text
-
-    class _Holder:
-        def __init__(self, reply):
-            self._reply = reply
-            self._seen = []
-
-        async def generate(self, work):
-            self._seen.append(work)
-            reply = self._reply(work) if callable(self._reply) else self._reply
-            if isinstance(reply, str):
-                return Completion(text=reply, usage=Usage(micro_usd=9_000))
-            return reply
-
-        @property
-        def _requests(self):
-            return self._seen
-
     return Voice(
-        {main: _Holder(answer) for main in mains}, bound_seconds=1.0, **kwargs
+        {main: GeneratorDouble(echo if text is None else text) for main in mains},
+        bound_seconds=1.0, **kwargs
     )
 
 
