@@ -386,19 +386,33 @@ UNREACHABLE: Final[tuple[str, ...]] = (
 #: rather than dropped from it — so the exemption is one line somebody has to
 #: read, and everything else in ``UNREACHABLE`` still stands over that package.
 #:
-#: ``half/correction`` is the one entry, and the reason is the difference
-#: between the two questions. ``half/trust`` and ``half/questions`` decide
+#: Two entries, and the reason in both cases is the difference between the
+#: questions the packages answer. ``half/trust`` and ``half/questions`` decide
 #: whether to *ask*, and a model there would be a question composed by a model —
 #: the thing their Never lists forbid. ``half/correction``'s recall instrument
 #: **is** a model by design (CAP-11): the ways a person says *"that's wrong"* are
-#: not enumerable, so a phrase table cannot be the whole of it.
+#: not enumerable, so a phrase table cannot be the whole of it. ``half/voice``
+#: is a model by definition (story 13a): its whole subject is composing the
+#: morning's sentence through the port, and the alternative — a written template
+#: shipped worldwide — is the thing ``half/context/channels.py`` records the
+#: objection to.
 #:
-#: The exemption is paid for with a stricter rule in
+#: Each exemption is paid for with a stricter rule of its own.
 #: ``tests/test_correction.py``: exactly one module in that package may name the
 #: model, it may name only the port, and what it holds is the port's narrow
 #: classifier — an object with no method that returns text.
+#: ``tests/test_voice.py``: what that package holds is the port's narrow
+#: *generator* — refused at construction unless ``generate`` is the only public
+#: method on it — and the channel, the store and the network stay closed to it
+#: here, which is the half that would otherwise go quiet.
+#:
+#: **The pin is honest, and that is checked.** Every entry is a deliberate
+#: decision with a reason written beside it; ``tests/test_correction.py`` and
+#: ``tests/test_voice.py`` each assert the exact contents of this mapping, so a
+#: third package cannot acquire the lift by being added to a list.
 LIFTED: Final[dict[str, tuple[str, ...]]] = {
     "half/correction": ("half.model",),
+    "half/voice": ("half.model",),
 }
 
 

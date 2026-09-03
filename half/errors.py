@@ -302,6 +302,24 @@ class ForbiddenRecipient(ChannelError):
     """An outbound send was addressed to someone other than the main (AD-25)."""
 
 
+class VoiceError(HalfError):
+    """The composer was wired in a way that removes one of its guarantees.
+
+    A build or operator mistake, never an answer about a morning. Every way a
+    morning can fail to be composed — no model, no language sample, a provider
+    past its bound or over its cap, a judge that refused every attempt, a
+    tripwire that fired — is an ``Unspoken`` value carrying a reason from a
+    closed set, because all of them mean the same thing and it is not an error:
+    Half says nothing today (AD-27).
+
+    What raises is the other thing entirely: a holder that can do more than
+    generate, a bound that is not a bound, a ceiling that admits nothing, an
+    attempt count of zero. Each of those quietly removes a guarantee this
+    package is here to keep, and a value nobody has to check is exactly how one
+    of them ships.
+    """
+
+
 class ModelError(HalfError):
     """A fault in the model port (AD-19).
 

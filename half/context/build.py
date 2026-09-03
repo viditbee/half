@@ -270,10 +270,7 @@ def build(
     # Every wording the context may not carry, as adjacent pairs. `ask` sits
     # here beside `behave`: its material surfaces as a question about a topic,
     # and its text is withheld exactly as `behave` text is.
-    withheld: set[str] = set()
-    for candidate, license_ in licensed:
-        if license_ is not _QUOTABLE:
-            withheld.update(_fragments(candidate.claim))
+    withheld = _withheld_from(licensed)
 
     context = Context(
         now=now,
@@ -285,10 +282,48 @@ def build(
         if item is None:
             continue
         trial = context.plus(item)
-        if _leaks(trial.render(), withheld):
+        if leaks(trial.render(), withheld):
             continue  # this line would carry a withheld claim's wording
         context = trial
     return context
+
+
+def withheld(
+    ranked: Ranked | Iterable[Candidate] | None, *, ceiling: Ceiling | None
+) -> frozenset[str]:
+    """Every wording a context built from ``ranked`` may not carry.
+
+    **Public because a second consumer arrived and a second implementation
+    would be a Latin-only one.** ``half.voice.leak`` needs exactly this set to
+    run its tripwire over generated text, and the rule it encodes — adjacent
+    word pairs, over units that keep a Devanagari matra attached to its letter,
+    folded by ``half.text.normalize``, with invisible characters removed — took
+    two stories and a script sweep to get right. A copy of it beside the
+    generator would have been a copy of whatever somebody remembered.
+
+    Computed the same way ``build`` computes it, by calling the same helper over
+    the same resolution, so the two cannot disagree about what is withheld.
+    ``ceiling`` is keyword-only and undefaulted for ``resolve``'s reason: a
+    caller that forgets it would compute the withheld set as though no cap
+    existed, and a capped belief's wording must be withheld exactly as an
+    ordinary `behave` belief's is.
+    """
+    return frozenset(
+        _withheld_from(
+            (c, resolve(c.belief, ceiling=ceiling)) for c in (ranked or ())
+        )
+    )
+
+
+def _withheld_from(
+    licensed: Iterable[tuple[Candidate, License]],
+) -> frozenset[str]:
+    """The wordings of everything in ``licensed`` that may not be quoted."""
+    found: set[str] = set()
+    for candidate, license_ in licensed:
+        if license_ is not _QUOTABLE:
+            found.update(fragments(candidate.claim))
+    return frozenset(found)
 
 
 def _item(
@@ -441,7 +476,7 @@ def _distinct(topics: Iterable[Topic]) -> list[Topic]:
 # -- the guard ---------------------------------------------------------------
 
 
-def _leaks(rendering: str, withheld: Iterable[str]) -> bool:
+def leaks(rendering: str, withheld: Iterable[str]) -> bool:
     """Whether any withheld wording survived into ``rendering``.
 
     Scanned line by line, which is the whole rendering and nothing but it:
@@ -461,7 +496,7 @@ def _leaks(rendering: str, withheld: Iterable[str]) -> bool:
     return False
 
 
-def _fragments(text: object) -> tuple[str, ...]:
+def fragments(text: object) -> tuple[str, ...]:
     """``text`` as the wordings that may not be repeated: its adjacent pairs.
 
     Pairs are sufficient for runs of every length — a shared run of five words

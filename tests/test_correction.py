@@ -2219,13 +2219,24 @@ def test_only_the_widening_may_name_a_model_inside_the_package():
     """
     from tests.conftest import LIFTED, UNREACHABLE
 
-    # **The exemption table is pinned to its one documented entry**, beside the
-    # rule it exempts. Adding a line — ``"half/questions": ("half.model",)`` —
+    # **The exemption table is pinned to its documented entries**, beside the
+    # rules they exempt. Adding a line — ``"half/questions": ("half.model",)`` —
     # plus a model import in that package left the whole suite green, which
     # means the rule story 11 fixed could be undone by a one-line edit in a test
     # helper. The lift is also recomputed here rather than read from the table,
     # so this case says what it means with or without it.
-    assert LIFTED == {"half/correction": ("half.model",)}, LIFTED
+    #
+    # Story 13a adds the second entry, deliberately: ``half/voice`` composes the
+    # morning's sentence through the port, so a model there is the subject
+    # rather than a leak. It pays for its lift with the same kind of stricter
+    # rule this case is — a narrow *generator* refused at construction unless
+    # ``generate`` is its only public method — and ``tests/test_voice.py``
+    # asserts this same mapping from its own side, so neither entry can be added
+    # by editing one file.
+    assert LIFTED == {
+        "half/correction": ("half.model",),
+        "half/voice": ("half.model",),
+    }, LIFTED
     rest = tuple(root for root in UNREACHABLE if root != "half.model")
     for path in sorted((ROOT / "half/correction").rglob("*.py")):
         assert not reaches(path, rest), f"{path.name} reaches outward"
