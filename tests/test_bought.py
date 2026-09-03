@@ -55,6 +55,7 @@ from half.channel.telegram import TelegramChannel
 from half.civil import DAY
 from half.context.build import build as build_context
 from half.context.build import bought_question, resolve
+from half.context.build import split as split_context
 from half.context.channels import CHANNELS, Context, Question, Topic, render_line
 from half.voice.compose import question_block
 from half.errors import SendFailed
@@ -641,22 +642,41 @@ def test_a_belief_whose_topic_echoes_its_claim_is_never_paid_for(
 
 @pytest.mark.cap4
 @pytest.mark.cap4_bought
-def test_the_built_question_is_the_one_signal_that_a_question_was_built():
-    """``Context.question`` is what *"no question, no spend"* is measured with,
-    and it is empty in exactly the two ways a bought belief fails to become one.
+def test_the_builder_the_spend_reads_and_the_builder_the_prompt_reads_agree():
+    """``Context.question`` is what *"no question, no spend"* is measured with —
+    and on one turn it is built **twice, by two different functions**.
+
+    ``Runtime._offered`` decides whether to spend at all by calling
+    ``half.context.build.build``; ``respond`` fills the prompt's ``ask-about``
+    block from ``half.context.build.split``. Today the first delegates to the
+    second, so they cannot disagree — but that is a *fact about today's code*
+    rather than a guarantee, and the day it stops holding, a favour is spent for
+    a question no model was ever handed. That is the matrix's *"the question is
+    dropped"* row arriving from the side no other case here watches: the wire
+    looks like an ordinary reply and only the balance moves.
 
     **It used to be measured with ``question_line``**, the rendering that went
-    on the wire. Story 13b took that rendering off the wire — the question is
-    composed into the prose, never appended as a line — so the signal is now the
-    structure rather than a string, which is where it should always have been:
-    the two facts *"a question exists"* and *"here is how it is written"* are
-    different questions, and only the first one decides a spend.
+    on the wire, and story 13b took that off the wire — the question is composed
+    into the prose, never appended as a line. What replaced this case asserted
+    that ``Context(question=q).question is q``, which is a property of the
+    ``dataclass`` decorator and would hold with the whole question channel
+    deleted.
     """
-    assert Context(now=NOW).question is None
-    carried = Context(
-        now=NOW, question=Question(id="b_1", topics=(Topic(kind="loop", name="x"),))
-    )
-    assert carried.question is not None
+    belief = {"id": "b_1", "claim": "a claim", "loop": FARMLAND,
+              "topics": ["farmland"], "license": str(License.ASK)}
+    ranked = [RankedBelief(id="b_1", claim="a claim", prefix="", bm25=None,
+                           belief=belief)]
+
+    for bought in (None, "b_1"):
+        spend_side = build_context(ranked, now=NOW, ceiling=None, bought=bought)
+        prompt_side, _ = split_context(
+            ranked, now=NOW, ceiling=None, bought=bought
+        )
+        assert spend_side == prompt_side, bought
+        # And the pair is not two empties agreeing: the bought one carries a
+        # question and reaches the block, the unbought one neither.
+        assert (spend_side.question is not None) is (bought == "b_1")
+        assert (question_block(prompt_side) != "") is (bought == "b_1")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
