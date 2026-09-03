@@ -1990,13 +1990,23 @@ jobs:
         # Deleting one fails by name; deleting the naming case drops this gate
         # 36 cases and fails by arithmetic.
         #
-        # 210 selected, 195 required.
+        # **Story 14 adds the shape three callers now share**
+        # (`tests/test_consult.py`, 64 cases). It belongs on this gate because
+        # `half/model/consult.py` is part of this package and every one of its
+        # cases is a guarantee case: the report cadence whose branch was wrong
+        # in three modules at once, the breaker, the holder allowlist swept
+        # over names no denylist would contain, the two bound predicates, and
+        # the scans proving the shape names no label, no meaning and no
+        # morning. Deleting story 14's payoff drops this gate 64 cases and
+        # fails by arithmetic; the margin below is unchanged at 15.
+        #
+        # 274 selected, 259 required.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m ad19_guarantee -q --collect-only \
             | grep -c '::' || true)
           echo "AD-19 guarantee cases collected: $collected"
-          if [ "$collected" -lt 195 ]; then
+          if [ "$collected" -lt 259 ]; then
             echo "::error::the AD-19 guarantee gate collected $collected cases; the promises are unguarded"
             exit 1
           fi
