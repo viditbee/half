@@ -799,6 +799,22 @@ class Runtime:
         decidable is whether the text carrying the question is the text being
         sent.
 
+        **What that costs, said plainly, because a deletion made it true.**
+        Story 11 measured the spend with ``question_line`` — the rendering — so
+        *"the favour paid for a question"* and *"the delivered text contains
+        one"* were the same assertion, checkable on the bytes. Story 13b takes
+        that rendering off the wire, and there is no worldwide replacement for
+        it, so the spend now hangs on ``composed`` alone: **the reply is the
+        model's own prose, written from a prompt that carried the question**.
+        That is a weaker statement than the one it replaces — a model handed an
+        ``ask-about`` block and asking nothing spends the favour anyway — and it
+        is the strongest one available in every language. The link it does keep
+        is held in two places rather than one, and both are asserted: the
+        question reaches the *prompt* (``tests/test_bought.py``,
+        ``tests/test_turn_words.py``), and the prose built from that prompt is
+        what goes out (``composed``). What is not asserted, and cannot be, is
+        the middle.
+
         **A spend refused after the prose was written discards the prose**, and
         sends the claim alone instead. It is rare — the balance would have to
         change between the offer and the buy — and the alternative is worse in
