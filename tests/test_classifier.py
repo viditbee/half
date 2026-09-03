@@ -71,6 +71,7 @@ from half.crisis.gate import CrisisGate
 from half.crisis.signals import SAFE_WORD, Action, Assessment, Tier, assess
 from half.errors import CrisisError
 from half.governance.ladder import License
+from half.model import consult
 from half.model.anthropic import render_classify
 from half.model.budget import Budget, estimate
 from half.model.port import (
@@ -1944,6 +1945,142 @@ def test_serve_writes_the_counts_out_on_the_way_down():
         and node.func.attr == "flush"
     ]
     assert flushes, "serve never writes the classifier's counts out"
+
+
+# =============================================================================
+# story 14: one consultation, three policies
+# =============================================================================
+#
+# The shape — the bound, the caps, the breaker, the holder allowlist and the
+# report cadence — moved to ``half/model/consult.py``. The policy stayed: this
+# module's labels, its instructions, ``ACTION_FOR_LABEL``, and the three numbers
+# that differ between the callers for reasons.
+#
+# Everything above this line is the equivalence evidence, and it is evidence
+# because **not one of those assertions moved**: the breaker still trips at
+# ``BREAK_AFTER`` and skips exactly ``BREAK_FOR``; the tally still holds the
+# same fields with the same values and the same flush; the allowlist still
+# refuses a holder with any public method but ``classify``; the bound is still
+# refused unless it is a positive number; and the golden digests are the ones
+# the clinician signed. What follows is what could not have been asserted
+# before: that the fix was made once.
+
+
+@pytest.mark.cap12_classifier
+def test_the_hundredth_wholly_failing_consultation_alarms_rather_than_reporting(
+    caplog
+):
+    """The payoff, at this caller.
+
+    ``_report`` asked the periodic question first and hung the alarm off an
+    ``elif``, so the two were mutually exclusive: at the hundredth consultation
+    — and every hundredth after — a wholly failing classifier reported at
+    ``info``, which is exactly the number an operator would look at. The
+    identical bug sat in ``half/voice/gate.py`` and ``half/correction/
+    candidate.py``; story 13a fixed the voice's and left these two.
+
+    It was fixed once, in ``half.model.consult.due``, and this case is how a
+    later reader can see that it reached here rather than being fixed a second
+    time.
+
+    One consultation each for a hundred mains, because the breaker is *per
+    main*: driving one main a hundred times stands them down after five and the
+    counter never reaches a round number. A hundred mains failing once each is
+    also the shape of the outage this alarm exists for.
+    """
+    import logging
+
+    failing = Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED)
+    mains = tuple(f"main{i}" for i in range(clf.REPORT_EVERY))
+    second = SecondOpinion({main: Holder(failing) for main in mains})
+
+    with caplog.at_level(logging.INFO, logger="half.crisis.classifier"):
+        for main in mains:
+            consulted(second, ORDINARY, main=main)
+
+    assert second.tally.consulted == clf.REPORT_EVERY
+    assert second.tally.fallback_rate == 1.0
+    at_hundred = [
+        record for record in caplog.records
+        if f"{clf.REPORT_EVERY} consulted" in record.getMessage()
+    ]
+    assert at_hundred, "the hundredth consultation wrote nothing"
+    assert all(record.levelno == logging.ERROR for record in at_hundred), (
+        "the round number hid the alarm"
+    )
+
+
+@pytest.mark.cap12_classifier_property
+def test_the_shared_numbers_are_shared_and_this_mains_policy_is_its_own():
+    """Which numbers moved and which did not, pinned rather than reviewed.
+
+    The five that were byte-identical in all three consultations are one
+    definition with three readers now, so moving one moves it for the crisis
+    path, the correction path and the morning at once — which is the point and
+    is also the risk, and is why they are named here as well as in the shape.
+
+    The three that differ differ *for reasons*: two seconds is a pause in front
+    of somebody who has just written, fifty turns is how long this main's
+    classifier stands down, and a fifth is the fallback rate worth waking an
+    operator for. The shape takes all three and supplies none of them, so a
+    fourth caller has to answer them rather than inherit these by accident.
+    """
+    assert (BOUND_SECONDS, BREAK_FOR, ALARM_RATE) == (2.0, 50, 0.2)
+    for name in ("BOUND_SECONDS", "BREAK_FOR", "ALARM_RATE"):
+        assert not hasattr(consult, name), name
+    assert (BREAK_AFTER, clf.REPORT_EVERY, ALARM_AFTER) == (5, 100, 10)
+    assert (PER_CALL_MICRO_USD, PER_PASS_MICRO_USD) == (100_000, 500_000_000)
+    assert (
+        BREAK_AFTER, clf.REPORT_EVERY, ALARM_AFTER,
+        PER_CALL_MICRO_USD, PER_PASS_MICRO_USD,
+    ) == (
+        consult.BREAK_AFTER, consult.REPORT_EVERY, consult.ALARM_AFTER,
+        consult.PER_CALL_MICRO_USD, consult.PER_PASS_MICRO_USD,
+    )
+
+
+@pytest.mark.cap12_classifier_property
+def test_the_shape_is_read_from_one_place_and_not_repeated_here():
+    """A refactor whose caller kept its own copy beside the shared one is a
+    fourth copy with an import at the top.
+
+    So this asserts both halves: that the shared decisions are reached, and
+    that the arithmetic they replaced is gone from this file. The alarm branch
+    is the one that matters — it is the one that was wrong in three places, and
+    a caller that still computed ``consulted % ALARM_AFTER`` here could go on
+    being wrong with the shared version green.
+    """
+    source = (ROOT / "half/crisis/classifier.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    reached = {
+        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+    }
+    assert {"Breaker", "due", "wider_than", "refuses_as_a_bound"} <= reached
+    assert "% REPORT_EVERY" not in source
+    assert "% ALARM_AFTER" not in source
+    assert "_consecutive" not in source and "_quiet" not in source
+
+
+@pytest.mark.cap12_classifier_property
+def test_the_shape_holds_no_label_and_no_instruction_of_this_modules():
+    """The condition the deferred entry set, checked from this side.
+
+    ``tests/test_crisis_golden.py`` pins this module's label set and its
+    instructions by digest, as clinical-review material. If any of it had
+    followed the machinery into the shared module, that digest would have
+    become a pin on a base class and would mean nothing — so the shape is
+    scanned for every label this build knows and for the instructions
+    themselves.
+    """
+    shape = (ROOT / "half/model/consult.py").read_text(encoding="utf-8")
+    for label in LABELS:
+        assert label not in shape, label
+    for block in INSTRUCTIONS:
+        assert block not in shape
+    assert "ACTION_FOR_LABEL" not in shape
+    assert not hasattr(consult, "LABELS")
+    assert not hasattr(consult, "INSTRUCTIONS")
+    assert not hasattr(consult, "ACTION_FOR_LABEL")
 
 
 # =============================================================================

@@ -89,6 +89,20 @@ instructions, and the constants below go to the reviewer with the templates, and
 ``tests/test_crisis_golden.py`` pins all three so that changing them after review
 fails by name. A green suite is not clinical review, and this module's whole
 subject is detection quality.
+
+**The shape of the consultation is now shared and the policy is still here**
+(story 14). The bound, the caps, the breaker, the holder allowlist and the
+report cadence were byte-identical in three modules, and a correction to one of
+them had to be made three times or was made once and forgotten twice — which is
+what happened, twice. They live in ``half.model.consult``, which knows no label,
+no instruction and no domain, precisely so that the digest
+``tests/test_crisis_golden.py`` takes over this module's clinical material stays
+a pin on this module and does not become a pin on a base class. What did not
+move: the labels, the instructions, ``ACTION_FOR_LABEL`` and the check that
+refuses the module if a label ever maps past ``ASK``; the three numbers that
+differ between the callers for reasons; and every log line, so the scan that
+proves no line here can carry content still reads the arguments of the calls in
+this file.
 """
 
 from __future__ import annotations
@@ -102,6 +116,14 @@ from typing import Final
 
 from half.crisis.signals import Action
 from half.errors import CrisisError
+from half.model import consult
+from half.model.consult import (
+    ALARM_AFTER,
+    BREAK_AFTER,
+    PER_CALL_MICRO_USD,
+    PER_PASS_MICRO_USD,
+    REPORT_EVERY,
+)
 from half.model.port import (
     Classifier,
     Classify,
@@ -239,42 +261,38 @@ BOUND_SECONDS: Final[float] = 2.0
 #: arrangement of green cases answers it.
 CLASSIFY_TIER: Final[str] = "cheap"
 
-#: Ceilings for one classification and for one process's worth of them, in
-#: millionths of a dollar.
-#:
-#: **The per-call figure is the one that binds.** The port's estimate charges
-#: the full output ceiling in advance, so a short message prices at about six
-#: thousand on the cheap tier against a settled cost a fraction of that. Ten
-#: cents admits every message a person actually sends and refuses a pathological
-#: one *before the transport is touched* — which is the point of a ceiling
-#: checked before the spend, and is asserted against a counting transport rather
-#: than only from below.
-#:
-#: **The per-pass figure is a runaway stop and not a cost target.** Spending is
-#: bounded by construction rather than by this number: at most one
-#: classification per inbound message, and no loop, schedule or retry can make a
-#: second. It is set far above any conversational total precisely so that it
-#: never becomes the thing that silently removes the recall this module exists
-#: for.
-PER_CALL_MICRO_USD: Final[int] = 100_000
-PER_PASS_MICRO_USD: Final[int] = 500_000_000
+# The ceilings, how often the counts go out, when a rate becomes evidence and
+# how many consecutive fallbacks trip the breaker are ``half.model.consult``'s
+# and are re-exported above under the names this module has always used, so
+# every existing reader is unaffected. They were byte-identical in all three
+# consultations before story 14 moved them, which is the whole of why they
+# moved.
+#
+# **The per-call ceiling is the one that binds.** The port's estimate charges
+# the full output ceiling in advance, so a short message prices at about six
+# thousand on the cheap tier against a settled cost a fraction of that. Ten
+# cents admits every message a person actually sends and refuses a pathological
+# one *before the transport is touched* — which is the point of a ceiling
+# checked before the spend, and is asserted against a counting transport rather
+# than only from below. The per-pass one is a runaway stop and not a cost
+# target: spending is bounded by construction, at most one classification per
+# inbound message, with no loop, schedule or retry that could make a second.
 
-#: How often the running counts are written out, in consultations, and the
-#: fallback rate at which they are written out as an error instead. **The rate
-#: has to be visible, not merely reachable.** Every fallback logs its own line,
-#: but a line per event tells an operator that one call failed, not that a fifth
-#: of them are failing.
-REPORT_EVERY: Final[int] = 100
+#: The fallback rate at which the counts are written out as an error instead of
+#: at ``info``. **Policy, and this main's**: a fifth of the turns of somebody
+#: who is waiting is not the same question as half of a nightly pass's
+#: mornings, so the shared shape takes this number and never supplies one.
+#:
+#: **The rate has to be visible, not merely reachable.** Every fallback logs its
+#: own line, but a line per event tells an operator that one call failed, not
+#: that a fifth of them are failing.
 ALARM_RATE: Final[float] = 0.2
-#: Below this many consultations a rate is arithmetic rather than evidence, so
-#: the alarm holds its fire.
-ALARM_AFTER: Final[int] = 10
 
-#: Consecutive fallbacks that trip this main's breaker, and how many turns it
-#: stays open for. Counted in turns because nothing under ``half/crisis`` reads
-#: a clock (AD-30), and per main because one main's provider being down says
-#: nothing about another's.
-BREAK_AFTER: Final[int] = 5
+#: How many turns this main's breaker stays open for once it trips. Counted in
+#: turns because nothing under ``half/crisis`` reads a clock (AD-30), and per
+#: main because one main's provider being down says nothing about another's.
+#: Policy: fifty turns of a conversation is a different unit from twenty
+#: mornings of a pass, which is why the shape takes it.
 BREAK_FOR: Final[int] = 50
 
 #: The only public method a holder may have. **An allowlist, which is review
@@ -398,14 +416,13 @@ class Tally:
         """The number an operator watches. Zero consultations reads as zero
         rather than as an error, because a build with no classifier wired is a
         supported deployment and not a fault."""
-        return self.fell_back / self.consulted if self.consulted else 0.0
+        return consult.rate(self.fell_back, self.consulted)
 
     def count_label(self, label: str) -> None:
-        self.labels[label] = self.labels.get(label, 0) + 1
+        consult.count_one(self.labels, label)
 
     def count_failure(self, failure: Failure) -> None:
-        key = f"{failure.kind}/{failure.because}"
-        self.failures[key] = self.failures.get(key, 0) + 1
+        consult.count_one(self.failures, consult.failure_key(failure))
 
 
 class SecondOpinion:
@@ -423,7 +440,7 @@ class SecondOpinion:
     is half of a narrow holder; the other half is narrow authority.
     """
 
-    __slots__ = ("_holders", "_bound", "_tally", "_consecutive", "_quiet", "_sealed")
+    __slots__ = ("_holders", "_bound", "_tally", "_breaker", "_sealed")
 
     def __init__(
         self,
@@ -435,9 +452,7 @@ class SecondOpinion:
         given = dict(holders or {})
         for main_id, holder in given.items():
             _check_holder(main_id, holder)
-        if isinstance(bound_seconds, bool) or not isinstance(
-            bound_seconds, (int, float)
-        ) or bound_seconds <= 0:
+        if consult.refuses_as_a_bound(bound_seconds):
             raise CrisisError(
                 f"a bound of {bound_seconds!r} is not a bound. A classification "
                 "that may run for ever is a main waiting for a reply for ever, "
@@ -446,9 +461,9 @@ class SecondOpinion:
         self._holders: Mapping[str, Classifier] = MappingProxyType(given)
         self._bound = float(bound_seconds)
         self._tally = tally if tally is not None else Tally()
-        #: main -> consecutive fallbacks, and main -> turns still to skip.
-        self._consecutive: dict[str, int] = {}
-        self._quiet: dict[str, int] = {}
+        #: main -> consecutive fallbacks, and main -> turns still to skip, in
+        #: the shared shape. Counted in turns, per main.
+        self._breaker = consult.Breaker(break_for=BREAK_FOR)
         self._sealed = True
 
     def __setattr__(self, name: str, value: object) -> None:
@@ -544,25 +559,25 @@ class SecondOpinion:
         issue another doomed request — the latency and the spend of asking a
         question nobody is answering. After a run of failures it stops asking
         for a while and then tries again.
+
+        The counting is the shared shape's; the *skip* is counted here, because
+        a turn the breaker declined is not a consultation and must stay outside
+        every rate — the breaker's whole job is to stop making calls, and
+        counting its silence as failure would double-count an outage.
         """
-        left = self._quiet.get(main_id, 0)
-        if left <= 0:
+        if not self._breaker.spend(main_id):
             return False
-        self._quiet[main_id] = left - 1
         self._tally.skipped += 1
         return True
 
     def _note(self, main_id: str, verdict: Verdict) -> None:
-        """Record whether that call worked, and trip or clear the breaker."""
-        if not verdict.fell_back:
-            self._consecutive[main_id] = 0
+        """Record whether that call worked, and trip or clear the breaker.
+
+        The breaker decides; the line is written here, where the scan that
+        proves no log call on this path can carry content reads it.
+        """
+        if not self._breaker.note(main_id, failed=verdict.fell_back):
             return
-        run = self._consecutive.get(main_id, 0) + 1
-        self._consecutive[main_id] = run
-        if run < BREAK_AFTER:
-            return
-        self._consecutive[main_id] = 0
-        self._quiet[main_id] = BREAK_FOR
         logger.error(
             "the crisis classifier failed %d times running for main=%s and is "
             "standing down for %d turns; the phrase table decides alone until "
@@ -572,15 +587,25 @@ class SecondOpinion:
     # -- what an operator sees -----------------------------------------------
 
     def _report(self) -> None:
-        """Write the running counts out, every so often. Counts only (AD-22)."""
-        if self._tally.consulted % REPORT_EVERY == 0:
-            self.flush()
-        elif (
-            self._tally.consulted >= ALARM_AFTER
-            and self._tally.fallback_rate >= ALARM_RATE
-            and self._tally.consulted % ALARM_AFTER == 0
-        ):
+        """Write the running counts out, every so often. Counts only (AD-22).
+
+        **The alarm is asked first, and the branch that decides it is shared.**
+        With the periodic question first and the alarm on an ``elif`` the two
+        were exclusive, so at the hundredth consultation — and every hundredth
+        after — a wholly failing classifier reported at ``info`` instead of
+        ``error``, which is exactly the number an operator would look at. That
+        bug lived identically in three modules and story 13a fixed one of them;
+        it is now one branch in ``half.model.consult.due``, and this module
+        reads it rather than repeating it.
+        """
+        due = consult.due(
+            self._tally.consulted, self._tally.fallback_rate,
+            alarm_rate=ALARM_RATE,
+        )
+        if due is consult.Due.ALARM:
             self.flush(alarming=True)
+        elif due is consult.Due.PERIODIC:
+            self.flush()
 
     def flush(self, *, alarming: bool = False) -> None:
         """Write the counts out now — periodically, above the alarm rate, and
@@ -715,12 +740,7 @@ def _check_holder(main_id: str, holder: object) -> None:
             "method by another name. The crisis path holds an object that can "
             "classify and do nothing else"
         )
-    wider = sorted(
-        name for name in dir(holder)
-        if not name.startswith("_")
-        and name not in ALLOWED_METHODS
-        and callable(getattr(holder, name, None))
-    )
+    wider = consult.wider_than(holder, ALLOWED_METHODS)
     if wider:
         raise CrisisError(
             f"the holder for main {main_id!r} can also {', '.join(wider)}. The "

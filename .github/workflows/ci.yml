@@ -442,12 +442,19 @@ jobs:
         # instructions the model is given are all build requirement 6's
         # business, and no arrangement of green cases is evidence that the
         # classifier detects the right things.
+        #
+        # **Story 14 adds one**: the hundredth wholly failing consultation
+        # alarming at `error` rather than reporting at `info`. That branch was
+        # wrong in three modules at once and story 13a fixed one of them; it is
+        # now one branch in `half/model/consult.py`, and this case is how a
+        # reader can see that the single fix reached the crisis path.
+        # 294 selected, 271 required; the margin of 23 is unchanged.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap12_classifier -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-12 classifier cases collected: $collected"
-          if [ "$collected" -lt 270 ]; then
+          if [ "$collected" -lt 271 ]; then
             echo "::error::the classifier gate collected $collected cases; the second opinion is unguarded"
             exit 1
           fi
@@ -469,12 +476,23 @@ jobs:
         # assigned past the check; that a fallback that asks cannot be
         # constructed; that no module under ``half/crisis`` logs a traceback;
         # and that no log argument on this path can carry content.
+        #
+        # **Story 14 adds three**, each a single case asserting something no
+        # amount of behaviour can show: which numbers are the shape's and which
+        # are this main's, with the three policy numbers absent from the shape
+        # entirely; that the shape is read from one place rather than kept
+        # alongside a local copy, which is what a fourth copy with an import at
+        # the top would look like; and that no label, no instruction and no
+        # action table followed the machinery out — because if any had, the
+        # digest in `tests/test_crisis_golden.py` would have become a pin on a
+        # base class.
+        # 37 selected, 31 required; the margin of 6 is unchanged.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap12_classifier_property -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-12 classifier property cases collected: $collected"
-          if [ "$collected" -lt 28 ]; then
+          if [ "$collected" -lt 31 ]; then
             echo "::error::the property gate collected $collected cases; the second opinion's structural rules are unguarded"
             exit 1
           fi
