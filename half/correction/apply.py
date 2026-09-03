@@ -334,6 +334,25 @@ def proposal(
     cause unknown, because a model's reading of a message settles neither
     whether Half was wrong nor whether the main changed. The **table** reaches
     it only for an erasure, which is applied as an erasure or not at all.
+
+    **It carries no claim, and that is the AD-18 bound made structural.**
+    ``proposed`` renders the op and the id and deliberately not the claim — a
+    proposal is Half *asking*, on a turn where nothing was removed and a
+    classifier may have read an ordinary message as a correction, so quoting a
+    `behave` belief there would put its text on the wire for an inference. With
+    the field populated that bound was one function call from being broken:
+    ``shown`` on a candidate would have rendered it. Until story 13b the
+    emptying was here and applied to erasures only; that story needed
+    ``plan``'s erasure to carry the claim — the confirming turn is the last
+    moment a mis-aimed erasure can be caught — and dropped it from both. A
+    proposal has no reader for it either way: ``half.actor.runtime._removal``
+    reads a standing candidate's ``target``, ``meaning`` and ``source``, and the
+    claim it eventually shows is read off the fold by ``plan`` when the main
+    answers.
+
+    So it is also one less copy of a belief's own words held in memory across
+    turns — for a candidate that is, half the time, a proposal to destroy the
+    body it came from.
     """
     if not isinstance(target, str) or not target.strip():
         return None
@@ -341,13 +360,12 @@ def proposal(
         return None
     attribution = ATTRIBUTION_FOR_MEANING[meaning]
     op = Op.EXPUNGE if meaning is Meaning.ERASE else op_for(attribution)
-    claim = belief.get(CLAIM)
     return Removal(
         target=target,
         op=op,
         attribution=attribution,
         meaning=meaning,
-        claim=claim if isinstance(claim, str) else "",
+        claim="",
         source=source,
     )
 

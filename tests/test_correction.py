@@ -1348,6 +1348,57 @@ def test_a_behave_claim_reaches_the_wire_on_a_correction_turn_and_no_other(
     assert CLAIM in last(corrected)
 
 
+def test_a_proposal_holds_no_claim_at_all_and_a_removal_holds_it_only_then(
+    registry, tmp_path
+):
+    """The same bound, one layer in from the wire: the **candidate** carries no
+    claim either.
+
+    The case above pins what a proposal *renders*. What it cannot see is what a
+    proposal *holds*: a standing candidate lives in ``Widening._standing`` in
+    memory until the main answers, and until this commit it carried the belief's
+    own text — a `behave` claim, half the time a proposal to destroy the body it
+    was copied from, held across turns with nothing reading it. Story 12 emptied
+    it and story 13b dropped the emptying while making ``plan``'s erasure carry
+    the claim, which is a different function and a requirement of the matrix.
+
+    That made the AD-18 bound one call from breaking: ``shown`` on a candidate
+    would have rendered it, and ``proposed`` not doing so is a fact about one
+    function rather than about the value.
+
+    **Both halves, so the case cannot pass by nothing carrying a claim
+    anywhere**: the removal the main's answer produces reads it off the fold and
+    does carry it, which is what CAP-11 asks and what the erasure ordering
+    exists for.
+    """
+    seed(tmp_path)
+    belief = {"claim": CLAIM, "subject": "self"}
+
+    offered = correction.proposal(BELIEF, belief, meaning=Meaning.ERASE)
+    assert offered is not None, "the fixture proposed nothing"
+    assert offered.claim == ""
+    assert correction.shown(offered) == "", "a candidate can still be rendered"
+    assert BELIEF in correction.proposed(offered), "and asking still works"
+
+    removed = correction.plan(
+        Meaning.ERASE, target=BELIEF, belief=belief, confirmed=True
+    )
+    assert correction.shown(removed) == CLAIM, (
+        "the removal must show it, or this case proves nothing about the "
+        "candidate"
+    )
+
+    # And through the real turn path: the candidate a proposal leaves standing
+    # holds none of the main's words, while the fold still does.
+    wide = widening(labelled(CORRECTION))
+    corrects(registry, "hm, i dont think that is me these days",
+             corrections=wide)
+    standing = wide.standing(MAIN)
+    assert standing is not None, "no candidate was left standing"
+    assert standing.claim == ""
+    assert beliefs_of(tmp_path)[BELIEF]["claim"] == CLAIM
+
+
 def test_a_correction_and_its_attribution_survive_a_rebuild(tmp_path):
     """Matrix: *replay* (AD-4).
 
