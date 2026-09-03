@@ -150,6 +150,15 @@ ASK_ABOUT: Final[str] = "ask-about:"
 #: instruction for a morning and the wrong one here: a paraphrase is exactly
 #: what the main cannot check.
 #:
+#: **The two instructions are ordered rather than left to collide** (review
+#: loop 1). The may-be-said rule says *in your own words or in its words,
+#: whichever reads better*, and this one says *character for character*; a model
+#: taking the first on a correction turn writes a paraphrase, the inclusion
+#: check refuses it, and the reply is silently downgraded to the claim alone —
+#: which is the failure the whole check exists to prevent, arriving through the
+#: prompt rather than through the code. So the first rule now names this one as
+#: its exception.
+#:
 #: **The claim is in the may-be-said block as well**, and the duplication is
 #: deliberate. Every derived rule in this package reads the quotable channel —
 #: ``question_budget`` counts the marks it was handed there,
@@ -432,7 +441,8 @@ INSTRUCTIONS: Final[tuple[str, ...]] = (
 
     "The may-be-said block is the only thing you may state. Say one thing from "
     "it, in your own words or in its words, whichever reads better in that "
-    "language.",
+    "language — except where the word-for-word block below applies, which is "
+    "the one case where the wording is not yours to choose.",
 
     "If there is no may-be-said block, you have been told nothing you may "
     "state about the person. Say nothing about them: do not guess, do not "
@@ -484,13 +494,23 @@ def turn_text(
 
     ``verbatim`` is the one string the message must carry unchanged, and it is
     empty on every path but a correction turn. See ``WORD_FOR_WORD``.
+
+    **It is sanitized here, like every other body in this prompt.** Each of the
+    other four comes out of a ``Context``, whose items neutralize line breaks
+    and control characters at construction, so *"every label is line-initial and
+    no body can begin a line"* held for four blocks out of five. A removed claim
+    carrying a blank line would have forged a sixth block boundary out of a
+    belief's own text — the forgery ``half.context.channels`` is built against,
+    arriving through the one door that had no lock. ``half.correction.apply``
+    already flattens with the same function, so this changes nothing about the
+    shipped path and closes it for every other caller.
     """
     blocks = (
         (LANGUAGE_SAMPLE, language_block(sample)),
         (MAY_BE_SAID, quotable_block(context)),
         (BE_MINDFUL_OF, shaping_block(context)),
         (ASK_ABOUT, question_block(context)),
-        (WORD_FOR_WORD, verbatim if isinstance(verbatim, str) else ""),
+        (WORD_FOR_WORD, sanitize(verbatim) if isinstance(verbatim, str) else ""),
         (RETRY, because if isinstance(because, str) else ""),
     )
     return "\n\n".join(
