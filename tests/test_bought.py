@@ -82,6 +82,7 @@ from tests.conftest import (
     COMPOSED,
     FakeTransport,
     GeneratorDouble,
+    a_voice,
     msg,
     quotable_of,
     reaches,
@@ -279,17 +280,6 @@ def a_turn(
     )
     asyncio.run(runtime.run())
     return transport
-
-
-def a_voice(main_id="vidit"):
-    """A composer and the holder inside it, so a case can read the prompt."""
-    from half.voice.gate import Voice
-
-    def echo(work):
-        return f"{COMPOSED} {quotable_of(work)}".strip()
-
-    holder = GeneratorDouble(echo)
-    return Voice({main_id: holder}, bound_seconds=1.0), holder
 
 
 def asked_about(holder):

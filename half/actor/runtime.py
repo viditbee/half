@@ -77,14 +77,18 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
+from typing import Final
 
 from half.actor.registry import Actor, ActorRegistry
 from half.channel.port import Channel, Inbound
 from half.context.build import build as build_context
+from half.context.build import fragments
 from half.context.build import split as split_context
 from half.context.channels import Content, Context
 from half.correction import apply as correction
+from half.correction import candidate as candidate_module
 from half.correction import signals as correction_signals
 from half.correction.apply import Removal, Source
 from half.correction.candidate import Widening
@@ -119,6 +123,65 @@ logger = logging.getLogger(__name__)
 
 #: Backoff between retries of a retryable send, in seconds.
 RETRY_DELAYS = (1.0, 4.0, 15.0)
+
+#: The whole of one turn's model budget, in seconds — **one deadline, shared**.
+#:
+#: Three bounded calls can happen on a single inbound message: the crisis
+#: classifier (``half.crisis.classifier.BOUND_SECONDS``), the correction
+#: widening (``half.correction.candidate.BOUND_SECONDS``) and the composition
+#: (``half.voice.turn.TURN_BOUND_SECONDS``). Each is two seconds and each was
+#: sized against the *same* five, so a turn that took all three made a waiting
+#: main sit through six — every module honouring a bound nobody was keeping.
+#:
+#: What the modules are each sized against is AD-23's five-second window, and
+#: the honest reading of AD-23 is that it governs the webhook acknowledgement,
+#: which this design already answers by enqueuing (``_Turns``). What five
+#: seconds bounds *here* is the person: it is the number the three bounded
+#: callers were each written against, so it is the one they share rather than a
+#: fourth opinion invented for this story.
+#:
+#: The deadline is per turn and starts before the crisis gate, which is the
+#: first thing that can spend against it. What each later call receives is the
+#: **remainder**, and a remainder of nothing means that call does not happen —
+#: never a fourth wait, and never a bound of zero handed to a timeout.
+TURN_DEADLINE_SECONDS: Final[float] = 5.0
+
+#: When this turn's budget runs out, on the loop's own monotonic clock.
+#:
+#: A ``ContextVar`` and not a parameter, because the value has to cross the
+#: crisis gate — which owns its own call signature and is Ask-First for this
+#: story — to reach the pipeline on the other side. Every turn runs inside one
+#: task (``_Turns._work`` awaits one before taking the next), so the value one
+#: turn sets is the value that turn reads and no other's.
+#:
+#: ``None`` is *no deadline*, which is what every direct caller of ``respond``
+#: gets: a bound is a promise to somebody who is waiting, and a test or a later
+#: surface that calls in without going through ``_handle`` has not made one.
+_DEADLINE: Final[ContextVar[float | None]] = ContextVar(
+    "half_turn_deadline", default=None
+)
+
+
+def _open_deadline() -> None:
+    """Start this turn's shared budget. Never raises."""
+    _DEADLINE.set(asyncio.get_running_loop().time() + TURN_DEADLINE_SECONDS)
+
+
+def _left(most: float) -> float:
+    """How long the next bounded call may run: ``most``, or what is left of the
+    turn's budget if that is less. Never raises, and never a negative.
+
+    With no deadline open the caller's own bound stands unchanged, so nothing
+    that reaches a model outside the turn path is shortened by this.
+    """
+    deadline = _DEADLINE.get()
+    if deadline is None:
+        return most
+    try:
+        left = deadline - asyncio.get_running_loop().time()
+    except RuntimeError:  # no running loop: nothing is waiting on a clock
+        return most
+    return max(0.0, min(most, left))
 
 #: Turns one main may have waiting before the inbound loop waits with them.
 #: Bounded so a flood costs that main their own backlog rather than the
@@ -383,7 +446,14 @@ class Runtime:
         other. The turn path clears it when the main answers; this clears it
         when the turn path never ran. Both are the same rule, and this one
         cannot be skipped because there is no route into Half that avoids it.
+
+        **This is also where the turn's one model deadline opens** (review loop
+        1). Three bounded calls can happen below — the classifier inside the
+        gate, the widening, and the composition — and each of the three was
+        sized against the same five seconds on its own, which added up to six in
+        front of somebody who had just written. See ``TURN_DEADLINE_SECONDS``.
         """
+        _open_deadline()
         try:
             reply = await self._gate.handle(inbound)
         finally:
@@ -591,7 +661,12 @@ class Runtime:
         # eviction and every other operation on that main for the whole bound
         # (AD-33) — the same reason recognition already runs before the lock.
         # What the lock produced is *values*: the ranked set, the ceiling, the
-        # live strands and the removal. Nothing below reads the store.
+        # live strands and the removal, and **nothing below reads the store
+        # while composing**. The spend does take this main's mutex again
+        # (``_offered`` reads the trust view, ``_bought`` writes the ``asked``
+        # record), which is the whole reason the lock is released here rather
+        # than held — ``ActorRegistry.acquire`` is not reentrant. What must not
+        # happen below is a *model call* under the lock, and none does.
         if acted:
             # A correction acted, or Half put one to the main, or a standing
             # candidate was answered. No question — see this method's docstring
@@ -604,7 +679,7 @@ class Runtime:
             # — silently not happening.
             turned = await respond(
                 inbound, ranked, ceiling=ceiling, voice=self.voice,
-                removal=removal,
+                removal=removal, bound_seconds=_left(voice_turn.TURN_BOUND_SECONDS),
             )
             if asked:
                 # A proposal, not a removal: Half is asking. That line is still
@@ -683,6 +758,7 @@ class Runtime:
         turned = await respond(
             inbound, ranked, ceiling=ceiling, voice=self.voice,
             bought=ask.question.about if ask is not None else None,
+            bound_seconds=_left(voice_turn.TURN_BOUND_SECONDS),
         )
         if ask is None or not turned.composed:
             if ask is not None:
@@ -693,7 +769,7 @@ class Runtime:
             return turned.text or None
         if await self._bought(inbound, ask, live=live):
             return turned.text or None
-        return self._unasked(inbound, ranked, ceiling=ceiling)
+        return await self._unasked(inbound, ranked, ceiling=ceiling)
 
     async def _offered(
         self,
@@ -769,19 +845,41 @@ class Runtime:
             )
         return bool(purchase.spent)
 
-    def _unasked(
+    async def _unasked(
         self, inbound: Inbound, ranked: Ranked, *, ceiling: Ceiling | None
     ) -> str | None:
         """What goes out when a question was composed and not paid for.
 
-        The claim alone, with **no second model call**: the main is waiting, and
-        a race at the spend must not cost them a second bound. It asks nothing
-        by construction, which is the property that has to hold — the reply must
-        not carry a question the favour did not buy.
+        **The claim alone where there is one**, and it asks nothing by
+        construction, which is the property that has to hold: the reply must not
+        carry a question the favour did not buy.
+
+        **And prose where there is not**, which is review loop 1's correction.
+        This used to be the fallback and nothing else, on the argument that a
+        race at the spend must not cost a waiting main a second bound. That
+        argument holds right up to the turn where the fallback is empty — a
+        directives-only turn, which is most turns for a main under an aftercare
+        ceiling — and there it produced **total silence** for somebody whose
+        working composer had already written them a reply. Weighed against a
+        second bound, silence loses; and the second call is bounded by whatever
+        is left of the turn's own deadline rather than by a fresh one
+        (``TURN_DEADLINE_SECONDS``), so it is not a second wait of the same
+        size. It is composed with no bought question at all, so what comes back
+        cannot carry the one nobody paid for.
+
+        Never raises: ``respond`` does not, and the fallback is computed from
+        values this turn already holds.
         """
-        return voice_turn.fallback(
+        spare = voice_turn.fallback(
             build_context(ranked, now=inbound.t, ceiling=ceiling)
-        ) or None
+        )
+        if spare:
+            return spare
+        second = await respond(
+            inbound, ranked, ceiling=ceiling, voice=self.voice,
+            bound_seconds=_left(voice_turn.TURN_BOUND_SECONDS),
+        )
+        return second.text or None
 
     async def _widened(self, inbound: Inbound) -> bool:
         """Whether a model reads this turn as a correction. Never raises.
@@ -800,9 +898,19 @@ class Runtime:
             # No model for this main. Not a fallback and not a failure: the
             # offline table decides alone, which is a supported deployment.
             return False
+        left = _left(candidate_module.BOUND_SECONDS)
+        if left <= 0:
+            # The turn's budget is spent. The table's answer stands, which is
+            # the same outcome a timeout would have produced — reached without
+            # making the main wait for it.
+            logger.debug(
+                "no time was left in the turn to widen recognition for "
+                "main=%s; the table's answer stands", inbound.main_id,
+            )
+            return False
         try:
             verdict = await self._corrections.consult(
-                inbound.text, main_id=inbound.main_id
+                inbound.text, main_id=inbound.main_id, bound_seconds=left,
             )
         except Exception as exc:  # noqa: BLE001 - the widening, never the reply
             # ``consult`` answers with a verdict rather than raising, so this is
@@ -1057,19 +1165,26 @@ class Runtime:
         mistakable for an empty ledger — and catching it is what keeps a
         disabled ledger from *raising* the turn.
 
-        **What it no longer keeps is the reply, and that is worth stating
-        plainly.** This paragraph used to end *"a disable degrades what Half
-        knows, never whether Half replies"*, and that was true only while the
-        reply was the ``noted.`` template. Story 13b's fallback ladder is prose,
-        then the claim alone, then silence — and a disabled ledger has no claim,
-        so the turn now completes, records the message, and sends nothing.
+        **And it keeps the reply, which is this method's whole invariant: a
+        degradation changes what Half knows, never whether Half answers.** That
+        sentence stopped being true for one commit of story 13b and it is worth
+        recording why, because the reasoning was locally correct at every step.
+        The fallback ladder is prose, then the claim alone, then silence; a
+        disabled ledger has no claim; so the turn completed, recorded the
+        message, and sent nothing. The same held wherever the material was all
+        `behave`, which is most turns for most mains — and it included every
+        main under an aftercare ceiling (AD-28) for at least thirty days, and
+        every main whose retrieval a crisis disabled, which comes back on only
+        by an explicit operator action. CAP-12 says Half *stays present*;
+        ``tests/test_crisis.py::test_a_reply_is_always_sent`` calls going quiet
+        *"a failure here, not an outcome"*.
 
-        The same is true wherever the material is all `behave`, which is most
-        turns for most mains, and it includes a main under an aftercare ceiling
-        (AD-28) for at least thirty days. CAP-12 says Half *stays present*.
-        Closing that needs a turn reply that does not depend on quotable
-        material, which is a story this tree does not have; it is recorded here
-        rather than left to be found from a silent product.
+        The rung was never the question. A reply is composed from the language
+        the main just wrote in and shaped by whatever the context holds,
+        **including nothing** — ``half.voice.turn.words`` composes for an empty
+        context rather than refusing it, and the instructions already say what
+        to write when there is nothing that may be stated. So a ``Ranked()``
+        here costs Half its ranking for that turn and costs the main nothing.
 
         A tokenizer refusal is caught for the same reason and on the same terms.
         The ceilings in ``half.text`` exist to stop an unbounded expansion, not
@@ -1131,6 +1246,26 @@ def about(
     subtraction of one claim's wordings. Every other `behave` claim is withheld
     exactly as it was, so the reply cannot leak a *different* belief sideways.
 
+    **And then the removed claim's own wordings come out of that set**, which is
+    review loop 1's finding and the one place the exclusion-by-id is not enough.
+    The tripwire's unit is the adjacent word pair, so a removed claim that
+    shares two consecutive words with a *different* withheld belief — two
+    beliefs about the same plot, the same brother, the same week — puts those
+    pairs in ``hidden`` even though the belief they came from is excluded. Every
+    composed correction reply then does exactly what CAP-11 asks, trips the
+    tripwire for doing it, and falls back; and because the fallback *is* the
+    claim, the wire looks identical and only ``Tally.leaked`` moves. The
+    composed path would be permanently dead for those claims with nothing
+    failing anywhere.
+
+    Subtracting the claim's own pairs is proportionate rather than a hole: a
+    pair is two words, the other belief keeps every pair it does not share, and
+    what the tripwire exists to catch — a *different* belief's wording arriving
+    in the reply — still needs one of those. The alternative, re-running
+    ``split``'s leak guard over the injected content, drops the claim and
+    answers *"that's wrong"* with nothing at all, which is the failure CAP-11 is
+    written against.
+
     ``Ranked``'s own annotations (``truncated``, ``rerank``) do not travel,
     because the material is filtered to a tuple. Nothing on the composing path
     reads them; the ordinary reply, which does carry them, is built by
@@ -1145,13 +1280,17 @@ def about(
     context, hidden = split_context(others, now=now, ceiling=ceiling)
     claim = correction.shown(removal)
     if not claim:
-        # A record whose claim this build cannot read. There is nothing to show
-        # and nothing to fall back to, so this degrades to an ordinary turn over
-        # the rest of the material.
-        return context, hidden
+        # A record whose claim this build cannot read. There is nothing to
+        # show — and the opening invariant still holds, so there is nothing
+        # this reply may state either. The content channel is emptied rather
+        # than left as the ordinary turn's, which is what it used to be: a
+        # correction turn answering *"that's wrong"* with an unrelated
+        # statement, at the one moment the main is checking Half's work. The
+        # directives stay, so the reply is still shaped and still happens.
+        return replace(context, content=()), hidden
     return replace(
         context, content=(Content(id=removal.target, claim=claim),)
-    ), hidden
+    ), hidden - frozenset(fragments(claim))
 
 
 async def respond(
@@ -1162,6 +1301,7 @@ async def respond(
     voice: Voice | None = None,
     bought: str | None = None,
     removal: Removal | None = None,
+    bound_seconds: float | None = None,
 ) -> Turned:
     """The turn's words: prose, the claim alone, or nothing (story 13b).
 
@@ -1182,12 +1322,27 @@ async def respond(
       The one exception is the belief a correction has just removed, which
       CAP-11 requires be shown and which ``about`` admits deliberately and by
       name.
-    * The reply does not echo the main's own words. Their message travels as a
-      ``Sample``, which is a type with no parameter on the quotable path it
-      could arrive through, and the belief carrying it is recorded after this
-      returns and recorded `behave`.
-    * A context with no content produces the fallback or nothing, never a
-      template and never a phrase about missing access (AD-24, AD-27).
+    * The main's own message cannot become **material Half may state**. It
+      travels as a ``Sample``, which is a type with no parameter on the quotable
+      path it could arrive through, and the belief carrying it is recorded after
+      this returns and recorded `behave`.
+
+      *That is the whole of the guarantee, and this bullet used to claim more.*
+      It said the reply never echoes the main's own words, which nothing checks
+      and nothing could: the model is **told** not to repeat the language sample
+      back (``half.voice.compose.INSTRUCTIONS``), and enforcing it would mean
+      putting this turn's inbound text into the withheld set — where the
+      tripwire's adjacent-word-pair rule would refuse an ordinary reply for
+      reusing two consecutive words of a message written in the same language,
+      loudly, and fall back on most turns. What is structural is that the
+      sample cannot reach the quotable channel; what is asked for is that the
+      model not parrot it; and the difference between the two is stated here
+      rather than left as a promise the code does not keep.
+    * A context with no content produces prose, the fallback, or nothing — never
+      a template and never a phrase about missing access (AD-24, AD-27). *No
+      content is not a reason for silence*, which is review loop 1's second
+      amendment: a disabled ledger changes what Half knows, never whether Half
+      answers.
     * The bought question is **composed into** the prose. There is no line to
       append and no branch here that could append one.
 
@@ -1196,19 +1351,39 @@ async def respond(
     anything afterwards: a capped belief simply never reaches the quotable
     channel (AD-28).
 
-    Never raises. Every path out is a ``Turned``, and a blank message is
-    ``Turned()`` — silence, which is what a blank message has always got.
+    Never raises, and **that is a handler rather than an inventory of what
+    cannot go wrong**. Every path out is a ``Turned``, and a blank message is
+    ``Turned()`` — silence, which is what a blank message has always got. The
+    cost of a raise here is not one turn: the main's message is recorded before
+    this is reached, so ``Runtime._isolated`` catches it, the idempotency check
+    suppresses the redelivery, and that message is answered by nothing for ever.
+    ``half.voice.turn.words`` holds the same handler for the same reason, so a
+    fault in the composer and a fault in the *build* of what it composes from
+    both cost the prose and never the reply.
     """
     if not inbound.text.strip():
         return Turned()
-    if removal is not None:
-        context, hidden = about(removal, ranked, now=inbound.t, ceiling=ceiling)
-        show = correction.shown(removal)
-    else:
-        context, hidden = split_context(
-            ranked, now=inbound.t, ceiling=ceiling, bought=bought
+    show = correction.shown(removal) if removal is not None else ""
+    try:
+        if removal is not None:
+            context, hidden = about(
+                removal, ranked, now=inbound.t, ceiling=ceiling
+            )
+        else:
+            context, hidden = split_context(
+                ranked, now=inbound.t, ceiling=ceiling, bought=bought
+            )
+    except Exception as exc:  # noqa: BLE001 - the context, never the reply
+        # Building the context reads records out of a main's own ledger, folds
+        # arbitrary text and resolves a ladder over it. The class only, never
+        # the exception's own text (AD-22). What is left is whatever this turn
+        # already had in hand — the removed claim on a correction turn, and
+        # nothing on any other.
+        logger.error(
+            "the context for main=%s could not be built (%s); the turn answers "
+            "with what it already holds", inbound.main_id, type(exc).__name__,
         )
-        show = ""
+        return Turned(voice_turn.fallback(None, show=show))
     return await voice_turn.words(
         voice,
         context,
@@ -1216,4 +1391,5 @@ async def respond(
         sample=Sample(inbound.text),
         withheld=hidden,
         show=show,
+        bound_seconds=bound_seconds,
     )

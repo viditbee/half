@@ -85,8 +85,10 @@ from dataclasses import dataclass
 from typing import Final
 
 from half.context.channels import Context
+from half.correction import apply as correction
 from half.errors import VoiceError
-from half.voice.compose import Sample
+from half.text import clusters
+from half.voice.compose import MAX_CHARS, Sample
 from half.voice.gate import Spoken, Voice
 
 #: Structured, and content-free. Every value logged from this module is a
@@ -154,15 +156,40 @@ def fallback(context: Context | None, *, show: str = "") -> str:
 
     ``""`` is the answer when there is nothing quotable and nothing removed, and
     that is the one case where a waiting main is answered with silence.
+
+    **Bounded by ``MAX_CHARS``, on a cluster boundary** (review loop 1). The
+    judge refuses a composed message past that length as *not one thing*, and
+    the fallback was the one path to the wire that was not held to it — so a
+    long claim went out uncapped while every sentence written *about* it was
+    refused, and on a channel with its own length limit it would not have gone
+    out at all. ``half.text.clusters`` does the cutting, for the reason
+    ``half.voice.compose._trimmed`` gives: a slice at a codepoint offset
+    separates a Devanagari matra, a Khmer dependent vowel or a Hangul jamo from
+    the letter it belongs to, so the result would be a character nobody typed.
+    Shorter by up to one cluster is the safe direction; damaged is not.
     """
     if isinstance(show, str) and show:
-        return show
+        return _bounded(show)
     if not isinstance(context, Context):
         return ""
     for claim in context.quotable():
         if claim:
-            return claim
+            return _bounded(claim)
     return ""
+
+
+def _bounded(claim: str) -> str:
+    """``claim`` cut to ``MAX_CHARS`` on a cluster boundary. Never raises."""
+    if len(claim) <= MAX_CHARS:
+        return claim
+    kept: list[str] = []
+    length = 0
+    for cluster in clusters(claim):
+        if length + len(cluster) > MAX_CHARS:
+            break
+        kept.append(cluster)
+        length += len(cluster)
+    return "".join(kept)
 
 
 async def words(
@@ -173,6 +200,7 @@ async def words(
     sample: Sample,
     withheld: frozenset[str] | set[str],
     show: str = "",
+    bound_seconds: float | None = None,
 ) -> Turned:
     """One turn's words. Never raises, and never returns a template.
 
@@ -191,11 +219,33 @@ async def words(
        ``half.voice.gate``'s and is not repeated here.
     4. **A composed correction reply must show what it removed** (CAP-11).
        Failing that, the claim alone goes out, which shows it by construction.
+       The check is ``half.correction.apply.shows``, *called* and not restated:
+       the first build of this module wrote the comparison out inline while
+       every case in the suite was written against that function, and the two
+       agreed only by coincidence — re-casing the inline one left the whole
+       suite green and put a shouted claim on somebody's wire.
 
     ``show`` is the removed claim for a correction turn and ``""`` for every
     other. It is both the inclusion requirement and the fallback, deliberately:
     a check and a fallback that could disagree is a check that silences a main
     every time it fires.
+
+    **An empty context is composed for rather than refused**, which is the
+    second review-loop amendment. A disabled ledger, a refused tokenizer, an
+    unusable strand label and an empty ranked set all arrive here as a context
+    with nothing in any channel, and answering that with silence makes a
+    degradation cost the main their reply — the thing
+    ``half.actor.runtime._retrieve``'s own invariant says never happens. It
+    matters most for a main whose retrieval a crisis disabled, because that
+    switch comes back on only by an explicit operator action.
+
+    **Never raises**, and that is a handler rather than an inventory of what
+    cannot go wrong. Everything under this call is fail-open already, so the
+    handler has never been reached — but the cost of reaching it is not one
+    turn. The main's message is recorded before this runs, so a raise is caught
+    by ``Runtime._isolated``, the redelivery is suppressed by the idempotency
+    check, and the turn is lost **permanently** rather than retried. A claim was
+    already in hand before the first await; it goes out.
 
     ``sample`` on a turn is simply the message in hand — there is no fold to
     read it off, because the main is right there. It sets the language and
@@ -212,17 +262,35 @@ async def words(
         # fallback reached only through the gate is a fallback that acquires the
         # gate's latency the first time somebody adds a step to it.
         return Turned(spare)
-    composed = await voice.compose(
-        context,
-        main_id=main_id,
-        sample=sample,
-        withheld=withheld,
-        bound_seconds=TURN_BOUND_SECONDS,
-        verbatim=show,
-    )
+    bound = TURN_BOUND_SECONDS if bound_seconds is None else bound_seconds
+    if not _worth_composing(show, bound, main_id=main_id):
+        return Turned(spare)
+    try:
+        composed = await voice.compose(
+            context,
+            main_id=main_id,
+            sample=sample,
+            withheld=withheld,
+            bound_seconds=bound,
+            verbatim=show,
+            even_when_empty=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - the prose, never the reply
+        # ``compose`` answers with a value rather than raising, so this is
+        # unreachable through it. Broad because the cost of being wrong about
+        # that is not one turn: the main's message is already recorded, so the
+        # redelivery is suppressed by the idempotency check and the turn is
+        # lost for ever. The class only, never the exception's own text — a
+        # provider quotes the request it rejected, and the request carries this
+        # main's claims and their own words (AD-22).
+        logger.error(
+            "the composer raised for main=%s (%s); the claim alone is sent",
+            main_id, type(exc).__name__,
+        )
+        return Turned(spare)
     if not isinstance(composed, Spoken):
         return Turned(spare)
-    if show and show not in composed.text:
+    if show and not correction.shows(composed.text, show):
         # CAP-11's whole point, and the one refusal in this module that is about
         # the *content* of what came back rather than about whether it came
         # back. Prose that says it removed something without saying what sounds
@@ -234,6 +302,41 @@ async def words(
         )
         return Turned(spare)
     return Turned(composed.text, composed=True)
+
+
+def _worth_composing(show: str, bound: float, *, main_id: str) -> bool:
+    """Whether a generation can produce something this turn is able to send.
+
+    Two answers that are *no*, and both of them are a main paying a wait for an
+    outcome that is already decided.
+
+    **No time left.** The turn's whole budget is spent, so a call would be a
+    bound in front of somebody whose reply is already in hand — see
+    ``half.actor.runtime``'s deadline, which is where the remainder is computed.
+
+    **A removed claim at or past ``MAX_CHARS``.** The judge refuses anything
+    longer than that as an essay, and a message that *contains* the claim is at
+    least as long as the claim, so every candidate is refused and the composed
+    correction path is dead — permanently, for that claim, while burning the
+    whole bound and every regeneration inside it on each turn. The fallback is
+    the claim, so nothing is lost by not asking.
+    """
+    if not isinstance(bound, (int, float)) or isinstance(bound, bool) or (
+        bound <= 0
+    ):
+        logger.info(
+            "no time was left in the turn for main=%s; the claim alone is sent",
+            main_id,
+        )
+        return False
+    if show and len(show) >= MAX_CHARS:
+        logger.info(
+            "the claim removed for main=%s is longer than a message may be, so "
+            "no composed reply could carry it; the claim alone is sent",
+            main_id,
+        )
+        return False
+    return True
 
 
 def _check_constants() -> None:

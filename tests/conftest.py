@@ -173,30 +173,52 @@ class NeverGenerates:
         return len(self._seen)
 
 
+def echo(work):
+    """``COMPOSED``, and then whatever the prompt said may be stated.
+
+    **The one composing double in the tree**, and the default for both helpers
+    below. It is doing work rather than being convenient: a double that answered
+    a fixed sentence would satisfy every *"that claim did not reach the wire"*
+    assertion in the suite — including the ones AD-18 is supposed to be
+    withholding — so the behave-material cases would have passed with the two
+    channels merged.
+    """
+    said = quotable_of(work)
+    return f"{COMPOSED} {said}".strip()
+
+
 def stub_voice(text=None, *, mains=("vidit",), **kwargs):
     """A ``Voice`` that composes for ``mains`` and for nobody else.
 
-    **By default it writes ``COMPOSED`` and then repeats the quotable block**,
-    which is what a real generator does with material it is licensed to state.
-    That default is doing work: it makes the suite's *"this claim reached the
-    wire"* and *"that claim did not"* assertions real ones. A double that
-    answered a fixed sentence would satisfy the second for every claim in the
-    tree — including the ones AD-18 is supposed to be withholding — so the
-    behave-material cases would have passed with the two channels merged.
-
-    ``text`` overrides it with a fixed string, or with a callable taking the
-    ``Generate`` and returning whatever a case needs.
+    ``text`` overrides ``echo`` with a fixed string, or with a callable taking
+    the ``Generate`` and returning whatever a case needs. Use ``a_voice`` where
+    the case needs the holder as well, which is most of them.
     """
     from half.voice.gate import Voice
-
-    def echo(work):
-        said = quotable_of(work)
-        return f"{COMPOSED} {said}".strip()
 
     return Voice(
         {main: GeneratorDouble(echo if text is None else text) for main in mains},
         bound_seconds=1.0, **kwargs
     )
+
+
+def a_voice(*answers, main="vidit", sleep=0.0, bound_seconds=1.0, **kwargs):
+    """A ``Voice`` **and the holder inside it**, so a case can count the calls.
+
+    **One of these in the tree**, which is the rule ``GeneratorDouble`` above
+    states and which story 13b's first build broke three times over in a single
+    story: ``test_bought``, ``test_correction`` and ``test_turn_words`` each
+    grew their own, two of them byte-identical. A helper per file is how two
+    cases that read like the same case stop testing the same thing.
+
+    ``answers`` are ``GeneratorDouble``'s: used in order, the last repeating, a
+    ``str`` becoming a ``Completion``, an exception raised, a callable handed
+    the ``Generate``. With none given the holder writes ``echo``.
+    """
+    from half.voice.gate import Voice
+
+    holder = GeneratorDouble(*(answers or (echo,)), sleep=sleep)
+    return Voice({main: holder}, bound_seconds=bound_seconds, **kwargs), holder
 
 
 @pytest.fixture

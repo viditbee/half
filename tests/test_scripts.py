@@ -64,7 +64,7 @@ from half.text import (
     words,
 )
 
-from tests.conftest import FakeTransport, msg
+from tests.conftest import FakeTransport, a_voice, msg
 
 NOW = "2026-08-31T09:00:00Z"
 
@@ -699,15 +699,18 @@ def test_a_legacy_oversized_strand_label_does_not_cost_every_later_turn(
     )
     channel = TelegramChannel(transport=transport, mains={"123": "vidit"})
     registry = ActorRegistry(mains_root)
+    voice, _ = a_voice("still turning that over")
     try:
-        asyncio.run(Runtime(channel=channel, registry=registry).run())
+        asyncio.run(
+            Runtime(channel=channel, registry=registry, voice=voice).run()
+        )
     finally:
         registry.close()
 
-    # **The signal is the record, not the wire** (story 13b). This main's
-    # material is all `behave`, so there is nothing quotable and — with no
-    # template in any language — nothing to send. What an unusable strand label
-    # must not cost is the *turn*: the message is recorded and the loop lives.
+    assert transport.sent, "an unusable strand label cost the main their reply"
+    # And the message is durable, which is the half that would otherwise be
+    # lost for ever: the idempotency check keys on ``b_<message_id>``, so a
+    # turn that died before recording is a turn no redelivery can retry.
     with Store(mains_root / "vidit", prefix=build_prefix) as store:
         assert "b_900" in store.state().beliefs, (
             "an unusable strand label cost the main their message"
@@ -730,16 +733,17 @@ def test_a_tokenizer_refusal_on_the_query_still_answers(tmp_path, monkeypatch):
     transport = FakeTransport([msg(text="hello", message_id="900")])
     channel = TelegramChannel(transport=transport, mains={"123": "vidit"})
     registry = ActorRegistry(root)
+    voice, _ = a_voice("still here")
     try:
-        asyncio.run(Runtime(channel=channel, registry=registry).run())
+        asyncio.run(
+            Runtime(channel=channel, registry=registry, voice=voice).run()
+        )
     finally:
         registry.close()
 
-    # **The signal is the record, not the wire** (story 13b). A refused
-    # tokenizer empties the ranked set, so there is nothing quotable and nothing
-    # to fall back to; what must not happen is the turn dying and taking the
-    # main's message with it, because the idempotency check would then make the
-    # redelivery a no-op for ever.
+    assert transport.sent, "a query the tokenizer refused cost the main a reply"
+    # And the message is durable: a turn that died before recording is a turn
+    # the idempotency check makes unredeliverable for ever.
     with Store(root / "vidit", prefix=build_prefix) as store:
         assert "b_900" in store.state().beliefs, (
             "a query the tokenizer refused cost the main their message"

@@ -74,8 +74,8 @@ from half.voice.turn import TURN_BOUND_SECONDS, Turned, fallback, words
 
 from tests.conftest import (
     FakeTransport,
-    GeneratorDouble,
     NeverGenerates,
+    a_voice,
     msg,
     seed_belief,
 )
@@ -165,12 +165,6 @@ def ordinary(sayable=SAYABLE) -> Context:
 
 def ordinary_withheld(sayable=SAYABLE) -> frozenset[str]:
     return withheld_wordings(material(sayable), ceiling=Ceiling())
-
-
-def a_voice(*answers, main=MAIN, sleep=0.0, bound_seconds=0.5, **kw):
-    """A ``Voice`` and the holder inside it, so a case can count the calls."""
-    holder = GeneratorDouble(*answers, sleep=sleep)
-    return Voice({main: holder}, bound_seconds=bound_seconds, **kw), holder
 
 
 def spoke(
@@ -370,17 +364,44 @@ def test_a_leaked_behave_claim_falls_back_to_the_claim_rather_than_to_silence():
     assert voice.tally.leaked == 1
 
 
-def test_nothing_in_any_channel_is_silence_before_a_provider_is_paid():
-    """Matrix: *nothing at all*. The one rung that ends in silence.
+def test_a_context_with_nothing_in_it_is_composed_for_and_never_refused():
+    """Matrix: *retrieval degraded*. **The review loop's second amendment.**
 
-    No content, no directives, no bought question: there is nothing to state,
-    nothing to shape a message, and nothing to fall back to. It is answered
-    before a provider is reached — the counter is the signal, because
-    ``Voice._attempt_all`` turns a raise into ``Unspoken(RAISED)`` and a double
-    that only raised would let this pass with the provider paid.
+    A disabled ledger, a refused tokenizer, an unusable strand label and an
+    empty ranked set all arrive as a context with nothing in any channel — and
+    the first build answered that with silence, before a provider was reached.
+    That is a degradation costing the main their reply, which is the one thing
+    ``half.actor.runtime._retrieve``'s own invariant says never happens, and it
+    lands hardest on a main whose retrieval a *crisis* disabled: that switch is
+    turned back on by an explicit operator action and by nothing else, so the
+    silence would have been permanent.
+
+    The composer is reached, and what it writes goes out. The language is the
+    message in hand; the prompt is coherent without a may-be-said block because
+    the instructions say in as many words what to do when there is none.
+    """
+    voice, holder = a_voice("still here")
+
+    turned = spoke(voice, a_context(), withheld=frozenset())
+
+    assert holder.calls == 1, "an empty context was refused before the composer"
+    assert turned.composed
+    assert turned.text == "still here"
+    assert voice.tally.composed == 1
+
+
+def test_a_context_with_nothing_in_it_and_no_model_is_the_one_silence_left():
+    """The rung below it, and the honest end of the ladder.
+
+    No context, no provider, no claim: there is nothing to compose with and
+    nothing to echo, and the one thing that would fill the gap is a written
+    sentence in one language — the Never list's first entry. The counter is the
+    signal rather than a raise, because ``Voice._attempt_all`` turns an
+    ``AssertionError`` into ``Unspoken(RAISED)``, a legal outcome, so a double
+    whose only signal is a raise would pass here with the provider paid.
     """
     never = NeverGenerates()
-    voice = Voice({MAIN: never}, bound_seconds=0.5)
+    voice = Voice({OTHER: never}, bound_seconds=0.5)
 
     turned = spoke(voice, a_context(), withheld=frozenset())
 
@@ -1123,6 +1144,46 @@ def test_no_generated_string_is_written_anywhere(registry, tmp_path, script):
         if path.is_file():
             body = path.read_bytes()
             assert composed.encode("utf-8") not in body, path
+
+
+def test_a_main_a_crisis_disabled_is_answered_on_every_ordinary_turn(
+    registry, tmp_path
+):
+    """Matrix: *crisis-disabled main*. **CAP-12, and the amendment's whole
+    point.**
+
+    ``ActorRegistry`` disables that main's retrieval on crisis entry and
+    re-enables it only in ``reverse_crisis``, which is an explicit operator
+    action. So under a rule that ties the reply to the material, somebody who
+    has just been through a crisis receives silence on every ordinary message,
+    indefinitely, until a human intervenes — while CAP-12 says Half stays
+    present and ``tests/test_crisis.py::test_a_reply_is_always_sent`` calls
+    going quiet *"a failure here, not an outcome"*.
+
+    Two ordinary turns, so this is not one message getting lucky, and the
+    composer is reached on both.
+    """
+    root = tmp_path / "mains"
+    a_main(root)
+    registry.retrieval_switch(MAIN).disable()   # as the crisis gate does
+    voice, holder = a_voice("still here, and no rush at all")
+
+    transport = turns(
+        registry, ["morning", "thinking about the farmland again"], voice=voice,
+    )
+
+    assert [text for _, text in transport.sent] == [
+        "still here, and no rush at all", "still here, and no rush at all",
+    ], "a crisis-disabled main was met with silence"
+    assert holder.calls == 2
+    assert not registry.retrieval_switch(MAIN).enabled, (
+        "the fixture must have left retrieval off, or this proves nothing"
+    )
+    # And the ledger really is unreachable, so what was composed came from the
+    # message in hand rather than from material that leaked past the switch.
+    for work in holder.requests:
+        assert MAY_BE_SAID not in work.prompt.turns[0].text
+        assert SAYABLE not in work.prompt.turns[0].text
 
 
 def test_a_main_in_crisis_is_never_composed_for(registry, tmp_path):

@@ -54,7 +54,9 @@ from half.retrieval.port import Candidate, Ranked, RerankSource
 from half.retrieval.prefix import build_prefix
 from half.store.ops import Op
 from half.store.store import Store
-from tests.conftest import FakeTransport, msg, seed_belief
+from half.voice.gate import Voice
+
+from tests.conftest import FakeTransport, a_voice, msg, seed_belief
 
 ROOT = Path(__file__).resolve().parents[1]
 NOW = "2026-08-31T09:00:00Z"
@@ -955,11 +957,21 @@ def seeded(root, **extra):
     return root
 
 
-def run_turn(root, text, *, registry=None, mains=None, reranker=None):
+def run_turn(root, text, *, registry=None, mains=None, reranker=None,
+             voice=None):
+    """One inbound turn through the real runtime.
+
+    ``voice`` defaults to a composer this deployment has equipped nobody with,
+    which is the shape every case here had before story 13b and is still the
+    right default: most of these cases are about what the *builder* admits.
+    Hand one in where the case is about what reaches the **wire**, because a
+    reply is composed and an assertion against an empty wire proves nothing.
+    """
     transport = FakeTransport([msg(text=text, message_id="1", chat_id="123")])
     channel = TelegramChannel(transport=transport, mains=mains or {"123": "vidit"})
     reg = registry or ActorRegistry(root)
-    asyncio.run(Runtime(channel=channel, registry=reg, reranker=reranker).run())
+    asyncio.run(Runtime(channel=channel, registry=reg, reranker=reranker,
+                        voice=Voice() if voice is None else voice).run())
     return transport, reg
 
 
@@ -1068,19 +1080,45 @@ def test_a_withheld_wording_cannot_reach_the_wire_inside_an_assert_claim(tmp_pat
 
 
 @pytest.mark.ad18
+def test_a_reply_is_still_produced_when_nothing_is_quotable(tmp_path):
+    """Matrix: empty content -> a reply is still produced.
+
+    **Restored, and it is the assertion the second review-loop amendment is
+    about.** The first build of story 13b removed it, on the reasoning that a
+    turn with nothing quotable and no template has nothing to send. That is
+    true of the *fallback* and false of the reply: the composer writes in the
+    language the main just used, shaped by whatever the context holds and by
+    nothing where it holds nothing, and the instructions say in as many words
+    what to write when there is nothing that may be stated. What a `behave`
+    ledger costs is Half's material, never the main's answer.
+    """
+    root = tmp_path / "mains"
+    with Store(root / "vidit", prefix=build_prefix) as s:
+        seed_belief(s, "b_hold", "2026-06-01T00:00:00Z", subject="self",
+                    claim=HELD, ledger="revealed", loop="mend-things")
+
+    recorder = Recording()
+    voice, holder = a_voice("still here, whenever you want to say more")
+    transport, reg = run_turn(root, "xyzzy plugh", reranker=recorder,
+                              voice=voice)
+    reg.close()
+
+    assert "b_hold" in recorder.every_id, "the turn retrieved nothing"
+    sent = "".join(text for _, text in transport.sent)
+    assert sent, "a context with no content must not cost the main a reply"
+    assert holder.calls == 1, "the composer was refused before it was reached"
+    assert_absent(sent, HELD)
+
+
+@pytest.mark.ad18
 def test_a_withheld_claim_is_absent_from_a_reply_built_beside_it(tmp_path):
-    """Matrix: a `behave` belief retrieved on a turn that still answers.
+    """The same turn with one claim Half *may* state, so AD-18's byte-wise
+    assertion runs against a reply that quotes something rather than against one
+    that quotes nothing.
 
-    **Story 13b re-cut this case rather than deleting it.** It used to seed one
-    `behave` belief and assert that *something* was sent — which held while the
-    reply was ``noted.`` and stopped holding when the template went: a turn with
-    nothing quotable and no model now falls back to nothing at all. Asserting
-    silence would have made it trivially true and stopped it saying anything
-    about AD-18.
-
-    So it seeds both: one claim Half may state and one it may not, on the same
-    turn, and asserts that the reply exists, carries the first and carries no
-    part of the second.
+    A double that answered a fixed sentence would satisfy *"the withheld claim
+    is absent"* for every claim in the tree, so the composer here is the shared
+    one, which repeats the may-be-said block back.
     """
     root = tmp_path / "mains"
     with Store(root / "vidit", prefix=build_prefix) as s:
@@ -1091,35 +1129,36 @@ def test_a_withheld_claim_is_absent_from_a_reply_built_beside_it(tmp_path):
                     support=["s_1"])
 
     recorder = Recording()
-    transport, reg = run_turn(root, "xyzzy plugh", reranker=recorder)
+    voice, _ = a_voice()
+    transport, reg = run_turn(root, "xyzzy plugh", reranker=recorder,
+                              voice=voice)
     reg.close()
 
     assert "b_hold" in recorder.every_id, "the turn retrieved nothing"
     sent = "".join(text for _, text in transport.sent)
-    assert sent == SAID, "the claim Half may state is the whole of the reply"
+    assert SAID in sent, "the claim Half may state never reached the wire"
     assert_absent(sent, HELD)
 
 
 @pytest.mark.ad18
-def test_a_turn_whose_retrieval_a_crisis_disabled_answers_and_never_raises(
-    tmp_path,
-):
+def test_a_turn_whose_retrieval_a_crisis_disabled_still_replies(tmp_path):
     """Matrix: crisis. Retrieval hard-disabled for that main (CAP-12), so the
-    context is empty — the turn answers rather than raising, and no belief text
-    reaches the wire.
+    context is empty — and a reply is still sent. Never a raised turn.
 
-    **What changed, and it is a real loss story 13b's frozen block chooses.**
-    ``_retrieve`` used to be able to say *a disable degrades what Half knows,
-    never whether Half replies*, because the reply was ``noted.``. With no
-    template in any language and no claim to fall back to, a disabled ledger now
-    costs the main their reply as well as Half's memory. The message is still
-    recorded and the turn still completes; what is gone is the acknowledgement.
+    **Restored.** A crisis disables that main's retrieval and only an explicit
+    operator action re-enables it, so a rule that tied the reply to the material
+    would have met exactly this population with unbroken silence — while CAP-12
+    says Half stays present and ``tests/test_crisis.py`` calls going quiet *"a
+    failure here, not an outcome"*. What the disable costs is the ledger; what
+    it must not cost is the answer or the message.
     """
     root = seeded(tmp_path / "mains")
     reg = ActorRegistry(root)
     reg.retrieval_switch("vidit").disable()
 
-    transport, registry = run_turn(root, "still here?", registry=reg)
+    voice, holder = a_voice("still here")
+    transport, registry = run_turn(root, "still here?", registry=reg,
+                                   voice=voice)
 
     async def recorded():
         async with registry.acquire("vidit") as actor:
@@ -1128,7 +1167,8 @@ def test_a_turn_whose_retrieval_a_crisis_disabled_answers_and_never_raises(
     reg.close()
 
     sent = "".join(text for _, text in transport.sent)
-    assert sent == "", "there is no claim to fall back to and no template"
+    assert sent, "a disabled ledger must not cost the main a reply"
+    assert holder.calls == 1, "a disabled ledger stopped the composer too"
     assert_absent(sent, SAID, HELD, ASKED)
     assert any(
         record.get("claim") == "still here?" for record in kept.values()

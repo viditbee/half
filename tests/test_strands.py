@@ -46,7 +46,9 @@ from half.retrieval.strands import (
 )
 from half.store.ops import Op
 from half.store.store import Store
-from tests.conftest import FakeTransport, msg
+from half.voice.gate import Voice
+
+from tests.conftest import FakeTransport, a_voice, msg, stub_voice
 
 ROOT = Path(__file__).resolve().parents[1]
 NOW = "2026-08-31T09:00:00Z"
@@ -246,8 +248,14 @@ def test_strand_matching_folds_case_and_accents():
 
 # -- the live turn actually retrieves ---------------------------------------
 
-def run_turns(root, texts, *, reranker=None, mains=None, registry=None):
-    """Drive Runtime.run over ``texts`` and return the transport."""
+def run_turns(root, texts, *, reranker=None, mains=None, registry=None,
+              voice=None):
+    """Drive Runtime.run over ``texts`` and return the transport.
+
+    ``voice`` defaults to a deployment that has equipped nobody. Hand one in
+    wherever the case reads the **wire**: since story 13b a reply is composed,
+    and an assertion against an unequipped main's empty wire proves nothing.
+    """
     mains = mains or {"123": "vidit"}
     transport = FakeTransport([
         msg(text=text, message_id=str(i + 1), chat_id=chat)
@@ -255,7 +263,8 @@ def run_turns(root, texts, *, reranker=None, mains=None, registry=None):
     ])
     channel = TelegramChannel(transport=transport, mains=mains)
     reg = registry or ActorRegistry(root)
-    asyncio.run(Runtime(channel=channel, registry=reg, reranker=reranker).run())
+    asyncio.run(Runtime(channel=channel, registry=reg, reranker=reranker,
+                        voice=Voice() if voice is None else voice).run())
     return transport, reg
 
 
@@ -269,15 +278,12 @@ def test_retrieval_actually_runs_on_the_live_turn(tmp_path):
         seed(s)
 
     recorder = Recording()
+    voice, _ = a_voice("still turning that over with you")
     transport, reg = run_turns(root, [("123", "thinking about the farmland")],
-                               reranker=recorder)
+                               reranker=recorder, voice=voice)
     reg.close()
 
-    # **The signal is the recorder and not the wire** (story 13b). A turn whose
-    # material is all `behave` has nothing to say and nothing to fall back to,
-    # so *"something was sent"* stopped being evidence that retrieval ran the
-    # moment the ``noted.`` template went. What a mutation has to survive is the
-    # reranker seeing the candidate set.
+    assert transport.sent, "the turn produced no reply at all"
     assert recorder.seen, "the live turn never ranked anything"
     # The query's words match b_zfarm through its indexed loop prefix, and only
     # that one — reachable means findable by a matching query, not present in
@@ -338,42 +344,43 @@ def test_one_mains_crisis_does_not_disable_another_mains_retrieval(tmp_path):
         with Store(root / main_id, prefix=build_prefix) as s:
             s.record(Op.ASSERT, f"{prefix_id}_1", "2026-06-01T00:00:00Z",
                      subject="self", claim="keeps a garden", ledger="revealed")
-            # Asha may be answered; vidit's ledger is switched off. The whole
-            # point of the case is that one main's crisis does not silence
-            # another, so the main who is *not* in crisis needs something
-            # sayable — which since story 13b is what a reply is made of — and
-            # it has to *match* the message, or the silence would come from
-            # retrieval rather than from the switch.
+            # Asha's own sayable claim, worded so an ordinary garden question
+            # retrieves it: the case is about whose *retrieval* the crisis
+            # touched, so what reaches asha's prompt has to be a real answer to
+            # the difference rather than the same emptiness on both sides.
             seed_a_sayable(s, f"{prefix_id}_say", claim=WATERS)
 
     reg = ActorRegistry(root)
     reg.retrieval_switch("vidit").disable()  # as the crisis gate would
 
     recorder = Recording()
+    voice = stub_voice(mains=("vidit", "asha"))
     transport, _ = run_turns(
         root, [("123", "how is the garden"), ("456", "how is the garden")],
         reranker=recorder, mains={"123": "vidit", "456": "asha"}, registry=reg,
+        voice=voice,
     )
     reg.close()
 
-    assert transport.sent == [("456", WATERS)], (
-        "the main who is not in crisis must still be answered, and only them"
-    )
+    assert len(transport.sent) == 2, "both mains must be answered"
+    # And what each of them was answered *with* is the difference: asha's
+    # ledger reached the prompt and vidit's did not.
+    said = dict(transport.sent)
+    assert WATERS in said["456"], "asha's own claim never reached her reply"
+    assert WATERS not in said["123"], "vidit's disabled ledger still spoke"
     assert recorder.every_id == {"b_a_1", "b_a_say"}, (
         "asha's retrieval must be untouched, and vidit's must be off"
     )
 
 
-def test_a_turn_after_a_disable_keeps_the_message_and_never_raises(tmp_path):
-    """A disable degrades what Half knows, and — since story 13b — what Half
-    can say.
+def test_a_turn_after_a_disable_still_replies_and_keeps_the_message(tmp_path):
+    """A disable degrades what Half knows, never whether Half replies.
 
-    ``_retrieve`` used to be able to claim that a disable *never* costs the main
-    a reply, and that was true only while the reply was ``noted.``. With no
-    template in any language and an empty ranked set there is no claim to fall
-    back to, so the turn is silent. What must still hold is that it **completes**
-    — no raise, and the main's message recorded — because a disabled ledger
-    losing somebody's message is the failure this case was written for.
+    **Restored.** ``half.actor.runtime._retrieve``'s own invariant, and the one
+    the second review-loop amendment exists to put back: an empty ranked set is
+    a fact about the ledger, and the reply is composed from the language the
+    main just wrote in and shaped by whatever the context holds — including
+    nothing.
     """
     root = tmp_path / "mains"
     with Store(root / "vidit", prefix=build_prefix) as s:
@@ -381,9 +388,11 @@ def test_a_turn_after_a_disable_keeps_the_message_and_never_raises(tmp_path):
 
     reg = ActorRegistry(root)
     reg.retrieval_switch("vidit").disable()
-    transport, _ = run_turns(root, [("123", "still here?")], registry=reg)
+    voice, _ = a_voice("still here")
+    transport, _ = run_turns(root, [("123", "still here?")], registry=reg,
+                             voice=voice)
 
-    assert transport.sent == [], "there is no claim, and never a template"
+    assert transport.sent, "a disabled ledger must not cost the main a reply"
 
     async def read():
         async with reg.acquire("vidit") as actor:
@@ -432,13 +441,16 @@ def test_a_failing_turn_never_swallows_the_mains_message(tmp_path, monkeypatch):
     )
 
     monkeypatch.undo()
-    run_turns(root, [("123", "please remember this")], registry=reg)
+    voice, _ = a_voice("still here")
+    retried, _ = run_turns(root, [("123", "please remember this")],
+                           registry=reg, voice=voice)
 
     async def again():
         async with reg.acquire("vidit") as actor:
             return set(actor.store.state().beliefs)
     kept = asyncio.run(again())
     reg.close()
+    assert retried.sent, "the redelivery must be answered"
     assert "b_1" in kept, "the redelivery must land, message and all"
 
 
@@ -458,12 +470,16 @@ def test_a_turn_that_retrieved_behave_beliefs_says_none_of_them(tmp_path):
     # A message whose words match no claim and no prefix, so the backstop puts
     # all three distinctive claims in front of the responder.
     recorder = Recording()
-    transport, reg = run_turns(root, [("123", "xyzzy plugh")], reranker=recorder)
+    voice, _ = a_voice()      # repeats the may-be-said block back
+    transport, reg = run_turns(root, [("123", "xyzzy plugh")],
+                               reranker=recorder, voice=voice)
     reg.close()
 
     assert recorder.every_id >= set(CLAIMS), "the turn had beliefs to retrieve"
-    assert transport.sent == [("123", SAYABLE)], (
-        "the turn must actually have produced a reply, or this proves nothing"
+    assert transport.sent, "the turn must actually have produced a reply"
+    assert SAYABLE in transport.sent[0][1], (
+        "the composer quoted nothing, so this proves nothing about what it "
+        "may quote"
     )
     sent = "".join(text for _, text in transport.sent).encode("utf-8")
     for claim in CLAIMS.values():

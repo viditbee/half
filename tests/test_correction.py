@@ -94,6 +94,7 @@ from half.surface.touch import Origin
 from half.trust.balance import balance
 from tests.conftest import (
     FakeTransport,
+    a_voice,
     msg,
     outward,
     reaches,
@@ -283,23 +284,6 @@ def seed(
                 Op.TOUCH, f"tc_{marker}", f"{marker}T03:00Z",
                 **touch_module.spoke(day=marker, origin=ORIGIN, loops=()),
             )
-
-
-def a_voice(main_id=MAIN):
-    """A composer and the holder inside it, so a case can read the prompt.
-
-    Story 13b composes the bought question **into** the prose, so *"a question
-    was asked"* is no longer a string on the wire to grep for. What a case can
-    ask instead is what the generator was handed.
-    """
-    from tests.conftest import COMPOSED, GeneratorDouble, quotable_of
-    from half.voice.gate import Voice
-
-    def echo(work):
-        return f"{COMPOSED} {quotable_of(work)}".strip()
-
-    holder = GeneratorDouble(echo)
-    return Voice({main_id: holder}, bound_seconds=1.0), holder
 
 
 def a_turn(

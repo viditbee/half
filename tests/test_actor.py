@@ -16,7 +16,7 @@ from half.governance.ladder import License
 from half.retrieval.prefix import build_prefix
 from half.store.ops import Op
 from half.store.store import Store
-from tests.conftest import FakeTransport, msg, seed_belief
+from tests.conftest import FakeTransport, a_voice, msg, seed_belief
 
 #: One `assert` claim, so a turn has something to say.
 #:
@@ -155,23 +155,30 @@ def test_the_runtime_never_imports_the_network_transport(tmp_path):
     assert not any("transport" in (m or "") for m in reached)
 
 
-def test_an_inbound_message_is_stored_and_the_reply_is_never_a_template(tmp_path):
-    """The message is durable; the wire carries prose, the claim, or nothing.
+def test_an_inbound_message_is_stored_and_answered(tmp_path):
+    """The message is durable and the main is answered — with prose, and never
+    with a template.
 
-    **Nothing is what a main with nothing quotable now gets** (story 13b). This
-    used to answer ``noted.`` — one English word, on a product that ships
-    worldwide, carrying no information — and the Never list forbids a template
-    in any language. A main whose ledger holds nothing Half is licensed to
-    state, and who has no model wired, gets silence, which AD-27 makes
-    first-class. What must not happen is scaffolding, and what must not be lost
-    is the message.
+    Until story 13b the answer was ``noted.``: one English word, on a product
+    that ships worldwide, carrying no information. What replaces it is a
+    composed message in the main's own language, and the assertion is that the
+    generator wrote it — a fixed expected string would be a template with extra
+    steps. This main's ledger holds nothing Half is licensed to state, and that
+    is deliberate: **an empty ledger is a fact about what Half knows and not
+    about whether Half answers**.
     """
     transport = FakeTransport([msg(text="i want to fly again")])
     channel = TelegramChannel(transport=transport, mains={"123": "vidit"})
     reg = ActorRegistry(tmp_path / "mains")
-    asyncio.run(Runtime(channel=channel, registry=reg).run())
+    voice, holder = a_voice("that one has been waiting a while")
+    asyncio.run(Runtime(channel=channel, registry=reg, voice=voice).run())
 
-    assert transport.sent == []
+    assert transport.sent == [("123", "that one has been waiting a while")]
+    assert holder.calls == 1
+    # The reply carries no belief text — not even the main's own words back,
+    # which are now a stored claim. Licenses are enforced at context
+    # construction (AD-18) and that construction is story 5.
+    assert "i want to fly again" not in transport.sent[0][1]
 
     async def read():
         async with reg.acquire("vidit") as actor:

@@ -85,6 +85,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -451,11 +452,23 @@ class Widening:
 
     # -- one classification ---------------------------------------------------
 
-    async def consult(self, text: str, *, main_id: str) -> Verdict:
+    async def consult(
+        self, text: str, *, main_id: str, bound_seconds: float | None = None
+    ) -> Verdict:
         """One classification, bounded. Never raises, and never returns text.
 
         The only argument that leaves this machine is ``text``. ``main_id``
         resolves the tier inside the port and appears in no payload.
+
+        ``bound_seconds`` overrides the construction bound **for this call
+        only**, and exists because this is one of three bounded calls a single
+        turn can make. Each was sized against the same five seconds on its own,
+        which is six seconds of them together, so the turn opens one deadline
+        and hands each call what is left of it
+        (``half.actor.runtime.TURN_DEADLINE_SECONDS``). An unusable value falls
+        back to the construction bound rather than raising, for the reason this
+        method never raises at all: a main's answer must not depend on an
+        argument being well formed.
 
         Every path out is a ``Verdict`` whose action is ``ASK`` or nothing:
         there is no branch here that could produce an append, and no exception
@@ -474,7 +487,7 @@ class Widening:
         self._tally.consulted += 1
         verdict = FELL_BACK
         try:
-            async with asyncio.timeout(self._bound):
+            async with asyncio.timeout(self._bound_for(main_id, bound_seconds)):
                 answered = await holder.classify(work)
             # Inside the handler on purpose: reading the answer can raise on a
             # holder that breaks the port's contract, and a raise out here would
@@ -499,6 +512,28 @@ class Widening:
         self._note(main_id, verdict)
         self._report()
         return verdict
+
+    def _bound_for(self, main_id: str, given: float | None) -> float:
+        """The wall-clock bound for one call. The construction one unless a
+        caller asked for another, and never a value that is not a bound.
+
+        ``math.isfinite`` rather than ``> 0``, which is
+        ``half.voice.gate._bound_for``'s finding and holds here identically:
+        every comparison against a NaN is ``False``, so a ``given <= 0`` test
+        admits one and ``asyncio.timeout`` then never fires — a main waiting on
+        a hung provider through the guard that exists to stop exactly that.
+        """
+        if given is None:
+            return self._bound
+        if isinstance(given, bool) or not isinstance(given, (int, float)) or (
+            not math.isfinite(given) or given <= 0
+        ):
+            logger.warning(
+                "the correction widening was given a bound it cannot use for "
+                "main=%s; the one it was built with stands", main_id,
+            )
+            return self._bound
+        return float(given)
 
     # -- the breaker ----------------------------------------------------------
 

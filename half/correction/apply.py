@@ -411,8 +411,20 @@ def shown(removal: Removal | None) -> str:
     return _flattened(removal.claim)
 
 
-def shows(text: object, removal: Removal | None) -> bool:
+def shows(text: object, removal: Removal | str | None) -> bool:
     """Whether ``text`` shows what ``removal`` removed (CAP-11).
+
+    **This is the check that runs**, and story 13b's review loop is why that
+    sentence is here. The first build of the turn re-implemented the comparison
+    inline (``if show and show not in composed.text``) while every *"verbatim
+    means verbatim"* case in the suite was written against this function. The
+    two agreed by coincidence and nothing held them together: re-casing one of
+    them left the whole suite green and let
+    ``HAS NOT WALKED THAT PLOT SINCE MARCH — taken out.`` through as a composed
+    reply. So ``half.voice.turn`` calls this, and the second argument is a
+    ``Removal`` where the caller holds one and the **claim ``shown`` already
+    rendered** where it holds that instead — one comparison, reachable from both
+    of the two places that need it.
 
     **The requirement a composed correction reply must satisfy, checked before
     it is sent** — a property of what goes on the wire rather than a hope about
@@ -432,7 +444,7 @@ def shows(text: object, removal: Removal | None) -> bool:
     removes nothing anybody can be shown, and refusing every possible reply for
     it would answer a main's correction with silence.
     """
-    claim = shown(removal)
+    claim = _flattened(removal) if isinstance(removal, str) else shown(removal)
     if not claim:
         return True
     return isinstance(text, str) and claim in text
