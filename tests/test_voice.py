@@ -1229,7 +1229,13 @@ def test_the_lift_this_package_is_given_is_pinned_and_paid_for():
     a one-line edit in a test helper — which is exactly the way story 11's
     guard was undone.
     """
-    from tests.conftest import LIFTED, UNREACHABLE, outward, reaches
+    from tests.conftest import (
+        LIFTED,
+        UNREACHABLE,
+        outward,
+        past_the_port,
+        reaches,
+    )
     from tests.test_unasked import GUARDED
 
     assert LIFTED == {
@@ -1241,15 +1247,93 @@ def test_the_lift_this_package_is_given_is_pinned_and_paid_for():
         root for root in UNREACHABLE if root != "half.model"
     )
 
-    # And the lift is *used*, not merely granted: exactly the port, and nothing
-    # else under ``half.model``. A composer that reached the provider could
-    # reset a ledger and reach a batcher.
+    # And the lift is *used*, not merely granted: nothing on the reached
+    # surface may get to the provider. **A composer that reached the provider
+    # could reset a ledger and reach a batcher** — that sentence is the rule,
+    # and story 14 makes the check be it rather than approximate it by a name.
+    #
+    # This used to read ``name.startswith("half.model.port")``, which is a
+    # prefix test wearing a rule's clothes: a future ``half/model/
+    # port_provider.py`` would have satisfied it by spelling alone, and
+    # ``half/model/consult.py`` — the bounded, counted, breaker-guarded shape
+    # three consultations now share, which imports the port and the standard
+    # library and nothing else — failed it while carrying no provider, no
+    # ledger and no batcher. ``past_the_port`` asks the property instead: every
+    # ``half.model`` module this package reaches must itself reach nothing under
+    # ``half.model`` but the port, transitively, with each step named. The
+    # non-vacuity case is immediately below.
     named: set[str] = set()
     for path in sorted((ROOT / "half" / "voice").rglob("*.py")):
         assert not reaches(path, outward("half/voice")), path.name
         named |= set(reaches(path, ("half.model",)))
     assert named, "the package names no model at all; the composer is dead"
-    assert all(name.startswith("half.model.port") for name in named), named
+    assert not past_the_port(named), past_the_port(named)
+
+
+@pytest.mark.cap8_voice
+def test_the_model_surface_rule_refuses_a_reach_past_the_port(tmp_path):
+    """Non-vacuity for the model-surface rule above. **A rule nobody has tried
+    to defeat is a rule resting on nothing**, and this one replaced a name
+    check — so the thing to prove is that it still refuses what the name check
+    refused, for the reason rather than for the spelling.
+
+    Run against a synthetic ``half/model`` tree, because the real one has no
+    module that reaches past the port and a guard can only be shown to bite on
+    something that bites it. Four modules: the port; a shape that imports only
+    the port, which is what ``half/model/consult.py`` is; a provider that
+    reaches a budget that reaches a tier, which is what
+    ``half/model/anthropic.py`` is; and a caller that reaches the provider.
+
+    The last one is the failure the whole lift is bounded against — *a caller
+    that reached the provider could reset a ledger and reach a batcher* — and
+    it must be named with its path, not merely refused.
+    """
+    from tests.conftest import past_the_port
+
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "__init__.py").write_text("", encoding="utf-8")
+    (model / "port.py").write_text("class Failure: ...\n", encoding="utf-8")
+    (model / "shape.py").write_text(
+        "import math\nfrom half.model.port import Failure\n", encoding="utf-8"
+    )
+    (model / "tier.py").write_text("MODELS = {}\n", encoding="utf-8")
+    (model / "budget.py").write_text(
+        "from half.model.tier import MODELS\n", encoding="utf-8"
+    )
+    (model / "provider.py").write_text(
+        "from half.model.budget import MODELS\n"
+        "from half.model.port import Failure\n",
+        encoding="utf-8",
+    )
+    (model / "leaky.py").write_text(
+        "from half.model.provider import MODELS\n", encoding="utf-8"
+    )
+
+    # The shape passes, and it passes for the reason and not for the name: it
+    # is not called ``port`` anything.
+    assert past_the_port(["half.model.shape"], model_dir=model) == []
+    assert past_the_port(["half.model.port.Failure"], model_dir=model) == []
+
+    # The provider is refused, and so is anything that reaches it — each hop
+    # named, so a red build gives the path rather than the destination.
+    assert past_the_port(["half.model.provider"], model_dir=model) == [
+        "half.model.budget -> half.model.tier",
+        "half.model.provider -> half.model.budget",
+    ]
+    assert past_the_port(["half.model.leaky"], model_dir=model) == [
+        "half.model.budget -> half.model.tier",
+        "half.model.leaky -> half.model.provider",
+        "half.model.provider -> half.model.budget",
+    ]
+
+    # And the prefix the old rule trusted buys nothing now.
+    (model / "port_provider.py").write_text(
+        "from half.model.provider import MODELS\n", encoding="utf-8"
+    )
+    assert past_the_port(["half.model.port_provider"], model_dir=model), (
+        "a module named port-something walked through on its name"
+    )
 
 
 @pytest.mark.cap8_voice

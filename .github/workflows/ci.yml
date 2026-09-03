@@ -1105,7 +1105,10 @@ jobs:
         #   and that all three attributions read the same after the derived view
         #   is deleted and replayed (AD-4).
         #
-        # **Margin zero: 260 selected, 260 required.** Sized against the subset
+        # **Margin zero: 261 selected, 261 required.** Story 14 adds one, which
+        # reaches this gate through the file's own `pytestmark`: the
+        # non-vacuity case for the model-surface rule, which became a property
+        # check instead of a name check. Sized against the subset
         # it protects rather than against a total, and every case here is the
         # only one asserting its rule.
         #
@@ -1139,7 +1142,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap11 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-11 correction cases collected: $collected"
-          if [ "$collected" -lt 260 ]; then
+          if [ "$collected" -lt 261 ]; then
             echo "::error::the CAP-11 gate collected $collected cases; a main may not be able to tell Half it is wrong"
             exit 1
           fi
@@ -1202,7 +1205,17 @@ jobs:
         #   green, which made the rule story 11 fixed undoable by a one-line
         #   edit in a test helper.
         #
-        # 24 selected, 24 required. Zero margin: every case is a rule.
+        # 25 selected, 25 required. Zero margin: every case is a rule.
+        #
+        # **Story 14 adds one**, and it is the price of a rule that changed.
+        # The widening's model surface was checked by a name — every reached
+        # target had to start with `half.model.port` — which a future
+        # `half/model/port_provider.py` would have satisfied by spelling alone,
+        # and which refused `half/model/consult.py` although it reaches only
+        # the port. The check is now the property that name stood for: every
+        # `half.model` module reached must itself reach nothing under
+        # `half.model` but the port. The added case is its bypass, run against
+        # a synthetic tree containing the reach it forbids.
         #
         # Story 13b added the two that keep its inclusion check honest, and the
         # floor moves with them. ``shows`` is defined over ``shown``'s own
@@ -1224,7 +1237,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap11_structure -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-11 structural cases collected: $collected"
-          if [ "$collected" -lt 24 ]; then
+          if [ "$collected" -lt 25 ]; then
             echo "::error::the CAP-11 structure gate collected $collected cases; a rule with one case has lost it"
             exit 1
           fi
@@ -1250,12 +1263,26 @@ jobs:
         # wiring and the determinism guarantees among them — fitted inside its
         # own margin.
         #
-        # 485 selected, 475 required. The margin is 10, and it is deliberately
-        # smaller than every protected subset: silence (82), nagging (72),
-        # structure (13), the wire text (300) and the cases held by this gate
-        # alone. Deleting any one of them drops this gate beneath its floor
-        # **and** fails whichever sub-gate names it. Story 11 added one and story
-        # 13a added 300; the floor moves with them, so the margin does not grow.
+        # 510 selected, 476 required. Story 14 adds one — the model-surface
+        # rule's non-vacuity case, which reaches this gate through
+        # `tests/test_voice.py`'s own `pytestmark` — and the floor moves with
+        # it, so this story does not grow the margin.
+        #
+        # **The margin here is 34 and the paragraph below says it is 10.** That
+        # is not story 14's doing and it is not being fixed here: the count was
+        # 509 before this story's single case, against a floor of 475 that has
+        # not moved since it was written for 485. Somewhere between then and now
+        # twenty-four cases were added without the floor following them, which
+        # is the exact failure the sentence *"the floor moves with them, so the
+        # margin does not grow"* was written to prevent, and it is recorded
+        # rather than quietly corrected because tightening another story's gate
+        # by 24 inside a refactor is how a refactor stops being reviewable.
+        #
+        # The margin was meant to be 10, and deliberately smaller than every
+        # protected subset: silence (82), nagging (72), structure (13), the wire
+        # text (300) and the cases held by this gate alone. Deleting any one of
+        # them drops this gate beneath its floor **and** fails whichever
+        # sub-gate names it. Story 11 added one and story 13a added 300.
         #
         # The silence figure read 83 for one revision and the gate collects 82.
         # A number in a comment that the gate does not support is the same defect
@@ -1266,7 +1293,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap8 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-8 cases collected: $collected"
-          if [ "$collected" -lt 475 ]; then
+          if [ "$collected" -lt 476 ]; then
             echo "::error::the CAP-8 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -1468,7 +1495,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap8_voice -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-8 wire-text cases collected: $collected"
-          if [ "$collected" -lt 324 ]; then
+          if [ "$collected" -lt 325 ]; then
             echo "::error::the wire-text gate collected $collected cases; Half may have stopped speaking, or started speaking scaffolding"
             exit 1
           fi

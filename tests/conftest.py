@@ -587,12 +587,23 @@ UNREACHABLE: Final[tuple[str, ...]] = (
 #:
 #: Each exemption is paid for with a stricter rule of its own.
 #: ``tests/test_correction.py``: exactly one module in that package may name the
-#: model, it may name only the port, and what it holds is the port's narrow
-#: classifier — an object with no method that returns text.
+#: model, what it may reach under ``half.model`` is bounded by ``past_the_port``
+#: below, and what it holds is the port's narrow classifier — an object with no
+#: method that returns text.
 #: ``tests/test_voice.py``: what that package holds is the port's narrow
 #: *generator* — refused at construction unless ``generate`` is the only public
 #: method on it — and the channel, the store and the network stay closed to it
 #: here, which is the half that would otherwise go quiet.
+#:
+#: **What the model surface rule became, and why** (story 14). Both lifts used
+#: to be checked by a name: every reached target had to start with
+#: ``half.model.port``. That is a prefix test wearing a rule's clothes — it
+#: would have admitted a future ``half/model/port_provider.py`` by spelling
+#: alone, and it refused ``half/model/consult.py``, which holds the bounded,
+#: counted, breaker-guarded shape three consultations share and which reaches
+#: *only* the port. So it is now the property the name stood for: **every
+#: ``half.model`` module a lifted package reaches must itself reach nothing
+#: under ``half.model`` but the port.** See ``past_the_port``.
 #:
 #: **The pin is honest, and that is checked.** Every entry is a deliberate
 #: decision with a reason written beside it; ``tests/test_correction.py`` and
@@ -602,6 +613,90 @@ LIFTED: Final[dict[str, tuple[str, ...]]] = {
     "half/correction": ("half.model",),
     "half/voice": ("half.model",),
 }
+
+
+def model_modules(names: object, *, model_dir: Path | None = None) -> set[str]:
+    """The ``half/model`` modules a set of resolved import targets names.
+
+    ``half.model.consult``, ``half.model.consult.ALARM_AFTER`` and
+    ``half.model.consult.Breaker`` all name one module; ``half.model`` alone
+    names the package's own ``__init__``. Resolved by asking the filesystem
+    which of the leading segments is a module, so an attribute imported off a
+    module cannot be mistaken for a module of its own.
+    """
+    found: set[str] = set()
+    for name in names:  # type: ignore[union-attr]
+        if name != "half.model" and not name.startswith("half.model."):
+            continue
+        parts = name.split(".")
+        # **Longest** prefix that is a real file under ``half/model/``, so
+        # ``half.model.port.Classifier`` resolves to ``half.model.port`` and not
+        # to the package. Shortest-first was the first spelling of this and it
+        # collapsed every target onto ``half.model``, whose ``__init__`` imports
+        # nothing — so the rule reported a clean surface for a package that
+        # reached the provider.
+        for depth in range(len(parts), 1, -1):
+            candidate = ".".join(parts[:depth])
+            if _model_source(candidate, model_dir=model_dir) is not None:
+                found.add(candidate)
+                break
+    return found
+
+
+def _model_source(module: str, *, model_dir: Path | None = None) -> Path | None:
+    """The file ``module`` lives in, or ``None`` if it is not a module here."""
+    directory = model_dir if model_dir is not None else ROOT / "half" / "model"
+    tail = module.removeprefix("half.model").lstrip(".")
+    path = (directory / "__init__.py") if not tail else (
+        directory / f"{tail.replace('.', '/')}.py"
+    )
+    return path if path.is_file() else None
+
+
+def past_the_port(names: object, *, model_dir: Path | None = None) -> list[str]:
+    """Every step from a reached ``half.model`` module to one that is not the
+    port. Empty means the surface is the port and modules that reach only it.
+
+    **This is the property the old prefix test stood for.** The reason both
+    lifts exist at all is that composing and classifying happen through the
+    port, and the reason they are bounded is stated in ``tests/test_voice.py``
+    in one sentence: *a composer that reached the provider could reset a ledger
+    and reach a batcher*. What must be true is therefore not that a name begins
+    with ``half.model.port`` — a future ``half/model/port_provider.py`` would —
+    but that nothing on the reached surface can get to the provider, the tier
+    table, the budget or the transport.
+
+    ``half/model/consult.py`` satisfies it: it holds the shape three
+    consultations share, it imports ``half.model.port`` and the standard
+    library and nothing else, and
+    ``tests/test_consult.py::test_the_shape_imports_the_port_and_the_standard_library_and_nothing_else``
+    pins that from its own side. There is no provider on it, no ledger and no
+    batcher.
+
+    Transitive, and each step is named rather than only the first, so a
+    reviewer reading a red build gets the path and not the destination.
+    ``model_dir`` exists so the rule can be run against a synthetic tree — a
+    guard nobody has tried to defeat is a guard resting on nothing.
+    """
+    offending: list[str] = []
+    seen: set[str] = set()
+    queue = sorted(model_modules(names, model_dir=model_dir))
+    while queue:
+        module = queue.pop()
+        if module in seen or module == "half.model.port":
+            continue
+        seen.add(module)
+        source = _model_source(module, model_dir=model_dir)
+        if source is None:
+            continue
+        for target in sorted(
+            model_modules(resolved_imports(source), model_dir=model_dir)
+        ):
+            if target == "half.model.port" or target == module:
+                continue
+            offending.append(f"{module} -> {target}")
+            queue.append(target)
+    return sorted(offending)
 
 
 def outward(package: str) -> tuple[str, ...]:
