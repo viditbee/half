@@ -968,6 +968,103 @@ def turns(registry, texts, *, main_id=MAIN, voice=None, at=1_788_264_000,
     return transport
 
 
+def test_the_composition_does_not_hold_the_mains_mutex(registry, tmp_path):
+    """AD-33: a model call must not run under a main's lock.
+
+    Story 13b's one structural change to ``_pipeline`` was moving the
+    composition below the ``acquire``, because a bound-long generation under
+    the mutex holds eviction and every other operation on that main. Nothing
+    asserted it: wrapping the ``await respond(...)`` calls back inside
+    ``acquire(...)`` left the suite green.
+
+    **Asserted as free-or-not, never as a duration.** A stopwatch comparison
+    is what made story 6d's safe-word case flaky in CI. The generation is held
+    open for half a second; the lock is asked for with a tenth of a second's
+    patience. Free returns at once, held cannot return inside the window, and
+    the margin between the two is five-fold rather than marginal.
+    """
+    a_main(tmp_path, withheld="")
+    voice, holder = a_voice("still here", sleep=0.5)
+
+    async def drive():
+        transport = FakeTransport([
+            msg(text="thinking about the farmland again", message_id="mx", chat_id="123",
+                date=1_788_264_000)
+        ])
+        channel = TelegramChannel(transport=transport, mains={"123": MAIN})
+        turn = asyncio.create_task(
+            Runtime(channel=channel, registry=registry, voice=voice).run()
+        )
+
+        async def take_the_lock():
+            async with registry.acquire(MAIN):
+                return True
+
+        # Wait for the generation to be in flight, then take the lock.
+        while not holder.calls:
+            await asyncio.sleep(0)
+            if turn.done():  # pragma: no cover - the turn outran the poll
+                break
+        assert await asyncio.wait_for(take_the_lock(), timeout=0.1)
+        await asyncio.wait_for(turn, timeout=5)
+        return transport
+
+    transport = asyncio.run(drive())
+    assert "still here" in wire(transport), wire(transport)
+    assert holder.calls == 1
+
+
+def test_no_composition_in_the_tree_sits_under_an_acquire(registry):
+    """AD-33 as a property, because there are three call sites and one rule.
+
+    The behavioural case above drives the ordinary turn; the correction branch
+    and the second-pass call have their own ``await respond(...)``, and a case
+    per path is a case per path somebody forgets to add. This walks the module
+    instead: no ``respond`` call may have an ``acquire`` context manager
+    anywhere above it, so a fourth call site is caught by the same rule as the
+    three that exist.
+    """
+    import ast as _ast
+    from pathlib import Path
+
+    tree = _ast.parse(Path("half/actor/runtime.py").read_text(encoding="utf-8"))
+
+    def acquires(node):
+        items = getattr(node, "items", ())
+        return any(
+            isinstance(item.context_expr, _ast.Call)
+            and isinstance(item.context_expr.func, _ast.Attribute)
+            and item.context_expr.func.attr == "acquire"
+            for item in items
+        )
+
+    def composes(node):
+        call = getattr(node, "value", None)
+        call = getattr(call, "value", call)
+        return (
+            isinstance(call, _ast.Call)
+            and isinstance(call.func, _ast.Name)
+            and call.func.id == "respond"
+        )
+
+    held: list[int] = []
+
+    def walk(node, under):
+        under = under or acquires(node)
+        for child in _ast.iter_child_nodes(node):
+            if composes(child) and under:
+                held.append(child.lineno)
+            walk(child, under)
+
+    walk(tree, False)
+    calls = [
+        n.lineno for n in _ast.walk(tree)
+        if composes(n)
+    ]
+    assert len(calls) >= 3, f"the scan found {len(calls)} respond calls"
+    assert held == [], f"a model call runs under a main's mutex at {held}"
+
+
 def wire(transport):
     return "".join(text for _, text in transport.sent)
 
