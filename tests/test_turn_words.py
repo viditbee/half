@@ -31,29 +31,47 @@ and nothing here opens a socket.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import logging
 import time
+from pathlib import Path
 from typing import Final
 
 import pytest
 
+from half.actor.registry import ActorRegistry
+from half.actor.runtime import Runtime
+from half.channel.telegram import TelegramChannel
 from half.context.build import build as build_context
 from half.context.build import withheld as withheld_wordings
 from half.context.channels import Context, render_line
 from half.governance.ladder import Ceiling, License
+from half.loops import ledger as loops
 from half.model.port import Failure, Kind, Reason
 from half.retrieval.port import Candidate as RankedBelief
+from half.retrieval.prefix import build_prefix
+from half.store.ops import TOUCH_TENSION, Op
+from half.store.store import Store
+from half.surface import touch
 from half.voice.compose import (
     ASK_ABOUT,
     MAY_BE_SAID,
     WORD_FOR_WORD,
     Sample,
 )
-from half.voice.gate import BOUND_SECONDS, Voice
+from half.voice.gate import BOUND_SECONDS, QUESTION_MARKS, Voice
 from half.voice.turn import TURN_BOUND_SECONDS, Turned, fallback, words
 
-from tests.conftest import GeneratorDouble, NeverGenerates
+from tests.conftest import (
+    FakeTransport,
+    GeneratorDouble,
+    NeverGenerates,
+    msg,
+    seed_belief,
+)
+
+ROOT = Path(__file__).resolve().parents[1]
 
 pytestmark = [pytest.mark.cap1_turn]
 
@@ -271,6 +289,21 @@ def test_the_fallback_is_the_claim_and_carries_no_part_of_the_serialization():
     assert context.now not in turned.text
     for label in (MAY_BE_SAID, ASK_ABOUT, WORD_FOR_WORD):
         assert label not in turned.text
+
+
+def test_the_fallback_is_the_top_ranked_claim_and_not_just_any_of_them():
+    """Rank order decides which claim goes, as it decides everything else.
+
+    **A live mutation found this.** Reading the *last* quotable claim instead of
+    the first left every other case green, because most of them seed one — and
+    it would quietly send the least relevant thing Half holds to somebody who
+    has just written about the most relevant one.
+    """
+    first, second = SAYABLE, "reads two books at once"
+    context = a_context(candidate("b_1", first), candidate("b_2", second))
+    assert context.quotable() == (first, second), "the fixture must have order"
+    assert fallback(context) == first
+    assert spoke(Voice({}), context, withheld=frozenset()).text == first
 
 
 @pytest.mark.parametrize("script", sorted(CLAIMS))
@@ -631,3 +664,492 @@ def _withheld_with_ask() -> frozenset[str]:
         ],
         ceiling=Ceiling(),
     )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# end to end: the real runtime, the real store, the real gate
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# The cases above carry ``half.voice.turn`` on its own. These carry it **through
+# the turn path** — a real store, a real fold, the real context builder, the
+# real crisis gate — which is where the launch blocker lived: ``respond``
+# returned ``noted. has not walked that plot since March`` and ``_pipeline``
+# joined ``retract[b_land]: ...`` onto it.
+
+
+@pytest.fixture
+def registry(tmp_path):
+    reg = ActorRegistry(tmp_path / "mains")
+    yield reg
+    reg.close()
+
+
+def a_main(root, *, main_id=MAIN, sayable=SAYABLE, withheld=WITHHELD,
+           loop="buy-farmland"):
+    """One main: one claim Half may state, one it may not, on one wanting."""
+    with Store(root / main_id, prefix=build_prefix) as store:
+        store.record(
+            Op.LOOP_TRANSITION, "l_1", "2026-08-01T00:00:00Z",
+            **loops.opened(loop, state="stalled", timescale="years",
+                           last_movement="2026-01-04",
+                           loops=store.state().loops),
+        )
+        if sayable:
+            seed_belief(store, "b_say", "2026-08-01T00:00:00Z", subject="self",
+                        claim=sayable, ledger="revealed", loop=loop,
+                        topics=["farmland"], rung=License.ASSERT,
+                        support=["s_1"])
+        if withheld:
+            # On the same wanting as the sayable one, because the correction
+            # cases need it *aimable*: ``half.correction.apply.aim`` takes the
+            # top-ranked belief above a relevance floor, and the floor is read
+            # off the strand weight the loop slug and the topic fields build.
+            seed_belief(store, "b_hold", "2026-08-01T00:00:00Z", subject="self",
+                        claim=withheld, ledger="revealed", loop=loop,
+                        topics=["farmland"])
+
+
+def turns(registry, texts, *, main_id=MAIN, voice=None, at=1_788_264_000,
+          asks=False, tag="t"):
+    """Real inbound turns, through the real runtime and the real crisis gate.
+
+    ``tag`` distinguishes two *calls*: at-least-once delivery makes a repeated
+    external id a redelivery, and a second run reusing the first run's ids is
+    dropped before anything is composed.
+    """
+    from half.questions.engine import QuestionEngine
+
+    transport = FakeTransport([
+        msg(text=text, message_id=f"{tag}{index}", chat_id="123",
+            date=int(at + index))
+        for index, text in enumerate(texts)
+    ])
+    channel = TelegramChannel(transport=transport, mains={"123": main_id})
+    asyncio.run(Runtime(
+        channel=channel, registry=registry,
+        voice=Voice() if voice is None else voice,
+        questions=QuestionEngine(ledger=registry) if asks else None,
+    ).run())
+    return transport
+
+
+def wire(transport):
+    return "".join(text for _, text in transport.sent)
+
+
+def ranked_of(root, text, *, main_id=MAIN, now=NOW):
+    from half.retrieval.rank import Retriever
+
+    with Store(root / main_id, prefix=build_prefix) as store:
+        return Retriever(store=store).retrieve(text, now=now)
+
+
+# ── the ordinary turn ────────────────────────────────────────────────────────
+
+
+def test_the_wire_carries_prose_and_no_part_of_the_serialization(
+    registry, tmp_path
+):
+    """The acceptance criterion, word for word: *asserted against the
+    serialization, not a fixture string.*
+
+    The context the turn built is rebuilt here and rendered, and every token of
+    that rendering is looked for on the wire. A renamed channel label or a new
+    item type changes ``render_line`` and changes what this case looks for; a
+    list of expected strings would go on passing after the thing it described
+    had moved.
+    """
+    root = tmp_path / "mains"
+    a_main(root)
+    voice, holder = a_voice("that plot has been waiting for you a while")
+
+    transport = turns(registry, ["thinking about the farmland again"],
+                      voice=voice)
+
+    body = wire(transport)
+    assert body == "that plot has been waiting for you a while"
+    context = build_context(
+        ranked_of(root, "thinking about the farmland again"),
+        now=NOW, ceiling=None,
+    )
+    assert len(context) >= 1, "the turn must have built a context to compare to"
+    for line in context.render().split("\n"):
+        assert line not in body
+    for item in context:
+        assert item.id not in body
+        head, bracket, _ = render_line(item).partition("]")
+        assert (head + bracket) not in body
+    assert "\n" not in body, "one message, not a form"
+    assert WITHHELD not in body
+
+
+def test_a_provider_that_is_absent_costs_the_main_nothing_but_the_prose(
+    registry, tmp_path
+):
+    """Matrix: *provider absent or failing*. The claim alone, and the message
+    still recorded."""
+    root = tmp_path / "mains"
+    a_main(root)
+
+    transport = turns(registry, ["thinking about the farmland again"])
+
+    assert wire(transport) == SAYABLE
+
+    async def recorded():
+        async with registry.acquire(MAIN) as actor:
+            return {
+                record.get("claim") for record in
+                actor.store.state().beliefs.values()
+            }
+    assert "thinking about the farmland again" in asyncio.run(recorded())
+
+
+def test_a_redelivery_is_answered_once_and_recorded_once(registry, tmp_path):
+    """Matrix: *redelivery*. Idempotent, and the second delivery composes
+    nothing at all — the check answers before a provider is reached."""
+    root = tmp_path / "mains"
+    a_main(root)
+    voice, holder = a_voice("that plot has been waiting")
+    transport = FakeTransport([
+        msg(text="farmland again", message_id="same", chat_id="123", date=1),
+        msg(text="farmland again", message_id="same", chat_id="123", date=1),
+    ])
+    channel = TelegramChannel(transport=transport, mains={"123": MAIN})
+    asyncio.run(Runtime(channel=channel, registry=registry, voice=voice).run())
+
+    assert len(transport.sent) == 1
+    assert holder.calls == 1, "the redelivery paid a provider"
+
+
+def test_a_blank_message_is_unchanged_and_reaches_no_provider(
+    registry, tmp_path
+):
+    """Matrix: *blank message*. Unchanged from today, and it costs nothing."""
+    a_main(tmp_path / "mains")
+    never = NeverGenerates()
+
+    transport = turns(registry, ["   "], voice=Voice({MAIN: never}))
+
+    assert transport.sent == []
+    assert never.calls == 0
+
+
+# ── CAP-11 through the turn path ─────────────────────────────────────────────
+
+
+def test_a_correction_reply_carries_the_removed_claim_and_no_marker(
+    registry, tmp_path
+):
+    """CAP-11 on the wire. Until story 13b this was
+    ``retract[b_hold]: avoids the conversation with his brother``.
+    """
+    root = tmp_path / "mains"
+    a_main(root, sayable="")
+    voice, holder = a_voice(
+        lambda work: f"{WITHHELD} — taken out of what I hold."
+    )
+
+    transport = turns(registry, ["farmland again please", "thats wrong"],
+                      voice=voice)
+
+    body = transport.sent[-1][1]
+    assert WITHHELD in body, "the main must be shown what left"
+    assert "retract" not in body and "b_hold" not in body
+    assert "[" not in body and "]" not in body
+    # **And the prose is what went out, not the fallback.** This is the half a
+    # mutation walks through otherwise: the belief a main has just corrected is
+    # `behave`, so leaving its wording in the withheld set makes the tripwire
+    # refuse every composed correction reply — and the fallback that follows is
+    # the claim, so the wire looks identical and only the counter moves. The
+    # composed path would be dead, permanently, with this file green.
+    assert body != WITHHELD, "the fallback went out, not the composed reply"
+    assert voice.tally.leaked == 0, "the removed claim was withheld from itself"
+    assert voice.tally.spoken == 1
+
+
+def test_the_removed_claim_is_the_only_thing_a_correction_reply_may_state(
+    registry, tmp_path
+):
+    """A correction turn is about the belief that left, and about nothing else.
+
+    **A live mutation found this.** Letting the ordinary content channel through
+    beside the removed claim leaves every wire assertion green — the removed
+    claim is still there, because it is also the fallback — while giving the
+    model licence to answer *"that's wrong"* with an unrelated statement, at the
+    one moment the main is checking Half's work. So the assertion is on the
+    **may-be-said block** the generator was handed, which is the only place the
+    difference is visible.
+    """
+    root = tmp_path / "mains"
+    a_main(root)                                  # a sayable claim *and* a
+    voice, holder = a_voice(                      # withheld one
+        lambda work: f"{_said(work)} — out of what I hold."
+    )
+
+    turns(registry, ["farmland again please", "thats wrong"], voice=voice)
+
+    said = [_said(work) for work in holder.requests]
+    assert said[-1] == WITHHELD, said
+    assert SAYABLE not in said[-1], "the reply may state the removal, and no more"
+
+
+def _said(work):
+    for block in work.prompt.turns[0].text.split("\n\n"):
+        if block.startswith(MAY_BE_SAID):
+            return block[len(MAY_BE_SAID):].strip()
+    return ""
+
+
+def test_a_composed_correction_reply_that_omits_the_claim_is_not_sent(
+    registry, tmp_path
+):
+    """**The case that fails if the omission ships.**
+
+    The generator writes friendly prose that says a thing was removed and does
+    not say what. It is generated — the holder is called — and it does not reach
+    the main; the claim does.
+    """
+    root = tmp_path / "mains"
+    a_main(root, sayable="")
+    voice, holder = a_voice("I've taken that out for you.")
+
+    transport = turns(registry, ["farmland again please", "thats wrong"],
+                      voice=voice)
+
+    body = transport.sent[-1][1]
+    assert holder.calls >= 1, "the fixture must have generated something to lose"
+    assert "I've taken that out for you." not in body
+    assert body == WITHHELD
+
+
+def test_a_confirmed_erasure_shows_the_claim_before_the_body_is_gone(
+    registry, tmp_path
+):
+    """Matrix: *correction, erasure*. **The ordering, asserted.**
+
+    An erasure is the only removal that cannot be undone by correcting the
+    correction, so the confirming turn is the last moment a mis-aimed one can be
+    caught. The claim is read off the fold before ``Store.expunge`` tombstones
+    the body, so the reply carries words that are no longer anywhere on disk.
+    """
+    root = tmp_path / "mains"
+    a_main(root, sayable="")
+
+    transport = turns(
+        registry,
+        ["farmland again please", "delete that", "yes"],
+    )
+
+    assert transport.sent[-1][1] == WITHHELD, "the claim is shown"
+    shard = (root / MAIN / "beliefs").glob("*.jsonl")
+    on_disk = "".join(path.read_text(encoding="utf-8") for path in shard)
+    assert WITHHELD not in on_disk, "the body is gone"
+
+
+# ── CAP-4 through the turn path ──────────────────────────────────────────────
+
+
+def test_a_bought_question_arrives_inside_the_message_and_never_as_a_line(
+    registry, tmp_path
+):
+    """Matrix: *bought question*. One question, composed in, no line."""
+    root = tmp_path / "mains"
+    a_main(root, sayable="")
+    with Store(root / MAIN, prefix=build_prefix) as store:
+        seed_belief(store, "b_ask", "2026-08-01T00:00:00Z", subject="self",
+                    claim="wants to plant the north field", ledger="stated",
+                    loop="buy-farmland", topics=["farmland"],
+                    rung=License.ASK, support=["s_2"])
+        store.record(
+            Op.TOUCH, "tc_2026-08-20T09:00:00Z", "2026-08-20T09:00:00Z",
+            **touch.spoke(day="2026-08-20",
+                          origin=touch.Origin(kind=TOUCH_TENSION, id="x_1"),
+                          loops=("buy-farmland",)),
+        )
+    voice, holder = a_voice("the plot is still there — what goes in it?")
+
+    transport = turns(
+        registry, ["farmland again please"], voice=voice, asks=True,
+    )
+
+    body = wire(transport)
+    assert "question[" not in body and "b_ask" not in body
+    assert "\n" not in body
+    assert sum(1 for char in body if char in QUESTION_MARKS) == 1
+    asked = [
+        block for work in holder.requests
+        for block in work.prompt.turns[0].text.split("\n\n")
+        if block.startswith(ASK_ABOUT)
+    ]
+    assert asked, "the favour bought a question that never reached the prompt"
+
+
+# ── AD-18, AD-22, CAP-12 ─────────────────────────────────────────────────────
+
+
+def test_a_generated_behave_claim_stops_the_send_and_the_claim_goes_instead(
+    registry, tmp_path, caplog
+):
+    """Matrix: *`behave` leak*. Refused loudly, never cleaned, and the turn is
+    still answered — with the claim, which is quotable by definition."""
+    root = tmp_path / "mains"
+    a_main(root)
+    voice, _ = a_voice(f"a thought about how he {WITHHELD} lately")
+
+    with caplog.at_level(logging.ERROR, logger="half.voice.leak"):
+        transport = turns(registry, ["thinking about the farmland again"],
+                          voice=voice)
+
+    body = wire(transport)
+    assert WITHHELD not in body
+    assert body == SAYABLE
+    assert voice.tally.leaked == 1
+    assert any(record.levelno >= logging.ERROR for record in caplog.records)
+
+
+@pytest.mark.parametrize("script", sorted(SCRIPTS))
+def test_no_generated_string_is_written_anywhere(registry, tmp_path, script):
+    """AD-22, in every script. The log records that a turn happened, never what
+    Half said."""
+    root = tmp_path / "mains"
+    a_main(root)
+    # **The message is a statement and not a negation**, which is not a detail:
+    # ``half.correction.signals`` recognises *"that is not right any more"* in
+    # every one of these scripts, so a fixture built from ``SCRIPTS`` would turn
+    # half of these runs into correction turns and this case would silently stop
+    # being about an ordinary one.
+    composed = f"{CLAIMS[script]} — {SAYABLE}"
+    voice, _ = a_voice(composed)
+
+    transport = turns(registry, [f"farmland — {CLAIMS[script]}"], voice=voice)
+
+    assert composed in wire(transport), "the fixture must have sent it"
+    for path in sorted((root / MAIN).rglob("*")):
+        if path.is_file():
+            body = path.read_bytes()
+            assert composed.encode("utf-8") not in body, path
+
+
+def test_a_main_in_crisis_is_never_composed_for(registry, tmp_path):
+    """CAP-12: no crisis reply is ever generated. The counter is the signal — a
+    double that only raised would be swallowed into ``Unspoken(RAISED)``."""
+    a_main(tmp_path / "mains")
+    never = NeverGenerates()
+
+    transport = turns(registry, ["i want to kill myself"],
+                      voice=Voice({MAIN: never}))
+
+    assert transport.sent, "a crisis turn is always answered"
+    assert never.calls == 0, "a crisis reply was composed by a model"
+
+
+def test_the_turn_and_the_morning_are_one_composer(registry, tmp_path):
+    """*"One composer, one gate, one leak check, one set of counters."*
+
+    Asserted through the shipped wiring rather than by reading it: the runtime
+    and the morning surface are handed the same object, so an operator reads one
+    silent rate and a leak on either path lands in one counter.
+    """
+    import half.__main__ as entrypoint
+
+    source = (ROOT / "half/__main__.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    built = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name) and node.func.id == "Voice"
+    ]
+    # Two constructions, both inside ``voices`` — the equipped one and the empty
+    # fallback — and no third anywhere. A second ``Voice`` for the turn is the
+    # fork this story exists without.
+    assert len(built) == 2, [ast.unparse(node) for node in built]
+    assert hasattr(entrypoint.Wiring, "__annotations__")
+    assert "voice" in entrypoint.Wiring.__annotations__
+
+
+def test_a_failed_generation_asks_nothing_and_spends_no_favour(
+    registry, tmp_path
+):
+    """Matrix: *the question is dropped*. **A live mutation found this.**
+
+    A favour was unspent, every gate passed, the builder emitted the question —
+    and then the generation failed, so what went on the wire was the fallback:
+    the claim alone, which asks nothing. Spending the favour there would pay for
+    a question the main never saw, which is the mirror of the defect review
+    found in story 11, where a spend happened before the thing it paid for
+    existed.
+
+    **Both halves are asserted**, because the negative one alone passes on a
+    build that never asks anybody anything: the same fixture with a working
+    generator spends exactly one favour.
+    """
+    root = tmp_path / "mains"
+    a_main(root, sayable="")
+    with Store(root / MAIN, prefix=build_prefix) as store:
+        seed_belief(store, "b_ask", "2026-08-01T00:00:00Z", subject="self",
+                    claim="wants to plant the north field", ledger="stated",
+                    loop="buy-farmland", topics=["farmland"],
+                    rung=License.ASK, support=["s_2"])
+        store.record(
+            Op.TOUCH, "tc_2026-08-20T09:00:00Z", "2026-08-20T09:00:00Z",
+            **touch.spoke(day="2026-08-20",
+                          origin=touch.Origin(kind=TOUCH_TENSION, id="x_1"),
+                          loops=("buy-farmland",)),
+        )
+
+    failing, holder = a_voice("")            # judged empty, every attempt
+    turns(registry, ["farmland again please"], voice=failing, asks=True)
+
+    assert holder.calls >= 1, "the generation must have been attempted"
+    assert _spends(root) == [], (
+        "a favour was spent for a question the main never saw"
+    )
+
+    working, _ = a_voice("the plot is still there — what goes in it?")
+    turns(registry, ["farmland again please"], voice=working, asks=True,
+          at=1_788_264_100, tag="u")
+
+    assert len(_spends(root)) == 1, (
+        "the positive control must spend, or the case above proves nothing"
+    )
+
+
+def test_the_fallback_is_reached_without_entering_the_gate():
+    """*"A branch that never entered the gate"*, asserted structurally.
+
+    **This one is a shape rather than a behaviour, and that is stated rather
+    than hidden.** Deleting the ``holds`` guard changes nothing observable
+    today: ``Voice.compose`` answers ``NO_MODEL`` before it touches a holder, so
+    the wire, the tally and the timings are identical either way — a mutation
+    probe over the whole suite survives it. What the guard buys is that the
+    fallback cannot *acquire* the gate's latency the first time somebody adds a
+    step to ``compose``, and the only instrument that can hold a shape is one
+    that reads the shape.
+
+    So: in ``words``, an ``if`` whose test names ``holds`` and whose body
+    returns must come before the first ``await``. The mutation fails it because
+    the surviving ``isinstance`` test names no such thing.
+    """
+    import half.voice.turn as module
+
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+    body = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "words"
+    ).body
+    guarded = None
+    for index, statement in enumerate(body):
+        if isinstance(statement, ast.If) and "holds" in ast.unparse(statement.test):
+            assert any(isinstance(inner, ast.Return) for inner in statement.body)
+            guarded = index
+            break
+    assert guarded is not None, "nothing in `words` asks whether a model exists"
+    before = ast.Module(body=body[:guarded + 1], type_ignores=[])
+    assert not [
+        node for node in ast.walk(before) if isinstance(node, ast.Await)
+    ], "the fallback waits on something before it knows there is a model"
+
+
+def _spends(root, main_id=MAIN):
+    with Store(root / main_id) as store:
+        return [record for record in store.log if record.op is Op.ASKED]

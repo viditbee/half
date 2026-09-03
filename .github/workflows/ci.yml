@@ -930,9 +930,15 @@ jobs:
         #   and that all three attributions read the same after the derived view
         #   is deleted and replayed (AD-4).
         #
-        # **Margin zero: 255 selected, 255 required.** Sized against the subset
+        # **Margin zero: 257 selected, 257 required.** Sized against the subset
         # it protects rather than against a total, and every case here is the
         # only one asserting its rule.
+        #
+        # Story 13b added two, and the floor moves with them so the margin stays
+        # zero: that the inclusion check CAP-11 now runs over a composed reply is
+        # defined over the fallback it falls back to — so the check can never
+        # refuse everything the turn is able to send — and that a removal with no
+        # readable claim shows nothing and refuses nothing.
         #
         # Three blocks of it are sweeps rather than single cases — twelve
         # op-by-stamp crossings, ten scripts twice over, and forty-odd ordinary
@@ -954,7 +960,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap11 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-11 correction cases collected: $collected"
-          if [ "$collected" -lt 255 ]; then
+          if [ "$collected" -lt 257 ]; then
             echo "::error::the CAP-11 gate collected $collected cases; a main may not be able to tell Half it is wrong"
             exit 1
           fi
@@ -1017,7 +1023,16 @@ jobs:
         #   green, which made the rule story 11 fixed undoable by a one-line
         #   edit in a test helper.
         #
-        # 22 selected, 22 required. Zero margin: every case is a rule.
+        # 24 selected, 24 required. Zero margin: every case is a rule.
+        #
+        # Story 13b added the two that keep its inclusion check honest, and the
+        # floor moves with them. ``shows`` is defined over ``shown``'s own
+        # output, so the fallback satisfies it by construction — a check and a
+        # fallback that could disagree is a check that silences a main every
+        # time it fires — and that is swept over claims a second normalization
+        # would damage: a line break, a control character, leading space, a
+        # Devanagari matra, a Khmer dependent vowel. The second says what
+        # happens when there is no claim to show at all.
         #
         # *"The package opens no store of its own"* is deliberately **not** here.
         # It is asserted in tests/test_unasked.py, where one predicate sweeps
@@ -1030,7 +1045,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap11_structure -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-11 structural cases collected: $collected"
-          if [ "$collected" -lt 22 ]; then
+          if [ "$collected" -lt 24 ]; then
             echo "::error::the CAP-11 structure gate collected $collected cases; a rule with one case has lost it"
             exit 1
           fi
@@ -1269,6 +1284,86 @@ jobs:
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap8_voice
+
+      - name: 'CAP-1: the turn in words — prose, the claim, or nothing'
+        # The wire-text gate for the surface a main actually uses. Story 13a
+        # took the internal serialization off the **morning**; until story 13b
+        # the turn still emitted it — ``respond`` answered
+        # ``noted. has not walked that plot since March``, a bought question
+        # arrived as ``question[b_1] topic: farmland``, and a correction as
+        # ``retract[b_land]: has not walked that plot since March``. All three
+        # reached the main on the same wire.
+        #
+        # **A sibling of the ``cap8_voice`` gate rather than an extension of
+        # it**, and that is deliberate. That gate protects the morning: its
+        # margin is zero and every case in it is the only one asserting its
+        # rule, so folding ninety-five turn cases into it would have taken its
+        # floor from 300 to 395 and left a later reader unable to tell which
+        # half of the number protected which surface. A gate that reports itself
+        # as covering more than it does is the defect this file has had to fix
+        # three times. The morning and the turn share one composer and one
+        # judge — that identity is itself asserted, here — and they are two
+        # surfaces with two matrices.
+        #
+        # What it covers:
+        #
+        #   the fallback ladder, rung by rung — prose when the composer works,
+        #   the claim alone when it does not, and silence only when there is no
+        #   claim; that the claim rung is reachable with **no model call**,
+        #   asserted structurally because deleting the guard changes nothing
+        #   observable today and everything the first time a step is added to
+        #   the gate; that a dead provider costs one bound and never three, and
+        #   that a turn takes the turn's bound even inside a ``Voice`` built
+        #   with the morning's;
+        #   that a composed correction reply must contain the removed claim
+        #   verbatim and is **not sent** when it does not, that the removed
+        #   claim is the only thing such a reply may state, that the model is
+        #   told the requirement through the ``word-for-word`` block in every
+        #   one of fourteen scripts, and that a confirmed erasure shows the
+        #   claim before the body is tombstoned;
+        #   that the bought question arrives inside the message and never as a
+        #   line, that a bought question with nothing to say is still asked, and
+        #   that a **failed generation asks nothing and spends no favour** —
+        #   with the positive control beside it, because the negative half alone
+        #   passes on a build that never asks anybody anything;
+        #   that a generated `behave` claim stops the send loudly and the claim
+        #   goes instead, that no generated string reaches the log or a
+        #   projection in any script, that a crisis turn reaches no model at
+        #   all, and that a blank message and a redelivery reach none either.
+        #
+        # **Every "never called" is a counter asserted to be zero**, not a
+        # double that raises: ``Voice._attempt_all`` catches ``Exception`` and
+        # converts it to ``Unspoken(RAISED)``, a legal reason, so a raising
+        # double passes whether or not the provider was paid. Story 13a's review
+        # found that swallowing; this gate is written against it.
+        #
+        # **Five of these cases exist because a live mutation survived without
+        # them**, which is the only honest way to size a gate: the favour spent
+        # for a question the fallback never asked; the removed claim left
+        # withheld from itself, which makes the composed correction path dead
+        # for ever while the wire looks identical because the fallback *is* the
+        # claim; the ordinary content channel left in beside the removed claim,
+        # which lets Half answer *"that's wrong"* with an unrelated statement;
+        # the fallback reading the last quotable claim rather than the top-ranked
+        # one; and the model-free branch, which needed a structural case.
+        #
+        # **Margin zero: 95 selected, 95 required.** Every case is the only one
+        # asserting its rule, including each of the fourteen scripts — a script
+        # pruned is a script nobody checks, which is how story 12 shipped a
+        # correction path that deleted beliefs on ordinary Thai and Japanese
+        # sentences with the suite green. There is no redundant parameter in
+        # here to prune, so there is no room left for pruning one. Adding cases
+        # moves this number with them; nothing else may.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap1_turn -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-1 turn wire-text cases collected: $collected"
+          if [ "$collected" -lt 95 ]; then
+            echo "::error::the turn wire-text gate collected $collected cases; a main may be receiving Half's internals again"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap1_turn
 
       - name: 'CAP-4: the trust currency — computed from the log, stakes before the favour'
         # The currency CAP-4 rests on, and every rule in it decays in silence.
