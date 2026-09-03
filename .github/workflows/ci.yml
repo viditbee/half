@@ -255,12 +255,18 @@ jobs:
         # and the send spends no favour — and the floor moves with it to 1241 so
         # the margin does not grow. That case is protected by `cap4_gates`, whose
         # margin is zero, exactly as story 5b's three are.
+        #
+        # Story 9d added one more — a main in the mode is never minted for,
+        # asserted through a real tick rather than by a second check inside the
+        # pass — and the floor moves with it to 1242 for the same reason. It is
+        # protected by `cap7_minting`, whose margin is zero, exactly as the
+        # cases above are protected by `cap4_gates`.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap12 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-12 cases collected: $collected"
-          if [ "$collected" -lt 1241 ]; then
+          if [ "$collected" -lt 1242 ]; then
             echo "::error::the CAP-12 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -530,12 +536,25 @@ jobs:
         # these prove it against a main typing "that's wrong" into a message,
         # which is the only way a correction will ever actually arrive. Margin
         # is zero now where it was two, so removing any of the fifteen fails.
+        #
+        # **Story 9d added three, and the floor moves from 15 to 18 with them**
+        # so the margin stays at zero. They are the firewall from the one side
+        # story 9d could breach it from: a *minter* now creates tensions, and a
+        # tension over the belief a wanting is made of is the ordinary case
+        # rather than an exotic one. One asserts the loop's own record is
+        # unchanged field by field after a mint — story 8's hole was a demotion
+        # that travelled through `state.expunged` while the loop stayed in the
+        # fold, which every presence check passed; one is its non-vacuity, that
+        # the loop set is compared against at all, because a build that never
+        # looked at a loop would leave every wanting standing too; and one is
+        # structural, that the only name `half/consolidate` takes from
+        # `half.loops` is the field a belief records its loop in.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap6_firewall -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-6 firewall cases collected: $collected"
-          if [ "$collected" -lt 15 ]; then
+          if [ "$collected" -lt 18 ]; then
             echo "::error::the firewall gate collected $collected cases; a loop may now be refutable"
             exit 1
           fi
@@ -698,14 +717,22 @@ jobs:
         # because another step happened to run one of the same files.
         #
         # **The floor carries margin that is not the cases it protects**, the
-        # rule review has had to establish for five stories running. 327
-        # selected, 286 required — and the 147 guarantee cases are marked
-        # separately and gated below, so deleting them lands on 180 and fails
-        # *three* times: both subset gates collect nothing, and this one drops
-        # 106 beneath its floor. The margin, 40, is deliberately far smaller
-        # than the guarantee count, so the slack cannot be absorbed by deleting
-        # guarantees — which is what review round 2 measured happening on the
-        # AD-19 gate.
+        # rule review has had to establish for five stories running. 411
+        # selected, 370 required — and the 209 guarantee cases are marked
+        # separately and gated below, so deleting them lands on 202 and fails
+        # *four* times: all three subset gates collect nothing, and this one
+        # drops 168 beneath its floor. The margin, 41, is deliberately far
+        # smaller than the guarantee count, so the slack cannot be absorbed by
+        # deleting guarantees — which is what review round 2 measured happening
+        # on the AD-19 gate.
+        #
+        # **Story 9d added 84 and the floor moves with them, from 286 to 370,
+        # so the margin does not grow.** They are the minting half: the
+        # comparison bound, the cheap filter, the budget, idempotence and the
+        # judgement seam. Sixty-two of the eighty-four carry `cap7_minting` as
+        # well and are gated below at margin zero, which is what actually
+        # protects them — this floor's margin of 41 could not protect any 41
+        # named cases and never claimed to.
         #
         # **Review round 1 of this story found that a floor is not enough on
         # its own, twice over.** A tension frozen on its first transition — two
@@ -721,7 +748,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap7 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-7 cases collected: $collected"
-          if [ "$collected" -lt 286 ]; then
+          if [ "$collected" -lt 370 ]; then
             echo "::error::the CAP-7 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -837,6 +864,80 @@ jobs:
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap7_neutrality
+
+      - name: 'CAP-7: minting is bounded — never all-pairs, inside a fixed budget'
+        # A fourth CAP-7 gate, over the story that finally *creates* the
+        # capability's central object — and over the one rule in it that is a
+        # correctness rule rather than a judgement call. CAP-7's success
+        # criterion is not that tensions get minted; it is that the pass *"runs
+        # within a fixed per-user cost budget because comparison is bounded to
+        # new or changed entries against the loop set and against beliefs
+        # sharing a subject, gated by a cheap relevance filter before any model
+        # comparison — never all-pairs"*. Every clause of that is a way to spend
+        # a main's money quietly, and none of them breaks visibly: a minter that
+        # compared all-pairs would produce *better* tensions and a bill that
+        # scales with the square of a ledger nobody watches.
+        #
+        # **Never all-pairs cannot be gated by a count, and this is the gate
+        # where that lesson is spent.** A fixture with ten beliefs and two
+        # changed passes whether the code compares 2xN or N-squared, so a case
+        # asserting *"only four comparisons"* asserts nothing about the rule.
+        # Story 11's review found this shape's mirror one capability over — a
+        # sweep asserting `<= 1` that passed at zero. So the rule is asserted as
+        # a **derivative**: the ledger is grown by a factor of twenty with
+        # entries that neither sit on a loop nor share a subject, the candidate
+        # set and both comparison sets are held fixed, and the comparison count
+        # and the judgement count must not move *and must not be zero*. Both
+        # halves are in every growth case, at both layers — the comparisons in
+        # `tests/test_candidates.py` and the judgements bought in
+        # `tests/test_minting.py` — with a non-vacuity case pinning what
+        # all-pairs would have produced at the largest size (33 411 and 861).
+        #
+        # **Where the rule is "the judge is never reached", the double counts
+        # its calls.** `mint.consider` catches per couple by design, so a double
+        # that only raised would turn an `AssertionError` into a legal outcome
+        # and a case asserting *"nothing was minted"* would pass whether or not
+        # the port had been paid for. That is `conftest.NeverGenerates`'s own
+        # finding, arriving one port over, and every zero-call case here asserts
+        # a counter.
+        #
+        # **And the four ways nothing is minted are four cases naming four
+        # different fields**: the judge said no, the judge could not say, the
+        # judge raised, and no judge is wired — which is what this build ships.
+        # Folded together they would be one assertion that is satisfied by the
+        # port never being reached at all.
+        #
+        # Sixteen mutations were run against these before this gate was
+        # written, each with a purged bytecode cache, a green baseline asserted
+        # either side of it, and the anchor asserted unique — a filter that
+        # admits everything; the filter moved behind the judge; the budget not
+        # applied; the budget applied but never reported; a standing tension not
+        # recognised; an erased tension minted again; a mint born `persistent`;
+        # a raised judgement minted anyway; the priority reversed; the pass
+        # re-evaluating before it mints; the mint door admitting a second record
+        # for a tension the log holds; the mint view carrying the whole belief
+        # record; all-pairs; the loop set dropped; the subject set dropped; and
+        # the watermark ignored. Every one is red.
+        #
+        # **The margin is deliberately zero: 62 selected, 62 required.** Every
+        # case in this gate is the only one asserting its rule, which is the
+        # condition under which a zero margin is right — and it is why the CAP-7
+        # floor above was not inflated instead. It also means every case added
+        # here owes an edit to this number, which is the cost of a zero margin
+        # and is why `cap7_minting` is applied **per case** rather than as a
+        # module-wide `pytestmark`: `tests/test_turn_words.py` shows the other
+        # shape, where every case added to a file silently owes a workflow edit
+        # nobody remembers.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap7_minting -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-7 minting cases collected: $collected"
+          if [ "$collected" -lt 62 ]; then
+            echo "::error::the minting gate collected $collected cases; the comparison bound or its budget has stopped being asserted"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap7_minting
 
       - name: 'CAP-11: a correction removes the belief, and never on inference alone'
         # The gate for the capability that lets a main disagree with Half. The
