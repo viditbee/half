@@ -1635,9 +1635,15 @@ jobs:
         #   and that the shipped constants pass them;
         #   and that nothing in it logs, reads a clock, opens a store or writes
         #   a record — a claim Half wrote about somebody is as much AD-22's
-        #   subject as the mail it came from.
+        #   subject as the mail it came from;
+        #   that the per-run reading cap bounds the *writing* too, since a body
+        #   that was never read is never a candidate and never reaches a group;
+        #   and that **no body reaches disk through the record 15c added**,
+        #   chased as a sentinel through every byte the shipped run wrote —
+        #   receipts and belief log together, because a scan of the source store
+        #   alone is green for a build that puts the body in the belief.
         #
-        # **The margin is deliberately zero: 62 selected, 62 required.** Every
+        # **The margin is deliberately zero: 64 selected, 64 required.** Every
         # case in this gate is the only one asserting its rule, which is the
         # condition under which a zero margin is right, and it is why no
         # existing floor was inflated instead. It also means every case added
@@ -1676,7 +1682,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap3_particular -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-3 generated-claim cases collected: $collected"
-          if [ "$collected" -lt 62 ]; then
+          if [ "$collected" -lt 64 ]; then
             echo "::error::the CAP-3 generated-claim gate collected $collected cases; the claim's own support, the one generation per group, the scrubbed-text window or Half's own words has stopped being asserted"
             exit 1
           fi

@@ -2393,3 +2393,75 @@ def test_the_quotation_rule_is_the_context_builders_own_unit():
     # And the floor is a run rather than a pair, in that script as in Latin.
     assert quotes("क ख ग घ ङ", ["क ख ग घ च"])
     assert not quotes("क ख ङ", ["क ख ग घ च"])
+
+
+@pytest.mark.cap3_particular
+def test_a_run_past_its_reading_cap_writes_no_claim_from_what_it_did_not_read(
+        sources, caplog):
+    """Matrix: *over the cap*. **Bounded, and it says so.**
+
+    The per-run cap bounds *readings*, and a body that was never read is never
+    a candidate, so it never joins a group and never reaches a generation. That
+    makes the cap a bound on the writing as well as on the reading, and this
+    case is what says the two are joined rather than merely both true today.
+
+    The second bound is structural and is asserted beside it: a run can generate
+    at most once per label, so the number of generations a mailbox can buy is
+    ``len(DOINGS)`` however large it is.
+    """
+    reader, holder, _, writer = a_reader()
+    run = Run(budget=2)
+    with caplog.at_level(logging.INFO):
+        pull([mail(i, f"a booking in {i}", thread=f"t{i}") for i in range(6)],
+             reader, sources, run=run)
+    assert len(sources) == 6, "the receipts stopped as well"
+    assert holder.calls == 2, "the reading cap did not bind"
+    assert writer.calls == 1, "a body past the cap reached a generation"
+    assert reader.tally.over_cap == 4
+    assert "per-run reading cap" in caplog.text
+    assert reader.tally.generations <= len(DOINGS)
+
+
+@pytest.mark.cap3_particular
+def test_no_body_reaches_disk_from_a_run_that_wrote_a_generated_claim(
+        tmp_path):
+    """Matrix: *not persisted*, through the path 15c added (AD-13).
+
+    A generated claim **is** written to disk, which is new, and it is the one
+    thing on this path that could carry the mail's words there. So the sentinel
+    is chased through every byte the run wrote — the receipts and the belief log
+    together — after a claim is durably in the ledger.
+
+    Driven through the shipped composition rather than a fixture store, because
+    a case that scanned only the source store would be green for a build that
+    put the body in the belief record.
+    """
+    sentinel = "sandalwood-nineteen-quicksilver"
+    config = load({ROOT_ENV: str(tmp_path), MAINS_ENV: f"123:{MAIN}"})
+    wiring = build(config, token="123:fake")
+    try:
+        reader, _, _, writer = a_reader()
+        wiring = type(wiring)(
+            **{**{f: getattr(wiring, f) for f in wiring.__dataclass_fields__},
+               "revealed": reader})
+        asyncio.run(ingest_mail(
+            wiring, main_id=MAIN,
+            source=FakeMail([mail(0, f"a booking {sentinel}", thread="t1"),
+                             mail(1, f"an itinerary {sentinel}", thread="t2",
+                                  sender="b@y")]),
+        ))
+        with Store(tmp_path / MAIN, prefix=build_prefix) as store:
+            beliefs = store.state().beliefs
+    finally:
+        wiring.registry.close()
+    assert beliefs[f"r_{TRAVELS}"][CLAIM] == A_CLAIM, (
+        "no claim was written, so this proves nothing"
+    )
+    assert sentinel in writer.texts[0], "the writer never saw the bodies"
+    written = all_bytes(tmp_path)
+    assert sentinel.encode() not in written, (
+        "the body reached disk through the record 15c added"
+    )
+    assert A_CLAIM.encode() in written, (
+        "the anchor is dead: nothing this run wrote is in the bytes scanned"
+    )
