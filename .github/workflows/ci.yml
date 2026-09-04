@@ -1553,6 +1553,11 @@ jobs:
         #   with the attribution *not yet known* where the reply does not say
         #   which — never a local discard, which would lose the one correction a
         #   main is most likely to make on the first thing Half said to them;
+        #   that **what a denial means is never guessed** — `recognize`'s own
+        #   answer where the reply says which, *cause unknown* where it does
+        #   not, and an erasure clamped to an ordinary removal because
+        #   answering a demonstration is not the confirmation story 12 requires
+        #   before something is tombstoned;
         #   that **silence is neither**, kept apart from a denial in six shapes,
         #   because the two do opposite things;
         #   that **nothing clearing the gates says so plainly and composes no
@@ -1571,7 +1576,7 @@ jobs:
         #   a sentinel through every byte written under the main's tree and
         #   every captured log line.
         #
-        # **The margin is deliberately zero: 84 selected, 84 required.** Every
+        # **The margin is deliberately zero: 89 selected, 89 required.** Every
         # case is the only one asserting its rule, which is the condition under
         # which a zero margin is right — and it is why no existing floor was
         # inflated instead. It also means every case added here owes an edit to
@@ -1621,7 +1626,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap2 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-2 demonstration cases collected: $collected"
-          if [ "$collected" -lt 84 ]; then
+          if [ "$collected" -lt 89 ]; then
             echo "::error::the CAP-2 gate collected $collected cases; the notice before the source, the single offered claim, the ladder's door, story 12's door or the ninety seconds has stopped being asserted"
             exit 1
           fi

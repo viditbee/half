@@ -102,11 +102,9 @@ from half.derive.revealed import (
     BOUND_SECONDS as READ_BOUND,
     DOINGS,
     MIN_INDEPENDENT,
-    NOTHING_DOING,
     PER_RUN,
     REVEALED,
     Revealed,
-    Run,
 )
 from half.derive.claim import Derivers
 from half.errors import LadderError, OnboardError
@@ -115,7 +113,6 @@ from half.governance.ladder import Ceiling, License
 from half.ingest.port import Message
 from half.model.port import Decision, Usage
 from half.onboard import consent as consenting
-from half.onboard import flow
 from half.onboard.consent import (
     JOIN,
     LEAVES_THE_MACHINE,
@@ -126,7 +123,6 @@ from half.onboard.consent import (
 from half.onboard.flow import (
     BUDGET_SECONDS,
     COMPOSE_SECONDS,
-    PULL_SECONDS,
     Answer,
     Demonstration,
     Offer,
@@ -1010,6 +1006,38 @@ def test_every_reading_of_an_answer_is_story_twelves_own(reply, expected):
     assert reading(reply) is expected
 
 
+@pytest.mark.cap2
+@pytest.mark.parametrize(
+    "reply, meaning",
+    [
+        ("that was never true", Meaning.NEVER_TRUE),
+        ("not any more", Meaning.CHANGED),
+        ("thats wrong", Meaning.WRONG),
+        ("no", Meaning.WRONG),
+        ("delete that", Meaning.WRONG),
+    ],
+    ids=["half-was-wrong", "the-main-changed", "wrong-cause-unstated",
+         "a-bare-no", "an-erasure-is-clamped"],
+)
+def test_what_a_denial_means_is_never_guessed(reply, meaning):
+    """*Denied*, at the function that decides which correction it is.
+
+    Three of the five are ``recognize``'s own answer, unchanged. The bare *no*
+    is *wrong, cause unknown* — the main said the statement is wrong and said
+    nothing about whether Half was wrong or they have changed, and only they
+    know which; a default in either direction writes a falsehood into the one
+    ledger whose purpose is to be honest.
+
+    The fifth is the **clamp**: ``recognize`` reads *"delete that"* as an
+    erasure, and an erasure cannot be taken back, so story 12 requires one to be
+    confirmed before it is applied. Answering a demonstration is not that
+    confirmation. Asserted here as well as through the store, because this is
+    the function the rule lives in and the store case would pass if the clamp
+    moved somewhere a later caller could miss.
+    """
+    assert meaning_of(reply) is meaning
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # matrix: the wording — the second bounded exception to AD-18
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1746,21 +1774,29 @@ def test_the_flow_derives_nothing_and_admits_nothing_of_its_own():
     """
     source = (ROOT / "half" / "onboard" / "flow.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    forbidden = {"Claim", "Run", "admitted", "admission", "independent_groups",
-                 "Candidate" }
-    called: list[str] = []
+    #: Names that build a claim or decide whether one is admitted. ``Candidate``
+    #: is deliberately absent: the flow builds one, but a ``Candidate`` is a
+    #: *retrieval* value carrying a belief the fold already holds, not an
+    #: admission decision.
+    deciding = {"Claim", "Run", "admitted", "admission", "independent_groups",
+                "spend", "supports"}
+    reached: list[str] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id in forbidden - {"Candidate"}:
-                called.append(f"{node.lineno} {node.func.id}")
-        if isinstance(node, ast.Attribute) and node.attr in {
-            "admitted", "add", "spend", "supports"
-        } and node.attr != "add":
-            called.append(f"{node.lineno} .{node.attr}")
-    assert not called, f"the flow decides admission for itself: {called}"
+        name = None
+        if isinstance(node, ast.Call):
+            name = getattr(node.func, "id", None) or getattr(
+                node.func, "attr", None)
+        elif isinstance(node, ast.Attribute):
+            name = node.attr
+        if name in deciding:
+            reached.append(f"{node.lineno} {name}")
+    assert not reached, f"the flow decides admission for itself: {reached}"
     for name in ("half.derive.gates", "half.ingest.independence",
                  "half.ingest.pipeline"):
         assert f"from {name}" not in source, name
+    # Non-vacuity: the scan sees one of those names when it is there.
+    seeded = ast.parse("x = run.admitted()\n")
+    assert any(getattr(n, "attr", None) in deciding for n in ast.walk(seeded))
 
 
 @pytest.mark.cap2_structure
