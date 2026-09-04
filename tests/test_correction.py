@@ -2653,7 +2653,7 @@ def test_serve_hands_the_runtime_the_widening_build_made(tmp_path, monkeypatch):
 
     class Recording:
         def __init__(self, *, channel, registry, second=None, questions=None,
-                     corrections=None, voice=None):
+                     corrections=None, voice=None, derivers=None):
             captured["corrections"] = corrections
 
         async def run(self):

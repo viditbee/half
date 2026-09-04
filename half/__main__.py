@@ -42,6 +42,12 @@ from half.crisis.classifier import (
     PER_PASS_MICRO_USD,
     SecondOpinion,
 )
+from half.derive.claim import (
+    CLASSIFY_TIER as DERIVE_TIER,
+    PER_CALL_MICRO_USD as DERIVE_PER_CALL_MICRO_USD,
+    PER_PASS_MICRO_USD as DERIVE_PER_PASS_MICRO_USD,
+    Derivers,
+)
 from half.errors import HalfError, ModelError
 from half.model.anthropic import AnthropicProvider
 from half.model.anthropic_transport import SDKTransport
@@ -121,6 +127,17 @@ class Wiring:
     #: otherwise end with nothing anywhere saying so, which looks exactly like a
     #: week in which nobody's life pulled in two directions.
     judges: Judges
+    #: Who decides whether a message was worth keeping (CAP-5, story 15a).
+    #: Always constructed and possibly empty, and an empty one is a supported
+    #: deployment rather than a degraded one: every message is still recorded,
+    #: still read for the language sample and for responsiveness, and still
+    #: never a belief. What is lost is claims from the turn path.
+    #:
+    #: Held here rather than inside the runtime so that the counts have
+    #: somewhere to go in the shipped process — a week in which every admission
+    #: gate failed would otherwise end with nothing anywhere saying so, which
+    #: looks exactly like a week in which nobody said anything worth keeping.
+    derivers: Derivers
 
 
 def build(config: Config, token: str) -> Wiring:
@@ -229,7 +246,76 @@ def build(config: Config, token: str) -> Wiring:
                   second=second_opinion(config, secrets),
                   questions=QuestionEngine(ledger=registry),
                   corrections=widening(config, secrets), voice=voice,
-                  judges=bench)
+                  judges=bench, derivers=derivers(config, secrets))
+
+
+def derivers(config: Config, secrets: FileSecretStore) -> Derivers:
+    """The claim derivers, for the mains a deployment has equipped (CAP-5, 15a).
+
+    Built beside ``judges``, ``second_opinion``, ``widening`` and ``voices`` and
+    on exactly their terms — a per-main narrow holder, its own budget, every
+    failure leaving that main unequipped and the process running — with two
+    differences worth stating.
+
+    **The narrow holder is a ``Classifier``, and here that is the story's own
+    guarantee rather than hygiene.** ``classifier()`` hands back an object with
+    one method that returns a label from a closed set. An object that could
+    *generate* would be a path from a main's message to a sentence Half composed
+    about them and wrote into their ledger for ever, arriving through the one
+    seam that is supposed to answer yes or no. ``Derivers`` refuses anything
+    wider, so this is checked rather than intended.
+
+    **The tier is pinned for everybody**, as it is on the crisis, correction and
+    judgement paths and unlike the morning voice's. This runs on every inbound
+    message of every main, so it is the second recurring spend in the product
+    after the nightly pass, and SPEC's constraint is that the recurring spend
+    runs on a cheaper tier than conversation *because the free tier depends on
+    that gap*. There is also nothing here for a better tier to buy on a main's
+    behalf: four gates, four labels from four closed sets, and nobody reads any
+    of them.
+
+    **Its own provider, and therefore its own ledger.** A provider's spend is
+    shared by everything it hands out, so reusing the crisis one would let a
+    conversation's worth of derivations draw down the budget the crisis path
+    runs on.
+
+    **This is the fifth copy of this loop in this file**, and it is recorded
+    rather than hidden for the reason ``judges`` records the fourth. The shape
+    ``voices`` named — ``equipped(config, secrets, *, tier_for, budget, take,
+    unequipped)`` — is still Ask-First, and still for the reason it was: folding
+    ``second_opinion`` into it is a behaviour change in the crisis path, and this
+    story's subject is the admission gate rather than the composition root.
+    """
+    holders: dict[str, Classifier] = {}
+    for main_id in config.mains.values():
+        try:
+            provider = AnthropicProvider(
+                SDKTransport.from_secrets(secrets, main_id),
+                tiers=Tiers.parse({main_id: DERIVE_TIER}),
+                budget=Budget(
+                    per_call_micro_usd=DERIVE_PER_CALL_MICRO_USD,
+                    per_pass_micro_usd=DERIVE_PER_PASS_MICRO_USD,
+                ),
+            )
+            holders[main_id] = provider.classifier()
+        except Exception as exc:  # noqa: BLE001 - a boot must not die here
+            # No key, an unreadable credential file, an unknown tier, a missing
+            # SDK. Each is a deployment that has not equipped this main to have
+            # claims derived from what they write, and none is a reason to hold
+            # up a Half that still answers everything they say. The class only —
+            # a provider's own message can quote what it was sent (AD-22).
+            logger.warning(
+                "main=%s has no usable model (%s); nothing is derived from "
+                "their messages", main_id, type(exc).__name__,
+            )
+    try:
+        return Derivers(holders)
+    except Exception as exc:  # noqa: BLE001 - nor here
+        logger.error(
+            "the claim deriver could not be assembled (%s); no claim is derived "
+            "for any main", type(exc).__name__,
+        )
+        return Derivers()
 
 
 def judges(config: Config, secrets: FileSecretStore) -> Judges:
@@ -559,6 +645,14 @@ async def serve(config: Config, token: str) -> None:
                     # with the claim alone: honest, and never the internal
                     # serialization this story took off the wire.
                     voice=wiring.voice,
+                    # **A message stops being a belief here** (CAP-5, story
+                    # 15a). Without it the runtime derives nothing: every
+                    # message is still recorded as evidence and still read by
+                    # the three subsystems that read it, and no claim is ever
+                    # written from the turn path. Wired **by value** for the
+                    # reason everything else here is — a surface reachable only
+                    # from a test is a surface nobody has run.
+                    derivers=wiring.derivers,
                 ).run()
             finally:
                 # The inbound loop is the process's life; the ticker is not
@@ -590,6 +684,11 @@ async def serve(config: Config, token: str) -> None:
         # so, which looks exactly like a week in which nobody's life pulled in
         # two directions.
         wiring.judges.flush()
+        # And what the deriver did — counts only (AD-22). A process that ran for
+        # a week deriving nothing would otherwise end with nothing anywhere
+        # saying so, which looks exactly like a week in which nobody wrote
+        # anything worth keeping.
+        wiring.derivers.flush()
         wiring.registry.close()
 
 

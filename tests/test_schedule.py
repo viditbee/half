@@ -2008,7 +2008,7 @@ def test_serve_actually_fires_the_tick_beside_the_inbound_loop(monkeypatch, tmp_
 
     class FakeRuntime:
         def __init__(self, *, channel, registry, second=None, questions=None,
-                     corrections=None, voice=None):
+                     corrections=None, voice=None, derivers=None):
             self.registry = registry
             self.voice = voice
             self.second = second

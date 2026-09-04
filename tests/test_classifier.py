@@ -1718,7 +1718,7 @@ def test_serve_hands_the_runtime_the_classifier_build_made(tmp_path, monkeypatch
 
     class Recording:
         def __init__(self, *, channel, registry, second=None, questions=None,
-                     corrections=None, voice=None):
+                     corrections=None, voice=None, derivers=None):
             captured["second"] = second
             # Story 13b: and the composer, for the same reason — the turn is
             # the only surface a main writes to, and it speaks through this.
