@@ -51,14 +51,20 @@ address the *model*, in the model's working language, and the claim addresses
 the *ledger*, in the language the mail was written in — the same split
 ``half.voice.compose`` makes between an instruction and a message.
 
-**Nothing here reads a clock, opens a store, writes a record or logs a word of
-anything anybody wrote** (AD-22, AD-30). Every value logged from this module is
-a ``main_id``, a count, a closed constant or an exception's class name.
+**Nothing here reads a clock, opens a store or writes a record** (AD-30).
+
+**And nothing here logs, which is deliberate and is ``half.model.consult``'s
+argument.** Each caller proves that no log line it writes can carry content by
+scanning *the arguments of the logging calls in its own file*; a report routed
+through a shared module would move those calls out from under the scan that is
+the whole guarantee. This module's outcomes are values — a claim or a
+``Refusal`` — and ``half.derive.revealed`` writes the line, in its own words,
+where its own guard can see it. A claim Half wrote about somebody is as much
+AD-22's subject as the mail it came from.
 """
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Iterable, Sequence
 from enum import StrEnum
 from typing import Final
@@ -68,10 +74,6 @@ from half.errors import DeriveError
 from half.ingest.scrub import scrub
 from half.model import consult
 from half.model.port import Generate, Generator, Prompt, Role, Turn
-
-#: Structured, and content-free. Never a body, never a generated claim, never a
-#: subject line, never a sender (AD-22).
-logger = logging.getLogger(__name__)
 
 
 # ── the numbers ──────────────────────────────────────────────────────────────

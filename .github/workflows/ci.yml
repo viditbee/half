@@ -1638,9 +1638,15 @@ jobs:
         #   build whose composition root passes no writers at all;
         #   that every import-time guard in that module has a **bypass case**
         #   and that the shipped constants pass them;
-        #   and that nothing in it logs, reads a clock, opens a store or writes
-        #   a record — a claim Half wrote about somebody is as much AD-22's
-        #   subject as the mail it came from;
+        #   that it **does not log at all** — `half.model.consult`'s argument,
+        #   applied to the one module that holds a generated sentence: each
+        #   caller proves no line it writes can carry content by scanning the
+        #   arguments of the logging calls in its own file, and a report routed
+        #   through a shared module moves those calls out from under the scan
+        #   that is the guarantee. Asserted as an absence with a *live anchor*,
+        #   since a case asserting only the absence is green for a build where
+        #   nothing anywhere reports anything;
+        #   and that it reads no clock, opens no store and writes no record;
         #   that the per-run reading cap bounds the *writing* too, since a body
         #   that was never read is never a candidate and never reaches a group;
         #   and that **no body reaches disk through the record 15c added**,

@@ -2352,32 +2352,40 @@ def test_the_writers_import_time_guards_pass_on_the_shipped_constants():
 
 
 @pytest.mark.cap3_particular
-def test_no_logging_call_in_the_writer_can_carry_content():
-    """Scanned over the **arguments of every logging call**, which is the form
-    this guarantee takes everywhere in this tree: a generated sentence in a
-    variable is invisible to a grep, and an invisible log call is how content
-    gets logged.
+def test_the_writer_does_not_log_at_all_and_its_caller_does():
+    """``half.model.consult``'s argument, applied to the one module that holds a
+    generated sentence (AD-22).
 
-    A claim Half wrote about somebody is as much AD-22's subject as the mail it
-    came from — arguably more, since it is the thing that would read as a fact.
+    Each caller in this tree proves that no log line it writes can carry
+    content by scanning *the arguments of the logging calls in its own file*. A
+    report routed through a shared module would move those calls out from under
+    the scan that is the whole guarantee. So this module holds no logger and
+    writes no line: its outcomes are values, and ``half.derive.revealed`` writes
+    the line where its own guard — the case above — can see it.
+
+    Asserted as an **absence with a live anchor**: the module has no logging
+    import and no logging call, *and* the caller that does the reporting has
+    some. A case asserting only the first half is green for a build where
+    nothing anywhere reports anything.
     """
-    tree = ast.parse((ROOT / "half/derive/particular.py").read_text("utf-8"))
-    calls = [node for node in ast.walk(tree)
-             if isinstance(node, ast.Call)
-             and isinstance(node.func, ast.Attribute)
-             and isinstance(node.func.value, ast.Name)
-             and node.func.value.id == "logger"]
-    for node in calls:
-        for argument in node.args[1:]:
-            names = {n.id for n in ast.walk(argument) if isinstance(n, ast.Name)}
-            assert names <= {"main_id"}, ast.unparse(argument)
-    # And the module holds no logging call that takes a claim at all, which is
-    # the honest reading of a scan that finds none: it is stated here so that a
-    # future call arriving without an argument check is a change to this case.
-    assert len(calls) == 0, (
-        "half/derive/particular.py now logs; every argument needs the scan "
-        "above, and a generated claim may never be one of them"
+    source = (ROOT / "half/derive/particular.py").read_text("utf-8")
+    tree = ast.parse(source)
+    assert "import logging" not in source
+    assert not [node for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "logger"], (
+        "half/derive/particular.py now logs; a generated claim would then have "
+        "a route to a log line that no scan in this file is watching"
     )
+    caller = ast.parse((ROOT / "half/derive/revealed.py").read_text("utf-8"))
+    reporting = [node for node in ast.walk(caller)
+                 if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute)
+                 and isinstance(node.func.value, ast.Name)
+                 and node.func.value.id == "logger"]
+    assert reporting, "the anchor is dead: nothing reports anything anywhere"
 
 
 @pytest.mark.cap3_particular
