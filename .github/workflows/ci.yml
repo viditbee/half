@@ -103,6 +103,37 @@ jobs:
         #
         # The whole matrix file runs after the floor, so a red build names the
         # row that broke rather than pointing at the suite.
+        #
+        # **Nineteen mutations were run against these before this step was
+        # written**, each with a purged bytecode cache on both sides, a green
+        # baseline asserted either side of it, and the anchor asserted to exist
+        # before the edit was accepted. Eighteen are red. The ones worth naming:
+        #
+        #   the credential added to the query string — one; the fault raised
+        #   back inside the `except`, which reattaches the provider's body as a
+        #   context — one; the provider's own message interpolated into the
+        #   fault — one; the classes collapsed to a bare `ChannelError`, so the
+        #   boundary carries a name that says nothing — one;
+        #   a permanent 4xx folded into the transient class and retried for ever
+        #   — one; a rate limit made permanent — one; the backoff ceiling
+        #   removed — one; the wall-clock bound removed, leaving only the socket
+        #   bound — one;
+        #   an unparseable body becoming a silent empty page — two shapes;
+        #   `from_secrets` no longer refusing a main with no token — one; the
+        #   composition root building a transport from a literal instead of the
+        #   store — one; a logger arriving in the transport — one; an HTTP
+        #   client arriving one module up in `pipeline.py` — one;
+        #   the page token never carried forward — one; the cursor's query
+        #   dropped — one; a message id reaching the URL path unquoted — one;
+        #   and the command reporting success for a refusal — one.
+        #
+        # **One came back green and it was a defect in the case rather than in
+        # the code.** The order case scripted three message responses in a
+        # *queue*, so a build that reversed every page still handed back the
+        # same three in the same order — the ids came from the fake's position,
+        # not from what was asked for. It answers by route now, and the same
+        # mutation is red. Recorded here because a probe that finds nothing is
+        # indistinguishable from a rule nobody asserted.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m ad11 -q --collect-only \
@@ -3254,17 +3285,24 @@ jobs:
         # syntax tree rather than of every future format string; and that
         # constructing one opens nothing.
         #
-        # **20 selected, 15 required — the floor rises by exactly the four
-        # cases added, so the margin is the one this step already had.** The
-        # older `14 selected` above counted `tests/test_model_offline.py`
-        # alone; `tests/test_surface.py` had contributed two more since, which
-        # is why the number below moves by four and not by six.
+        # **20 selected, 20 required, and the margin is now zero.** It was 11,
+        # and the `14 selected` above counted `tests/test_model_offline.py`
+        # alone — `tests/test_surface.py` had contributed two more since, so
+        # the real slack was five. Raising the floor by the four cases added
+        # would have left those four *inside* that slack and floored nothing,
+        # which is the point of a floor. Every case selected here is the only
+        # one asserting its rule — five bypass spellings, one per way of
+        # reaching out; the child-process case; the one closing the recursion
+        # the first version of that file opened; the SDK-free case; the two in
+        # `tests/test_surface.py`; and story 16's four — which is the condition
+        # under which a zero margin is right. It also means every case added or
+        # merged here owes an edit to this number.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m offline -q --collect-only \
             | grep -c '::' || true)
           echo "offline cases collected: $collected"
-          if [ "$collected" -lt 15 ]; then
+          if [ "$collected" -lt 20 ]; then
             echo "::error::the offline gate collected $collected cases; the suite may now reach the network"
             exit 1
           fi

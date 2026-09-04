@@ -248,7 +248,38 @@ def test_a_page_of_messages_arrives_as_the_source_expects(http):
     assert got[0].sender == "a@x" and got[0].t == "2025-08-14T08:00:00Z"
 
 
-def test_the_transport_hands_over_the_provider_s_own_order_untouched(http):
+class Echoing:
+    """A fake that answers **by route** rather than by position.
+
+    Written because the first version of the order case below could not fail.
+    It scripted three message responses in a queue, so whatever order the
+    transport asked in, the third response was still the third one handed back
+    — and a build that reversed every page produced an identical list of ids.
+    The reversal probe came back green against it. This one answers the message
+    it was actually asked for, which is the only shape in which *the order is
+    the provider's* is a statement about the code.
+    """
+
+    def __init__(self, *ids: str) -> None:
+        self.ids = ids
+        self.urls: list[str] = []
+
+    def __call__(self, request: object, *, timeout: float) -> Response:
+        self.urls.append(request.full_url)
+        if "/messages?" in request.full_url:
+            return page(*self.ids)
+        return message(request.full_url.rsplit("/", 1)[-1].split("?")[0])
+
+    @property
+    def asked_for(self) -> list[str]:
+        return [
+            u.rsplit("/", 1)[-1].split("?")[0]
+            for u in self.urls
+            if "/messages?" not in u
+        ]
+
+
+def test_the_transport_hands_over_the_provider_s_own_order_untouched(monkeypatch):
     """The order is Gmail's and this module does not touch it.
 
     **The story's matrix asks for oldest-first and the transport cannot give
@@ -259,11 +290,10 @@ def test_the_transport_hands_over_the_provider_s_own_order_untouched(http):
     contract without being it, because page one still holds the newest block —
     and this case is what goes red if somebody writes that.
     """
-    http(page("newest", "middle", "oldest"),
-         message("newest", at="1755158400000"),
-         message("middle", at="1755072000000"),
-         message("oldest", at="1754985600000"))
+    fake = Echoing("newest", "middle", "oldest")
+    monkeypatch.setattr(transport_module, "_open", fake)
     got = walked(GmailSource(HttpTransport(TOKEN)))
+    assert fake.asked_for == ["newest", "middle", "oldest"]
     assert [m.external_id for m in got] == ["newest", "middle", "oldest"]
 
 
@@ -282,6 +312,21 @@ def test_the_cursor_reaches_the_provider_as_the_query_the_rules_built(http):
     fake = http(page())
     walked(GmailSource(HttpTransport(TOKEN)), since="2026-03-04T05:06:07Z")
     assert "q=after%3A2026%2F03%2F04" in fake.urls[0]
+
+
+def test_a_message_id_cannot_address_something_other_than_the_message():
+    """Provider data reaching a URL path, quoted.
+
+    A message id is whatever Gmail last put in a ``messages[].id``, and it
+    arrives here as a path segment. An unquoted ``/`` or ``?`` in one would
+    address a different route entirely — a request nobody in this tree asked
+    for, made with a live credential attached.
+    """
+    from half.ingest.gmail_transport import _message_url
+
+    built = _message_url("https://api", "../../drafts?deleteAll")
+    assert built == "https://api/messages/..%2F..%2Fdrafts%3FdeleteAll?format=full"
+    assert built.count("?") == 1
 
 
 def test_the_page_ceiling_is_the_one_the_rules_already_hold():
