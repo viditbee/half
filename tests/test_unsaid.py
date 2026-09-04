@@ -288,9 +288,26 @@ def test_the_queue_has_no_branch_for_quarantine_at_all():
     its own idea of what counts, which is how a quarantined contact became a
     crisis door once already; and it would be a guard the rule above it already
     forbids the case of, which is a guard that cannot fire.
+
+    **Two spellings, because the first one alone was weaker than this
+    docstring.** A scan over bound names catches ``from ... import quarantined``
+    and ``ladder.quarantined(b)`` and misses ``belief.get("quarantined")``,
+    which is the shorter way to write the same branch — verified by mutation,
+    where the string-literal form walked past the name scan and was caught only
+    by the behavioural sweep above. So string constants are read too, with
+    docstrings excluded: this module's prose says the word ``quarantined``
+    several times, on purpose, and a scan that could not tell an explanation
+    from a branch would be red for the explanation.
     """
-    source = (ROOT / "half/governance/unsaid.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
+    tree = ast.parse(
+        (ROOT / "half/governance/unsaid.py").read_text(encoding="utf-8")
+    )
+    docstrings = {
+        ast.get_docstring(node, clean=False)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                             ast.AsyncFunctionDef))
+    }
     named = {
         node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
     } | {
@@ -299,8 +316,16 @@ def test_the_queue_has_no_branch_for_quarantine_at_all():
         alias.name
         for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
         for alias in node.names
+    } | {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        and node.value not in docstrings
     }
-    assert not named & {"quarantined", "QUARANTINED", "pinned", "QuarantineCandidate"}
+    assert not named & {"quarantined", "QUARANTINED", "pinned",
+                        "QuarantineCandidate"}, sorted(
+        named & {"quarantined", "QUARANTINED", "pinned", "QuarantineCandidate"}
+    )
 
 
 # ═════════════════════════════════════════════════════════════════════════════
