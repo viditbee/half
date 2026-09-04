@@ -574,7 +574,7 @@ UNREACHABLE: Final[tuple[str, ...]] = (
 #: rather than dropped from it — so the exemption is one line somebody has to
 #: read, and everything else in ``UNREACHABLE`` still stands over that package.
 #:
-#: Two entries, and the reason in both cases is the difference between the
+#: Three entries, and the reason in every case is the difference between the
 #: questions the packages answer. ``half/trust`` and ``half/questions`` decide
 #: whether to *ask*, and a model there would be a question composed by a model —
 #: the thing their Never lists forbid. ``half/correction``'s recall instrument
@@ -583,7 +583,12 @@ UNREACHABLE: Final[tuple[str, ...]] = (
 #: is a model by definition (story 13a): its whole subject is composing the
 #: morning's sentence through the port, and the alternative — a written template
 #: shipped worldwide — is the thing ``half/context/channels.py`` records the
-#: objection to.
+#: objection to. ``half/consolidate``'s judgement is a model by the same
+#: argument (CAP-7, story 9e): *whether two entries disagree where neither is
+#: wrong* is a semantic call in two arbitrary languages, and a phrase table
+#: cannot be the whole of that either. Story 9d shipped the seam without an
+#: implementation and this rule read *"no model anywhere in the package"*; 9e
+#: supplies one, so it reads what the other two read instead.
 #:
 #: Each exemption is paid for with a stricter rule of its own.
 #: ``tests/test_correction.py``: exactly one module in that package may name the
@@ -594,6 +599,12 @@ UNREACHABLE: Final[tuple[str, ...]] = (
 #: *generator* — refused at construction unless ``generate`` is the only public
 #: method on it — and the channel, the store and the network stay closed to it
 #: here, which is the half that would otherwise go quiet.
+#: ``tests/test_minting.py``: exactly one module in that package may name the
+#: model, what it holds is the port's narrow *classifier*, and the rest of
+#: ``UNREACHABLE`` still stands over the whole package — as do ``CLOSED`` and
+#: the transitive no-model sweep in ``tests/test_pass.py``, which the nightly
+#: pass itself is still held to, because the judgement is reached through two
+#: structural protocols and never through an import.
 #:
 #: **What the model surface rule became, and why** (story 14). Both lifts used
 #: to be checked by a name: every reached target had to start with
@@ -606,10 +617,12 @@ UNREACHABLE: Final[tuple[str, ...]] = (
 #: under ``half.model`` but the port.** See ``past_the_port``.
 #:
 #: **The pin is honest, and that is checked.** Every entry is a deliberate
-#: decision with a reason written beside it; ``tests/test_correction.py`` and
-#: ``tests/test_voice.py`` each assert the exact contents of this mapping, so a
-#: third package cannot acquire the lift by being added to a list.
+#: decision with a reason written beside it; ``tests/test_correction.py``,
+#: ``tests/test_voice.py`` and ``tests/test_minting.py`` each assert the exact
+#: contents of this mapping, so a fourth package cannot acquire the lift by
+#: being added to a list — it takes an edit in every file that pins the table.
 LIFTED: Final[dict[str, tuple[str, ...]]] = {
+    "half/consolidate": ("half.model",),
     "half/correction": ("half.model",),
     "half/voice": ("half.model",),
 }

@@ -39,6 +39,7 @@ from half.actor.registry import ActorRegistry
 from half.civil import instant
 from half.consolidate import mint as minting
 from half.consolidate.pass_ import (
+    Bench,
     Ledger,
     PassResult,
     TensionPass,
@@ -765,7 +766,14 @@ def test_the_scheduler_holds_the_pass_this_wiring_built(tmp_path):
         consolidate = work.consolidate
         assert isinstance(consolidate, TensionPass)
         assert consolidate.ledger is wiring.registry
-        assert consolidate == TensionPass(ledger=wiring.registry)
+        # Story 9e: the pass also holds *this* wiring's bench of judges,
+        # compared by value for the reason everything else here is — a pass
+        # wired with ``bench=None`` mints nothing for anybody, which is
+        # exactly the state story 9d shipped in and which a keyword search of
+        # the source cannot tell apart from a working one.
+        assert consolidate == TensionPass(
+            ledger=wiring.registry, bench=wiring.judges
+        )
     finally:
         wiring.registry.close()
 
@@ -902,12 +910,18 @@ def test_the_pass_reads_the_log_and_never_writes_one_by_itself(
 
     source = inspect.getsource(TensionPass)
     assert "Store(" not in source
-    # Story 9d adds the judgement seam and nothing else. Pinned as an equality
-    # rather than a superset, because the field that would arrive next is a
-    # store, a clock or a provider — each of which is a second writer, a second
-    # clock reader or a model on the nightly path.
-    assert set(TensionPass.__dataclass_fields__) == {"ledger", "judge"}
+    # Story 9d adds the judgement seam and story 9e adds where one main's judge
+    # comes from, and nothing else. Pinned as an equality rather than a
+    # superset, because the field that would arrive next is a store, a clock or
+    # a provider — each of which is a second writer, a second clock reader or a
+    # model on the nightly path. Both seams are **structural protocols**, which
+    # is why ``test_the_pass_reaches_no_model_and_no_network`` above is still
+    # true with a real judge shipped: this module names ``Bench``, not the
+    # bench.
+    assert set(TensionPass.__dataclass_fields__) == {"ledger", "judge", "bench"}
     assert TensionPass.__dataclass_fields__["judge"].default is None
+    assert TensionPass.__dataclass_fields__["bench"].default is None
+    assert set(dir(Bench)) >= {"for_main"}
     assert set(dir(Ledger)) >= {
         "tension_view", "note_transition", "mint_view", "note_mint",
     }

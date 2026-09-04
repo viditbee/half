@@ -23,6 +23,11 @@ from half.actor.runtime import Runtime
 from half.channel.telegram import TelegramChannel
 from half.channel.telegram_transport import PTBTransport
 from half.config import TELEGRAM_TOKEN_ENV, Config, load
+from half.consolidate.judge import (
+    PER_CALL_MICRO_USD as JUDGE_PER_CALL_MICRO_USD,
+    PER_PASS_MICRO_USD as JUDGE_PER_PASS_MICRO_USD,
+    Judges,
+)
 from half.consolidate.pass_ import TensionPass
 from half.correction.candidate import (
     CLASSIFY_TIER as CORRECTION_TIER,
@@ -104,6 +109,17 @@ class Wiring:
     #: version of the same state (AD-27), and a template is the one fallback
     #: this product cannot ship worldwide.
     voice: Voice
+    #: Who decides whether two entries disagree where neither of them is wrong
+    #: (CAP-7, story 9e). Always constructed and possibly empty, and an empty
+    #: one is exactly the state story 9d shipped: the comparison bound, the
+    #: couple ceiling, the cheap filter and the per-main budget run on every
+    #: pass, nobody is consulted, and no tension is minted.
+    #:
+    #: Held here rather than inside the pass so that the counts have somewhere
+    #: to go in the shipped process — a week of judgements that all failed would
+    #: otherwise end with nothing anywhere saying so, which looks exactly like a
+    #: week in which nobody's life pulled in two directions.
+    judges: Judges
 
 
 def build(config: Config, token: str) -> Wiring:
@@ -175,12 +191,21 @@ def build(config: Config, token: str) -> Wiring:
     # by identity rather than by finding a keyword in the source, which is how
     # story 6d's identical claim passed with the value set to ``None``.
     voice = voices(config, secrets)
+    # Who decides whether two entries disagree (story 9e). Built before the
+    # scheduler because the pass holds it, and wired **by value** for the reason
+    # the composer is: *"a tension is minted in the shipped product"* has to be
+    # assertable by identity rather than by finding a keyword in the source.
+    #
+    # **A bench rather than a judge**, because ``Disagreement.disagree`` carries
+    # no ``main_id`` and the key, the provider and the tier are all per main
+    # (AD-11, AD-20). ``TensionPass`` asks it for one main's judge once per pass.
+    bench = judges(config, secrets)
     scheduler = Scheduler(
         registry=registry,
         mains=tuple(config.mains.values()),
         root=config.root,
         work=MorningPass(
-            consolidate=TensionPass(ledger=registry),
+            consolidate=TensionPass(ledger=registry, bench=bench),
             # **The morning surface does not ask** (CAP-4, story 11). It is
             # given no question engine and has no field for one: a question is
             # attached to a conversation that already touches its topic, and a
@@ -202,7 +227,87 @@ def build(config: Config, token: str) -> Wiring:
                   sources=sources, scheduler=scheduler, mornings=mornings,
                   second=second_opinion(config, secrets),
                   questions=QuestionEngine(ledger=registry),
-                  corrections=widening(config, secrets), voice=voice)
+                  corrections=widening(config, secrets), voice=voice,
+                  judges=bench)
+
+
+def judges(config: Config, secrets: FileSecretStore) -> Judges:
+    """The disagreement judges, for the mains a deployment has equipped (9e).
+
+    Built beside ``second_opinion``, ``widening`` and ``voices`` and on exactly
+    their terms — a per-main narrow holder, its own budget, every failure
+    leaving that main unequipped and the process running — with three
+    differences worth stating.
+
+    **The narrow holder is a ``Classifier``**, the object with no method that
+    returns text. Nothing on this path may author a word: a tension is a link
+    between two entries, and a sentence written about it would be one no
+    correction to either entry could ever take back. ``Judges`` refuses anything
+    wider, so this is checked rather than intended.
+
+    **The tier is the main's own** (AD-20), where crisis and correction pin one
+    tier for everybody. Those two are detection quality, which CAP-12 forbids
+    gating on payment and which is the same question for every main; this is a
+    nightly cost that a deployment chose per main when it chose their tier.
+    **A main with no tier is skipped rather than defaulted**, which is AD-20's
+    own rule and has a consequence worth being explicit about: a deployment that
+    sets ``HALF_MAINS`` and not ``HALF_MODEL_TIERS`` mints no tensions, and
+    therefore surfaces nothing. A silent fallback tier is either a bill nobody
+    authorised or a quality regression nobody sees.
+
+    **Its own provider, and therefore its own ledger.** A provider's spend is
+    shared by everything it hands out, so reusing the crisis one would let a
+    night of judgements draw down the budget the crisis path runs on.
+
+    **This is the fourth copy of this loop in this file, and it is recorded
+    rather than hidden.** ``voices`` above already names the shape —
+    ``equipped(config, secrets, *, tier_for, budget, take, unequipped)`` — and
+    deferred it on the ground that it belonged beside the consultation
+    extraction rather than in front of it. Story 14 did the extraction, so that
+    reason has expired and the remaining one is that the loop's fourth member
+    arrived in a story whose subject is the judgement, not the composition root,
+    and that folding ``second_opinion`` into a shared helper is a behaviour
+    change in the crisis path. It stays Ask-First and it now has four callers
+    rather than three.
+    """
+    holders: dict[str, Classifier] = {}
+    for main_id in config.mains.values():
+        tier = config.tier_for(main_id)
+        if tier is None:
+            logger.warning(
+                "main=%s has no model tier configured; no disagreement is "
+                "judged for them and no tension is minted. There is no default "
+                "tier by design (AD-20)", main_id,
+            )
+            continue
+        try:
+            provider = AnthropicProvider(
+                SDKTransport.from_secrets(secrets, main_id),
+                tiers=Tiers.parse({main_id: tier}),
+                budget=Budget(
+                    per_call_micro_usd=JUDGE_PER_CALL_MICRO_USD,
+                    per_pass_micro_usd=JUDGE_PER_PASS_MICRO_USD,
+                ),
+            )
+            holders[main_id] = provider.classifier()
+        except Exception as exc:  # noqa: BLE001 - a boot must not die here
+            # No key, an unreadable credential file, an unknown tier, a missing
+            # SDK. Each is a deployment that has not equipped this main for a
+            # nightly judgement, and none is a reason to hold up a Half that
+            # still answers everything they say. The class only — a provider's
+            # own message can quote what it was sent (AD-22).
+            logger.warning(
+                "main=%s has no usable model (%s); nothing is minted for them",
+                main_id, type(exc).__name__,
+            )
+    try:
+        return Judges(holders)
+    except Exception as exc:  # noqa: BLE001 - nor here
+        logger.error(
+            "the disagreement judge could not be assembled (%s); no tension is "
+            "minted for any main", type(exc).__name__,
+        )
+        return Judges()
 
 
 def voices(config: Config, secrets: FileSecretStore) -> Voice:
@@ -479,6 +584,12 @@ async def serve(config: Config, token: str) -> None:
         # with nothing anywhere saying so, which looks exactly like a week in
         # which nobody had anything worth hearing.
         wiring.voice.flush()
+        # And what the disagreement judge did — counts only (AD-22). A process
+        # that ran for a week judging nothing, or judging everything and being
+        # refused every time, would otherwise end with nothing anywhere saying
+        # so, which looks exactly like a week in which nobody's life pulled in
+        # two directions.
+        wiring.judges.flush()
         wiring.registry.close()
 
 

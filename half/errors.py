@@ -320,6 +320,25 @@ class VoiceError(HalfError):
     """
 
 
+class JudgeError(HalfError):
+    """The disagreement judge was wired in a way that removes a guarantee.
+
+    A build or operator mistake, never an answer about a couple. Every way one
+    judgement can fail to be made — no model for that main, a provider past its
+    bound, over its cap, unreachable, unreadable or raising, a breaker standing
+    that main down — comes back as ``None``, *cannot say*, because all of them
+    mean the same thing to the pass and none of them is an error: nothing is
+    minted from that couple and the night continues (CAP-7).
+
+    What raises is the other thing entirely: a holder that can do more than
+    classify, a bound that is not a bound, a label set that mints a
+    contradiction, a per-main judgement budget that cannot fit inside the
+    scheduler's own timeout. Each of those quietly removes a guarantee this
+    module exists to keep, and a value nobody has to check is exactly how one
+    of them ships.
+    """
+
+
 class ModelError(HalfError):
     """A fault in the model port (AD-19).
 

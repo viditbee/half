@@ -1240,6 +1240,7 @@ def test_the_lift_this_package_is_given_is_pinned_and_paid_for():
     from tests.test_unasked import GUARDED
 
     assert LIFTED == {
+        "half/consolidate": ("half.model",),
         "half/correction": ("half.model",),
         "half/voice": ("half.model",),
     }, LIFTED

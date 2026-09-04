@@ -9,9 +9,9 @@ already recorded.
 **Mint first, then re-evaluate**, so a tension minted tonight is evaluated
 tonight rather than waiting a day for its first state. The whole of the minting
 lives in ``half.consolidate.mint`` and the whole of the judgement lives behind
-``half.consolidate.port``, which this build wires to nothing: what this module
-adds is the ordering and the isolation, and a minting failure never costs the
-re-evaluation.
+``half.consolidate.port``, whose implementation this module never names: what
+this module adds is the ordering and the isolation, and a minting failure never
+costs the re-evaluation.
 
 **Idempotent, and pure at its core.** The deciding is
 ``half.tensions.ledger.plan`` — a pure function of the tension table, the
@@ -24,12 +24,14 @@ neither of them decides anything.
 **It costs nothing to *decide*, and it is not free to *write*.** No model call,
 no network, no batch submission — every answer is arithmetic over the log, which
 is why ``tests/test_pass.py`` asserts the module reaches no model port at all
-rather than trusting that it does not. That stays true through story 9d: the
-disagreement judgement is a **port with no implementation**, wired to ``None``
-in the shipped composition, so the minting half exercises its bound, its filter
-and its budget on every pass and consults nobody. When 9e supplies a judge, the
-only thing that can cost anything is ``JUDGEMENTS`` consultations per main per
-night, decided before the first one is bought. The arithmetic runs behind
+rather than trusting that it does not. **That stays true now that story 9e has
+supplied a judge**, and the two protocols above are how: this module names a
+``Disagreement`` and a ``Bench``, both structural, and the implementation of
+either is somebody else's import. What one costs is bounded before the first
+call is made — ``JUDGEMENTS`` judgements per main per night, decided by
+``mint.slate`` — and a deployment that has equipped nobody consults nobody while
+the bound, the cheap filter and the budget run on every pass regardless. The
+arithmetic runs behind
 ``asyncio.to_thread``, because ``half.schedule.tick``'s own notes say a pass
 doing real CPU work stalls the loop it shares with the inbound path — and
 because ``asyncio.wait_for`` cannot cancel a coroutine that is not yielding, so
@@ -97,6 +99,32 @@ from half.tensions import ledger as tension_ledger
 from half.tensions.states import STATE
 
 logger = logging.getLogger(__name__)
+
+
+class Bench(Protocol):
+    """Where one main's judge comes from, when a deployment has one (story 9e).
+
+    **A second seam rather than a widening of the first**, and the reason is a
+    signature that cannot carry what a provider needs.
+    ``half.consolidate.port.Disagreement.disagree`` takes two entries and no
+    ``main_id`` — deliberately, because a judge that could be handed a main
+    could be handed a main's ledger — while the key, the provider and the tier
+    are all per main (AD-11, AD-20). So the resolution happens once per pass,
+    here, above the seam, and the seam is untouched.
+
+    ``for_main`` answers ``None`` for a main a deployment has not equipped,
+    which is what makes ``MintResult.unwired`` mean what it says: an unwired
+    port and a quiet night are not the same night.
+
+    A protocol rather than the concrete bench for the reason ``Ledger`` is one,
+    with a second reason of its own — the concrete bench lives in
+    ``half.consolidate.judge``, which reaches ``half.model``, and importing it
+    here would put the nightly pass one hop from a provider. ``tests/
+    test_pass.py`` asserts transitively that it is not.
+    """
+
+    def for_main(self, main_id: str) -> Disagreement | None:
+        ...
 
 
 class Ledger(Protocol):
@@ -253,12 +281,22 @@ class TensionPass:
     ledger: Ledger
     #: Who decides whether two entries disagree, or ``None``.
     #:
-    #: **``None`` is what this build ships**, and it is the ordinary case rather
-    #: than a degraded one: the port has no implementation until 9e, so the
-    #: bound, the cheap filter and the budget run on every pass and nothing is
-    #: consulted and nothing is minted. A pass with no judge completes, is never
-    #: fatal, and is not a failure to report.
+    #: **One judge for every main**, which is the shape a test wants and not the
+    #: shape a deployment has: a real judge holds a per-main key and a per-main
+    #: tier, so the shipped composition passes ``bench`` below instead. Kept,
+    #: and kept first, because it is 9d's field and every case that drives the
+    #: minting half with a deterministic double uses it.
     judge: Disagreement | None = None
+    #: Where one main's judge comes from, or ``None`` (story 9e).
+    #:
+    #: **``None`` on both is an ordinary night rather than a degraded one**: the
+    #: bound, the cheap filter and the budget still run on every pass, nothing
+    #: is consulted, and nothing is minted. A pass with no judge completes, is
+    #: never fatal, and is not a failure to report.
+    #:
+    #: ``judge`` wins where both are given, so a case that hands over a double
+    #: gets the double whatever else is wired.
+    bench: Bench | None = None
 
     async def run(self, main_id: str, now: Now) -> None:
         """The ``Pass`` protocol's method. Returns ``None``; raises when a
@@ -389,7 +427,7 @@ class TensionPass:
             view = await self.ledger.mint_view(main_id)
             return await minting.consider(
                 view,
-                judge=self.judge,
+                judge=self._judge_for(main_id),
                 ledger=self.ledger,
                 main_id=main_id,
                 now=now.stamp,
@@ -403,6 +441,24 @@ class TensionPass:
                 main_id, type(exc).__name__,
             )
             return minting.MintResult()
+
+    def _judge_for(self, main_id: str) -> Disagreement | None:
+        """This main's judge: the injected one, then the bench's, then none.
+
+        **Inside the ``try`` its caller already holds**, so a bench that raised
+        would cost this main their minting and not their pass — the same
+        isolation the read above it gets, one rung out.
+
+        The order is deliberate and is not a preference: a case that hands over
+        a deterministic ``judge`` is asserting something about the minting half
+        and must get exactly that object, whatever a composition root happened
+        to wire beside it.
+        """
+        if self.judge is not None:
+            return self.judge
+        if self.bench is None:
+            return None
+        return self.bench.for_main(main_id)
 
 
 class TensionPassIncomplete(HalfError):

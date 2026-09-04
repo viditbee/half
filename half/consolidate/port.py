@@ -33,13 +33,21 @@ that is deliberate rather than defensive: a provider that fell over on one pair
 must not cost a main the other twenty, and CAP-7's *"the pass completes"* is a
 promise about the night rather than about the port.
 
-**No implementation lives in this package**, and there is nowhere for one to
-hide: ``tests/test_minting.py`` sweeps ``half/consolidate`` for any path to
-``half.model``, to a channel, or to the network, and the shipped composition
-root wires no judge at all. The deterministic judge the suite runs against is a
-double in the tests, where a double belongs — a judge in the package would be a
-production judge the moment somebody wired it, and it would answer nothing
-truthfully.
+**Story 9e supplies the implementation, in exactly one module, and the sweep
+that used to say *none* now says *that one*.** ``tests/test_minting.py`` swept
+``half/consolidate`` for any path to ``half.model``, to a channel, or to the
+network; the model half of that sweep is now the rule two other packages already
+hold — ``half/consolidate/judge.py`` may name the model and no other file here
+may, what it reaches under ``half.model`` may itself reach nothing but the port,
+and the channel and the network stay closed to the whole package. Everything
+this module says about the judgement is unchanged by that: it is still one
+method, still three values, still unable to generate, store, read a clock or be
+handed a whole main.
+
+The deterministic judges the suite runs the *minting* against are still doubles
+in the tests, where a double belongs. What ``half/consolidate/judge.py`` adds is
+the thing a double cannot be: labels, instructions, a bound, a breaker and a
+tally, none of which a test can assert about an object it wrote itself.
 """
 
 from __future__ import annotations

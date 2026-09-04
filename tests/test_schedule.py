@@ -1960,7 +1960,9 @@ def test_the_scheduler_is_wired_into_the_shipped_composition(tmp_path):
         # fail-closed default and exactly the state a keyword search of the
         # source cannot tell apart from a working one.
         assert wiring.scheduler.work == MorningPass(
-            consolidate=TensionPass(ledger=wiring.registry),
+            consolidate=TensionPass(
+                ledger=wiring.registry, bench=wiring.judges
+            ),
             surface=MorningSurface(
                 ledger=wiring.registry, channel=wiring.channel,
                 voice=wiring.voice,

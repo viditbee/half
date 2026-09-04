@@ -1509,28 +1509,57 @@ def test_the_judgement_port_offers_exactly_one_method():
 
 
 @pytest.mark.cap7_minting
-def test_no_implementation_of_the_judgement_lives_in_the_package():
-    """A judge in ``half/`` would be a production judge the moment somebody
-    wired it, and it would answer nothing truthfully. The seam ships; 9e or the
-    extraction supplies the judgement."""
+def test_exactly_one_implementation_of_the_judgement_lives_in_the_package():
+    """Story 9d's version of this case said *none*, because a judge in ``half/``
+    would have been a production judge the moment somebody wired it and would
+    have answered nothing truthfully. Story 9e supplies one, so the case says
+    **one** and says where — a second ``disagree`` anywhere in the tree is a
+    second thing a nightly pass could be paying for, and the reason the first
+    one is safe (a bound, a breaker, a budget, a tally, a closed label set) is a
+    property of that module and not of the name.
+
+    Two files may say the word: the port, which declares it, and the judge,
+    which implements it.
+    """
+    allowed = {
+        ROOT / "half/consolidate/port.py",
+        ROOT / "half/consolidate/judge.py",
+    }
+    found: list[str] = []
     offenders: list[str] = []
     for path in sorted((ROOT / "half").rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
-            if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and node.name == "disagree"
-                    and path != ROOT / "half/consolidate/port.py"):
-                offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+            if not (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.name == "disagree"):
+                continue
+            where = f"{path.relative_to(ROOT)}:{node.lineno}"
+            (found if path in allowed else offenders).append(where)
     assert not offenders, offenders
+    assert len(found) == 2, found
 
 
 @pytest.mark.cap7_minting
-def test_the_shipped_wiring_holds_the_pass_and_wires_no_judge(tmp_path):
+def test_the_shipped_wiring_holds_the_pass_and_the_bench_of_judges(tmp_path):
     """Asserted by value rather than by keyword — story 6d's identical claim was
     satisfied by a case asserting a keyword's *name* appeared in the source,
-    which passed with the value set to ``None``."""
+    which passed with the value set to ``None``.
+
+    Story 9d's version of this asserted the judge was ``None`` and that was the
+    whole story. Story 9e wires a bench, and the two facts it replaces that one
+    with are both worth having: **no blanket judge** — one object judging for
+    every main would be one key and one tier for everybody, against AD-11 and
+    AD-20 — and **the bench this wiring built**, by identity, so that *"the
+    judge reaches the shipped product"* cannot pass with the value set to
+    ``None`` the way story 6d's did.
+
+    A deployment with no credentials equips nobody, which is a supported shape
+    and is the one this case runs in: the bench exists, holds nobody, and hands
+    out no judge.
+    """
     from half.__main__ import build
     from half.config import MAINS_ENV, ROOT_ENV, load
+    from half.consolidate.judge import Judges
     from half.surface.morning import MorningPass
 
     config = load({ROOT_ENV: str(tmp_path), MAINS_ENV: "123:vidit"})
@@ -1540,6 +1569,10 @@ def test_the_shipped_wiring_holds_the_pass_and_wires_no_judge(tmp_path):
         assert isinstance(work, MorningPass)
         assert isinstance(work.consolidate, TensionPass)
         assert work.consolidate.judge is None
+        assert isinstance(wiring.judges, Judges)
+        assert work.consolidate.bench is wiring.judges
+        assert not wiring.judges.holds("vidit")
+        assert wiring.judges.for_main("vidit") is None
     finally:
         wiring.registry.close()
 
@@ -1605,26 +1638,58 @@ def test_nothing_in_the_package_reaches_a_store_or_an_actor():
 
 
 @pytest.mark.cap7_minting
-def test_nothing_in_the_package_reaches_a_model_a_channel_or_the_network():
-    """*"No model call in this story, and no provider wired."*
+def test_only_the_judge_may_name_a_model_and_nothing_reaches_a_channel():
+    """*"No provider wired"* became *"one module, and it is the judgement"*.
 
-    ``outward`` derives what this package may not reach from the one list of
-    forbidden roots in the tree, so the exemption two other packages hold is
-    visible as an exemption and this one has none.
+    Story 9d had no implementation behind ``half.consolidate.port``, so this
+    read *"no model anywhere in the package"* and ``outward`` returned
+    ``UNREACHABLE`` whole. Story 9e supplies the judge, and the rule becomes the
+    one ``half/correction`` and ``half/voice`` already hold: the lift is one
+    root, exactly one module may use it, and everything else in ``UNREACHABLE``
+    — the channel and every spelling of the network — still stands over the
+    whole package.
+
+    **The exemption table is pinned here as well as in the two files that
+    already pin it**, so a fourth package cannot acquire the lift by a one-line
+    edit in a test helper. The lift is also recomputed rather than read from the
+    table, so this case says what it means with or without it.
     """
-    forbidden = outward("half/consolidate")
-    assert "half.model" in forbidden, "the lift table has grown a fifth entry"
-    offenders = {
-        str(path.relative_to(ROOT)): found
-        for path in _modules() if (found := reaches(path, forbidden))
-    }
-    assert not offenders, offenders
+    from tests.conftest import LIFTED, UNREACHABLE, past_the_port
+
+    assert LIFTED == {
+        "half/consolidate": ("half.model",),
+        "half/correction": ("half.model",),
+        "half/voice": ("half.model",),
+    }, LIFTED
+    rest = tuple(root for root in UNREACHABLE if root != "half.model")
+    assert outward("half/consolidate") == rest
+
+    named: set[str] = set()
+    for path in _modules():
+        assert not reaches(path, rest), f"{path.name} reaches outward"
+        model = reaches(path, ("half.model",))
+        if path.name == "judge.py":
+            assert model, "the judgement names no model at all"
+            named |= set(model)
+        else:
+            assert not model, f"{path.name} names a model: {model}"
+    assert named, "the package names no model at all; the judge is dead"
+    # And the lift is *used*, not merely granted: nothing on the reached
+    # surface may get to the provider, the tier table, the budget or the
+    # transport. A judge that reached the provider could reset a ledger and
+    # reach a batcher, which is a nightly pass with an unbounded bill.
+    assert not past_the_port(named), past_the_port(named)
 
 
 @pytest.mark.cap7_minting
-def test_the_package_reaches_no_model_transitively_either():
+def test_the_package_reaches_no_model_transitively_but_through_the_judge():
     """One hop is not enough: a minter that imported a helper that imported the
-    port would pass a direct check while being every bit as expensive."""
+    port would pass a direct check while being every bit as expensive.
+
+    ``judge.py`` is the one file that may, and it is excluded by **name** rather
+    than by being in the walk's frontier — an exclusion that fell out of the
+    traversal would also excuse anything ``judge.py`` happened to import.
+    """
     edges = {
         ".".join(path.relative_to(ROOT).with_suffix("").parts):
             {name for name in _imports_of(path)}
@@ -1643,10 +1708,16 @@ def test_the_package_reaches_no_model_transitively_either():
             walk(module, seen)
         return seen
 
+    lifted = 0
     for path in _modules():
         area = ".".join(path.relative_to(ROOT).with_suffix("").parts)
         touched = {m for m in walk(area) if m.startswith("half.model")}
+        if area == "half.consolidate.judge":
+            assert touched, "the judgement reaches no model even transitively"
+            lifted += 1
+            continue
         assert not touched, f"{area} reaches {sorted(touched)}"
+    assert lifted == 1, "exactly one module in this package is lifted"
 
 
 def _imports_of(path: Path) -> set[str]:
@@ -1835,9 +1906,9 @@ def test_every_minting_guarantee_this_story_rests_on_still_exists():
         "test_a_main_in_crisis_mode_is_never_minted_for",
         "test_a_minted_tension_folds_identically_after_a_rebuild",
         "test_the_judgement_port_offers_exactly_one_method",
-        "test_no_implementation_of_the_judgement_lives_in_the_package",
-        "test_the_shipped_wiring_holds_the_pass_and_wires_no_judge",
-        "test_nothing_in_the_package_reaches_a_model_a_channel_or_the_network",
+        "test_exactly_one_implementation_of_the_judgement_lives_in_the_package",
+        "test_the_shipped_wiring_holds_the_pass_and_the_bench_of_judges",
+        "test_only_the_judge_may_name_a_model_and_nothing_reaches_a_channel",
         "test_the_mint_view_carries_no_license_no_ceiling_and_no_crisis_record",
         "test_a_minted_tension_carries_a_state_a_pair_and_a_license_and_no_more",
         # Review loop 2. Each of these is the only case asserting its rule,

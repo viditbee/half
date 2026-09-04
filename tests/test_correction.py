@@ -2469,7 +2469,16 @@ def test_only_the_widening_may_name_a_model_inside_the_package():
     # ``generate`` is its only public method — and ``tests/test_voice.py``
     # asserts this same mapping from its own side, so neither entry can be added
     # by editing one file.
+    #
+    # Story 9e adds the third, also deliberately: ``half/consolidate``'s
+    # nightly judgement is *whether two entries disagree where neither is
+    # wrong*, in two arbitrary languages, which is no more enumerable than the
+    # ways a person says *"that's wrong"*. It pays for its lift with this same
+    # case's shape — exactly one module may name the model, and what it holds
+    # is the narrow classifier — and ``tests/test_minting.py`` asserts this
+    # mapping from a third side.
     assert LIFTED == {
+        "half/consolidate": ("half.model",),
         "half/correction": ("half.model",),
         "half/voice": ("half.model",),
     }, LIFTED
