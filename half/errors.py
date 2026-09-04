@@ -273,6 +273,22 @@ class DeriveError(HalfError, ValueError):
     """
 
 
+class OnboardError(HalfError, ValueError):
+    """A demonstration that could not be assembled at all (CAP-2, story 7).
+
+    Raised at construction and never on the main's own path: a consent record
+    whose notices are not strings, a budget that is not a budget, an offer
+    handed an answer it was not built for. Every *ordinary* refusal on the
+    onboarding path is a value instead — ``half.onboard.flow.Reason`` names
+    each one, and a main in crisis, a mailbox with nothing independent behind
+    it and a deployment that has equipped no composer all produce a
+    ``Demonstration`` rather than an exception (AD-27, AD-32).
+
+    A ``ValueError`` as well, for the reason ``CorrectionError`` and
+    ``DeriveError`` are.
+    """
+
+
 class RetrievalError(HalfError):
     """A fault in the retrieval layer (CAP-9)."""
 

@@ -1373,9 +1373,19 @@ def test_only_the_context_builder_decides_a_rung():
     #: somebody in the language they wrote to you in is not a claim Half is
     #: asserting. The writer gate below still forbids that module spelling a
     #: license field into a record.
+    #: ``half/onboard/flow.py`` reads ``known_to_main`` and nothing else in that
+    #: set, on exactly ``contacts.py``'s terms and about the same question: *has
+    #: the main already confirmed this?* Story 7's demonstration offers a claim
+    #: the main has not confirmed and refuses to promote one they have, and both
+    #: are that one question — a second reader of the field with its own idea of
+    #: what counts would let a claim be offered twice or promoted twice, which is
+    #: the story's own idempotency row. **No rung is decided there**: the
+    #: promotion is ``ladder.promote``'s, which refuses without the
+    #: acknowledgement, and the writer gate below still forbids that module
+    #: spelling a license field into a record.
     allowed = {"half/context/build.py", "half/crisis/contacts.py",
-               "half/crisis/safetyplan.py", "half/schedule/due.py",
-               "half/voice/compose.py"}
+               "half/crisis/safetyplan.py", "half/onboard/flow.py",
+               "half/schedule/due.py", "half/voice/compose.py"}
     offenders: list[str] = []
     for module, path in source_modules():
         relative = str(path.relative_to(ROOT))

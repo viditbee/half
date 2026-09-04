@@ -139,6 +139,55 @@ _SUBJECT: Final[str] = "subject"
 _ASKABLE: Final[License] = License.ASK
 
 
+def offered_claim(candidate_id: object, *, offered: object) -> bool:
+    """Whether this candidate is the one claim being offered for confirmation.
+
+    **The second bounded exception to AD-18** (CAP-2, story 7), and it is
+    written as a predicate for the reason ``bought_question`` is: the runtime
+    and the tests read the same function, so there is no branch in one that a
+    scan of the other can only approximate.
+
+    The exception, stated exactly. A derived claim is born `behave`; only
+    `assert` is quotable; and `assert` needs a receipt **and** ``known_to_main``,
+    which is written only by a promotion the main took part in. So on day one
+    Half can state nothing it derived, and CAP-2 — *"the statement is confirmed
+    as true"* — cannot happen, because the main cannot confirm words they were
+    never shown. The demonstration is the one turn on which a `behave` claim's
+    wording may reach a main, and it reaches them **to be checked**, not
+    because Half has earned the right to say it. Nothing about it moves a rung:
+    the belief is still `behave` when the message goes out, and the main's own
+    answer is what promotes it, through ``half.governance.ladder.promote`` and
+    no other door.
+
+    **Bounded in both directions, and the bound is what the builder is handed.**
+    ``offered`` names one belief id. It arrives as an argument of ``split`` and
+    of nothing else — ``build``, the door every caller before this story uses,
+    has no parameter it could travel through — so an ordinary turn cannot
+    quote a `behave` claim however its ranked set is arranged, and a
+    demonstration cannot quote a second one however many claims qualified.
+    That is story 11's lesson repeated for a third subsystem: *narrow the
+    input, do not filter the output.* A builder that read some flag off the
+    belief and decided for itself which claims were being offered could be made
+    to decide wrongly; one that can only quote the single id it was handed
+    cannot.
+
+    **Why the negative half of this has to run wired.** The first exception —
+    story 12's correction reply — shipped with its negative tested against a
+    runtime that had no classifier, which structurally removed the very route
+    the assertion claimed to bound; 13b's review found it. So the negative here
+    is asserted against a build with the demonstration live and an offer
+    already standing: the claim is in the ranked set, the flow that offered it
+    is constructed, and an ordinary turn still carries none of its wording.
+
+    Compared for **equality** on a stripped id, like ``bought_question``: a
+    blank ``offered`` offers nothing, and a candidate with no id is never the
+    one that was offered.
+    """
+    asked = offered.strip() if isinstance(offered, str) else ""
+    ident = candidate_id.strip() if isinstance(candidate_id, str) else ""
+    return bool(asked) and asked == ident
+
+
 def bought_question(
     candidate_id: object, license_: License, *, bought: object
 ) -> bool:
@@ -203,6 +252,7 @@ def split(
     now: str,
     ceiling: Ceiling | None,
     bought: str | None = None,
+    offered: str | None = None,
 ) -> tuple[Context, frozenset[str]]:
     """The context, **and the wordings it may not carry**, resolved once.
 
@@ -218,13 +268,28 @@ def split(
 
     Everything else — the split, the guard, the ordering, the bought question —
     is ``build``'s docstring, and it applies here unchanged.
+
+    ``offered`` is **the belief id being offered to the main for confirmation**,
+    and it is the second bounded exception to AD-18 (CAP-2, story 7). It names
+    one claim whose wording may be quoted on this build and on no other: that
+    claim enters the content channel whatever rung it is on, and its fragments
+    are left out of the withheld set so the tripwire does not refuse the
+    message carrying them. It is a parameter of this function and of no other —
+    ``build`` cannot take one — so the exception is a property of what a caller
+    is able to hand in rather than a branch this module chooses. See
+    ``offered_claim``, which is the predicate, and note that nothing here moves
+    a rung: the belief is still `behave` after this call, and only
+    ``half.governance.ladder.promote`` changes that, on the main's own answer.
     """
     licensed = tuple((c, resolve(c.belief, ceiling=ceiling)) for c in (ranked or ()))
 
     # Every wording the context may not carry, as adjacent pairs. `ask` sits
     # here beside `behave`: its material surfaces as a question about a topic,
-    # and its text is withheld exactly as `behave` text is.
-    hidden = _withheld_from(licensed)
+    # and its text is withheld exactly as `behave` text is. The one offered
+    # claim is excluded — it is being shown to the main on purpose, and a
+    # withheld set that still held it would have the leak tripwire refuse the
+    # demonstration every time, permanently, with a green suite.
+    hidden = _withheld_from(licensed, offered=offered)
 
     context = Context(
         now=now,
@@ -232,7 +297,7 @@ def split(
         rerank=getattr(ranked, "rerank", RerankSource.ABSENT),
     )
     for candidate, license_ in licensed:
-        item = _item(candidate, license_, bought=bought)
+        item = _item(candidate, license_, bought=bought, offered=offered)
         if item is None:
             continue
         trial = context.plus(item)
@@ -253,6 +318,15 @@ def build(
 
     ``bought`` is **the belief id a favour has already been spent on**, and it
     is the only way a question reaches a context (CAP-4, story 11).
+
+    **There is no ``offered`` parameter here, and that absence is load-bearing**
+    (AD-18, CAP-2, story 7). ``split`` takes one — the single belief id whose
+    `behave` wording the demonstration may quote — and this function does not,
+    so every caller that reaches a context through this door quotes `assert`
+    material and nothing else, on every turn that is not the demonstration.
+    The bound on the second AD-18 exception is therefore a fact about the
+    signature rather than a branch anybody has to keep true; see
+    ``offered_claim``.
 
     *The channel is bought by what this function is handed, never by what it
     filters.* A builder that read the rung and decided for itself which beliefs
@@ -343,17 +417,30 @@ def withheld(
 
 def _withheld_from(
     licensed: Iterable[tuple[Candidate, License]],
+    *,
+    offered: object = None,
 ) -> frozenset[str]:
-    """The wordings of everything in ``licensed`` that may not be quoted."""
+    """The wordings of everything in ``licensed`` that may not be quoted.
+
+    ``offered`` is the one claim being put to the main for confirmation, whose
+    wording is *not* withheld on that build — see ``offered_claim``. It has no
+    default in ``split``'s call and a fail-closed one here: a caller that
+    forgets it withholds more rather than less, and the public ``withheld``
+    never passes one at all.
+    """
     found: set[str] = set()
     for candidate, license_ in licensed:
-        if license_ is not _QUOTABLE:
-            found.update(fragments(candidate.claim))
+        if license_ is _QUOTABLE:
+            continue
+        if offered_claim(candidate.id, offered=offered):
+            continue
+        found.update(fragments(candidate.claim))
     return frozenset(found)
 
 
 def _item(
-    candidate: Candidate, license_: License, *, bought: object
+    candidate: Candidate, license_: License, *, bought: object,
+    offered: object = None,
 ) -> Item | None:
     """The one channel item this candidate contributes, or nothing.
 
@@ -372,7 +459,18 @@ def _item(
     still act on it, which is what `behave` means and what a directive says.
     Its wording is withheld either way — an `ask` belief is not ``_QUOTABLE``,
     so its fragments are already in the withheld set.
+
+    **And the one claim being offered for confirmation is quoted whatever rung
+    it is on** (CAP-2, story 7). That is the second bounded exception to AD-18
+    and the whole of it: no other route here reads ``offered``, the claim is
+    still `behave` when this returns, and ``offered_claim`` is the predicate
+    both this function and the suite read. It is checked *before* the rung so
+    that the exception does not depend on the rung's own answer — an offered
+    claim that had somehow reached `assert` would take the ordinary door and
+    need no exception, and one at `behave` must not fall through to a topic.
     """
+    if offered_claim(candidate.id, offered=offered):
+        return _content(candidate)
     if license_ is _QUOTABLE:
         return _content(candidate)
     topics = _topics(candidate)

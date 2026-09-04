@@ -402,6 +402,55 @@ CONFIRM_SOURCE: Final[tuple[str, ...]] = (
 )
 
 
+#: The answer that lets an **offer** be denied (CAP-2, story 7).
+#:
+#: **The one place a negative table is right, and the reason is the direction of
+#: the cost.** ``CONFIRM_SOURCE`` above records that there is deliberately no
+#: negative table for a *candidate*: a candidate proposes to delete something,
+#: so anything that is not a clear yes is a decline and doing nothing is the
+#: safe answer. Story 7 inverts that. Half has just made a statement about
+#: somebody and asked them to check it, and reading their *"no"* as *"said
+#: nothing"* discards the single correction a main is most likely ever to
+#: make — on the first thing Half said to them — and leaves a claim they
+#: explicitly denied sitting in the fold, shaping every context it enters. So
+#: here the decline is *recognised* and the ordinary answer is to do nothing.
+#:
+#: Matched **whole-message**, exactly as the confirmation is, and that is what
+#: makes a bare ``no`` safe here and nowhere else: it is read only while Half is
+#: waiting on an answer to a question it just asked, where the reply is short
+#: and is about the question. ``recognize`` does not consult this table and
+#: nothing on the unprompted turn path reads it.
+#:
+#: Narrow on purpose. A hedge is not a denial: *maybe*, *I think so*, *not
+#: really sure* leave the claim exactly where it is, which costs one more turn,
+#: where the reverse would append a correction the main did not make.
+DECLINE_SOURCE: Final[tuple[str, ...]] = (
+    # English
+    "no", "nope", "nah", "not true", "not right", "no thats wrong",
+    "definitely not", "not me", "thats not me", "no i dont",
+    # Romance
+    "no es cierto", "para nada", "não", "nao", "de jeito nenhum",
+    "non", "pas du tout",
+    # Germanic and Nordic
+    "nein", "nee", "gar nicht", "nej", "nei",
+    # Slavic and Baltic
+    "нет", "не", "nie", "wcale nie",
+    # Turkish, Greek, Hebrew
+    "hayır", "hayir", "όχι", "לא",
+    # Arabic and Persian
+    "لا", "أبدا", "نه", "اصلا",
+    # South Asia
+    "नहीं", "नही", "बिलकुल नहीं", "nahi", "ਨਹੀਂ", "ના", "না", "కాదు",
+    "இல்லை", "ಇಲ್ಲ", "नाही", "അല്ല",
+    # East and South-East Asia
+    "いいえ", "ちがいます", "違います", "아니", "아니요", "아니에요",
+    "不是", "不對", "不对", "没有",
+    "tidak", "bukan", "không", "ไม่", "ไม่ใช่",
+    # Africa and the Philippines
+    "hapana", "siyo", "hindi",
+)
+
+
 #: Every table, by name. The behavioural pin in ``tests/test_correction.py``
 #: sweeps this rather than a list somebody keeps in a test file, so a new table
 #: is covered by existing cases the moment it is added.
@@ -411,6 +460,7 @@ VOCABULARY: Final[dict[str, tuple[str, ...]]] = {
     "wrong": WRONG_SOURCE,
     "erase": ERASE_SOURCE,
     "confirm": CONFIRM_SOURCE,
+    "decline": DECLINE_SOURCE,
 }
 
 #: Which meaning each removing table produces, and **the order they are tried
@@ -438,6 +488,16 @@ _TABLES: Final[dict[str, _Table]] = {
 #: ``VOCABULARY`` and not the lookup below raised ``KeyError`` **on the turn
 #: path**, which is a main losing their reply over a dictionary key.
 CONFIRM: Final[str] = "confirm"
+
+#: The name of the decline table, spelled once, for ``CONFIRM``'s reason.
+DECLINE: Final[str] = "decline"
+
+#: The two tables ``recognize`` deliberately never consults: they are answers to
+#: a question Half asked, not corrections somebody volunteered. Named as a set
+#: so that ``_check_tables``'s *a table nothing reads is coverage that fires on
+#: nothing* stays a real check — adding a third table without wiring it still
+#: fails, and adding it here is a deliberate line rather than a silent one.
+ANSWERS: Final[frozenset[str]] = frozenset({CONFIRM, DECLINE})
 
 
 def _contains(tokens: tuple[str, ...], phrase: tuple[str, ...]) -> bool:
@@ -517,17 +577,19 @@ def _check_tables() -> None:
             f"{sorted(missing)} are ordered and defined nowhere; the turn path "
             f"would raise on the first message"
         )
-    silent = set(VOCABULARY) - named - {CONFIRM}
+    silent = set(VOCABULARY) - named - ANSWERS
     if silent:
         raise CorrectionError(
             f"{sorted(silent)} are defined and never consulted. A table nothing "
             f"reads is a vocabulary that reads as coverage and fires on nothing"
         )
-    if CONFIRM not in VOCABULARY:
-        raise CorrectionError(
-            f"{CONFIRM!r} names the confirmation table and is not one of "
-            f"{sorted(VOCABULARY)}; a candidate could never be answered"
-        )
+    for name in sorted(ANSWERS):
+        if name not in VOCABULARY:
+            raise CorrectionError(
+                f"{name!r} names an answer table and is not one of "
+                f"{sorted(VOCABULARY)}; a question Half asked could never be "
+                "answered"
+            )
     for name, source in VOCABULARY.items():
         if not source:
             raise CorrectionError(f"table {name!r} is empty")
@@ -564,7 +626,40 @@ def is_confirmation(text: object) -> bool:
     something, so the reading has to be the narrow one — everything that is not
     this is a decline, and a decline removes nothing.
     """
+    return _whole_message(text, CONFIRM)
+
+
+def is_decline(text: object) -> bool:
+    """Whether this message is a clear *no* to a standing offer (CAP-2).
+
+    Whole-message, exactly as ``is_confirmation`` is, and read only while Half
+    is waiting on an answer to a question it just asked — which is what makes a
+    bare ``no`` safe here and would make it reckless on the unprompted turn
+    path. ``recognize`` does not consult this table.
+
+    **Recognised rather than defaulted, and that is the whole reason it
+    exists.** For a *candidate* — a proposal to delete something — anything that
+    is not a clear yes is a decline, and doing nothing is safe. For an *offer*
+    the safe direction reverses: reading a main's *"no"* to the first statement
+    Half ever made about them as *"said nothing"* discards the correction they
+    were most likely to make and leaves a denied claim in the fold. See
+    ``DECLINE_SOURCE``.
+
+    A hedge is not a decline. *maybe*, *I think so*, *not really sure* are not
+    rows here, so they answer nothing and the claim stays where it is — one more
+    turn, against a correction the main did not make.
+    """
+    return _whole_message(text, DECLINE)
+
+
+def _whole_message(text: object, table: str) -> bool:
+    """Whether ``text`` is exactly one row of ``table``.
+
+    The shared half of ``is_confirmation`` and ``is_decline``, so the two cannot
+    drift into different ideas of *whole message* — which would be the yes and
+    the no answered by two different rules about the same reply.
+    """
     found = _tokens(text)
     if not found:
         return False
-    return any(found == phrase for phrase, _run in _TABLES[CONFIRM].phrases)
+    return any(found == phrase for phrase, _run in _TABLES[table].phrases)

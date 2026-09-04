@@ -16,7 +16,7 @@ import asyncio
 import logging
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from half.actor.registry import ActorRegistry, validate_main_id
 from half.actor.runtime import Runtime
@@ -62,6 +62,8 @@ from half.governance import ladder
 from half.ingest.pipeline import Ingested, Pipeline
 from half.ingest.port import MailSource
 from half.interrupt.gate import Interrupt
+from half.onboard import flow as onboarding
+from half.onboard.consent import LEAVES_THE_MACHINE, Consent
 from half.store.ops import Op
 from half.model.anthropic import AnthropicProvider
 from half.model.anthropic_transport import SDKTransport
@@ -81,6 +83,49 @@ from half.store.sources import LocalSourceStore
 from half.store.store import Store
 
 logger = logging.getLogger("half")
+
+#: The sentence telling the main their messages leave the machine (CAP-2).
+#:
+#: **Deployment copy, in the main's own language, and Half ships none.**
+#: ``half.onboard.consent`` records the whole argument: a privacy notice
+#: written in one language and shown to everybody is a notice most of the world
+#: cannot read, which is a notice they were not given. Unset means no mailbox is
+#: connected for anybody, which is the fail-closed direction and the only one
+#: available — the alternative is reading somebody's mail on the strength of a
+#: sentence they never saw.
+CONSENT_ENV = "HALF_CONSENT"
+
+#: What Half says when a mailbox yielded no claim (CAP-2's *nothing to offer*).
+#:
+#: Deployment copy for ``CONSENT_ENV``'s reason, and unset is silence rather
+#: than something composed. A generated message on this path would be a
+#: pleasantry — a sentence that fills the ninety seconds and says nothing —
+#: which the story forbids in as many words, and there is no template this
+#: product can ship worldwide to put there instead.
+NOTHING_YET_ENV = "HALF_NOTHING_YET"
+
+
+def notices(env: dict[str, str] | None = None) -> tuple[Consent, str]:
+    """The deployment's own two sentences: the notice, and *nothing yet*.
+
+    Read here because this module is the one that reads the environment, and
+    returned as values so that ``build`` wires them **by value** — *"a
+    deployment with no notice connects no mailbox"* has to be assertable from
+    the constructed ``Wiring`` rather than by finding a keyword in this file,
+    which is how story 6d's identical claim passed with the value set to
+    ``None``.
+
+    Neither is validated for language, length or content, and that is not an
+    omission: any check would be a rule about somebody's language written by
+    somebody who does not speak it. What is checked is that the notice is
+    *there*, and ``half.onboard.consent.Consent`` drops anything that is not a
+    sentence with characters in it.
+    """
+    source = os.environ if env is None else env
+    return (
+        Consent({LEAVES_THE_MACHINE: source.get(CONSENT_ENV, "")}),
+        source.get(NOTHING_YET_ENV, ""),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +226,24 @@ class Wiring:
     #: which is how story 6d's identical claim passed with the value set to
     #: ``None`` for entirely the wrong reason.
     interrupt: Interrupt
+    #: What the main is told before a source is connected (CAP-2, story 7).
+    #:
+    #: Always constructed and possibly empty, and an empty one has a **visible**
+    #: consequence: ``half.onboard.flow.demonstrate`` connects no mailbox and
+    #: runs no demonstration at all for that deployment. That is the fail-closed
+    #: direction and the only one available — Half reads somebody's mail and
+    #: hands the bodies to a model provider, and the sentence saying so has to
+    #: reach the main before any of it happens, in a language they read. Half
+    #: ships no wording for it; see ``CONSENT_ENV``.
+    consent: Consent = field(default_factory=Consent)
+    #: What Half says when a mailbox yielded nothing to offer. Empty is silence.
+    #:
+    #: Beside the consent rather than inside it, because it is not consent: it
+    #: is the honest answer to *the pull found no label with two independent
+    #: groups behind it*, which after a first mailbox pull is the ordinary
+    #: outcome. Composing something here instead would be a pleasantry, which
+    #: story 7 forbids in as many words.
+    nothing_yet: str = ""
 
 
 def build(config: Config, token: str) -> Wiring:
@@ -193,6 +256,11 @@ def build(config: Config, token: str) -> Wiring:
     """
     for main_id in config.mains.values():
         validate_main_id(main_id)
+
+    # What the main is told before a source is connected, and what Half says
+    # when a pull found nothing (CAP-2). Both are the deployment's own
+    # sentences, in the main's own language, and this package ships neither.
+    deployment_notice, nothing_yet = notices()
 
     channel = TelegramChannel(transport=PTBTransport(token), mains=dict(config.mains))
     registry = ActorRegistry(config.root)
@@ -310,7 +378,15 @@ def build(config: Config, token: str) -> Wiring:
                   judges=bench, derivers=gates,
                   revealed=readers(config, secrets, gates),
                   interrupt=Interrupt(channel=channel, urgency=None,
-                                      voice=voice))
+                                      voice=voice),
+                  # **The consent notice reaches the shipped product here and
+                  # nowhere else** (CAP-2, story 7), wired by value for the
+                  # reason the composer and the classifier are. Without wording
+                  # this is an empty ``Consent``, ``half.onboard.consent.told``
+                  # answers no, and no mailbox is connected for anybody —
+                  # which is the fail-closed direction and is visible in the
+                  # value rather than hidden in a branch.
+                  consent=deployment_notice, nothing_yet=nothing_yet)
 
 
 def readers(
@@ -414,6 +490,13 @@ async def ingest_mail(
 
     Never raises for a claim: a failure to append costs the claims and never the
     receipts, which are already durable.
+
+    **A caller that has a deadline bounds the *source*, not this call** (CAP-2,
+    story 7). Cancelling here would lose the run with the local and admit
+    nothing from a pull whose receipts are already on disk; a source that stops
+    yielding lets the ``async for`` end normally, so a truncated pull still
+    admits what it gathered and still returns a cursor. See
+    ``half.__main__.bounded``.
     """
     run = Run()
     pipeline = Pipeline(
@@ -450,6 +533,109 @@ async def ingest_mail(
             main_id, type(exc).__name__,
         )
     return result
+
+
+
+class Bounded:
+    """A ``MailSource`` that stops yielding once its deadline has passed.
+
+    **The shape of the ninety-second budget on the pull** (CAP-2, story 7), and
+    it is a wrapper rather than a timeout for one reason that matters: a
+    cancelled ``ingest_mail`` loses the ``Run`` it was gathering into, so a pull
+    stopped part-way would admit nothing from receipts already durable on disk.
+    A source that simply stops yielding ends the pipeline's ``async for``
+    normally, so the same pull returns a real ``Ingested`` with a real cursor
+    and every candidate it managed to gather is admitted.
+
+    The deadline is checked **after** each message is handed over, which is
+    after the pipeline has scrubbed it, written its receipt and awaited the
+    consumer — so what the check measures is time actually spent, and the
+    message in flight is never abandoned half-way through its own receipt.
+
+    Monotonic, from the event loop's own clock: the same reader
+    ``half.actor.runtime`` uses for its turn deadline, and not a wall clock.
+    Nothing in ``half/`` but ``half/schedule/clock.py`` may read one (AD-30).
+    """
+
+    def __init__(self, source: MailSource, *, seconds: float) -> None:
+        self.source = source
+        self.name = getattr(source, "name", "bounded")
+        self._seconds = float(seconds)
+        self.stopped_early = False
+
+    async def fetch(self, *, since: str | None = None):
+        deadline = asyncio.get_running_loop().time() + self._seconds
+        async for message in self.source.fetch(since=since):
+            yield message
+            if asyncio.get_running_loop().time() >= deadline:
+                self.stopped_early = True
+                logger.warning(
+                    "a mailbox pull stopped at %.0f seconds so the "
+                    "demonstration could still be composed inside CAP-2's "
+                    "budget; the rest of the mailbox is read on the next pull",
+                    self._seconds,
+                )
+                return
+
+
+async def onboard(
+    wiring: Wiring,
+    *,
+    main_id: str,
+    source: MailSource,
+    t: str,
+    since: str | None = None,
+    budget_seconds: float = onboarding.BUDGET_SECONDS,
+) -> onboarding.Demonstration:
+    """The first run: one source, one claim, offered for confirmation (CAP-2).
+
+    **The onboarding entry point, and it is composition**, which is why it lives
+    here beside ``ingest_mail`` rather than inside ``half.onboard``: the notice,
+    the channel, the actor registry, the mailbox pull and the composer are five
+    pieces belonging to five packages, and this is the only place allowed to
+    hold all of them.
+
+    ``source`` is a mailbox **whose token has already been acquired**, which is
+    story 3's own deferral (*"the token arrives already acquired"*) and is
+    unchanged by this story. What CAP-2 calls *one OAuth* is satisfied here by
+    the main having authorised one source and nothing else being asked of them:
+    no form, no interview, no second connector, no questionnaire. The
+    interactive consent flow that turns a browser redirect into that token is
+    deployment infrastructure with its own security surface — a redirect
+    handler, a client secret, a verified consent screen — and it is still
+    deferred; nothing in this path needs it, because a supplied token exercises
+    every step from the mailbox to the statement.
+
+    The source is wrapped so the pull cannot spend the whole budget (see
+    ``Bounded``), and the demonstration bounds the whole path a second time as
+    a backstop against a fetch that hangs before it ever yields.
+
+    Returns what happened, including the seconds it took and whether that fitted
+    — CAP-2's ninety seconds is a requirement, and a caller that never sees the
+    number cannot hold anybody to it.
+    """
+    bounded = Bounded(source, seconds=onboarding.PULL_SECONDS)
+
+    async def pull() -> Ingested:
+        return await ingest_mail(
+            wiring, main_id=main_id, source=bounded, since=since,
+        )
+
+    return await onboarding.demonstrate(
+        main_id=main_id,
+        consent=wiring.consent,
+        channel=wiring.channel,
+        registry=wiring.registry,
+        pull=pull,
+        # **The demonstration speaks with the same voice as the morning and the
+        # turn** — one composer, one gate, one leak check, one tally. Two of
+        # each is two renderings of one thing, which is how a guard that scans
+        # one string ends up admitting another (story 13b).
+        voice=wiring.voice,
+        t=t,
+        plainly=wiring.nothing_yet,
+        budget_seconds=budget_seconds,
+    )
 
 
 def derivers(config: Config, secrets: FileSecretStore) -> Derivers:
