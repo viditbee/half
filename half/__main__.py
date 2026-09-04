@@ -24,6 +24,7 @@ from half.channel.telegram import TelegramChannel
 from half.channel.telegram_transport import PTBTransport
 from half.config import TELEGRAM_TOKEN_ENV, Config, load
 from half.consolidate.judge import (
+    CLASSIFY_TIER as JUDGE_TIER,
     PER_CALL_MICRO_USD as JUDGE_PER_CALL_MICRO_USD,
     PER_PASS_MICRO_USD as JUDGE_PER_PASS_MICRO_USD,
     Judges,
@@ -245,15 +246,22 @@ def judges(config: Config, secrets: FileSecretStore) -> Judges:
     correction to either entry could ever take back. ``Judges`` refuses anything
     wider, so this is checked rather than intended.
 
-    **The tier is the main's own** (AD-20), where crisis and correction pin one
-    tier for everybody. Those two are detection quality, which CAP-12 forbids
-    gating on payment and which is the same question for every main; this is a
-    nightly cost that a deployment chose per main when it chose their tier.
-    **A main with no tier is skipped rather than defaulted**, which is AD-20's
-    own rule and has a consequence worth being explicit about: a deployment that
-    sets ``HALF_MAINS`` and not ``HALF_MODEL_TIERS`` mints no tensions, and
-    therefore surfaces nothing. A silent fallback tier is either a bill nobody
-    authorised or a quality regression nobody sees.
+    **The tier is pinned for everybody**, as it is on the crisis and correction
+    paths and unlike the morning voice's. SPEC's constraint is that the nightly
+    pass runs on a cheaper tier than conversation *because the free tier depends
+    on that gap*, and this pass is the only recurring spend in the product — it
+    happens every night whether or not anybody writes, ``JUDGEMENTS`` times per
+    main. Following the main's conversation tier here would make the one cost
+    the free tier is sized against follow what a deployment pays for
+    conversation, which is that gap closed. And there is nothing here for a
+    better tier to buy on a main's behalf: a judgement is one label from a closed
+    set and nobody reads it.
+
+    **A main is equipped by having a key, not by having been assigned a tier**,
+    which is the crisis path's rule for the crisis path's reason one rung over.
+    A main with no credential is skipped by the handler below — that is the
+    *"skipped rather than defaulted"* this loop still does — and nothing is
+    minted for them, which is story 9d's shipped behaviour exactly.
 
     **Its own provider, and therefore its own ledger.** A provider's spend is
     shared by everything it hands out, so reusing the crisis one would let a
@@ -272,18 +280,10 @@ def judges(config: Config, secrets: FileSecretStore) -> Judges:
     """
     holders: dict[str, Classifier] = {}
     for main_id in config.mains.values():
-        tier = config.tier_for(main_id)
-        if tier is None:
-            logger.warning(
-                "main=%s has no model tier configured; no disagreement is "
-                "judged for them and no tension is minted. There is no default "
-                "tier by design (AD-20)", main_id,
-            )
-            continue
         try:
             provider = AnthropicProvider(
                 SDKTransport.from_secrets(secrets, main_id),
-                tiers=Tiers.parse({main_id: tier}),
+                tiers=Tiers.parse({main_id: JUDGE_TIER}),
                 budget=Budget(
                     per_call_micro_usd=JUDGE_PER_CALL_MICRO_USD,
                     per_pass_micro_usd=JUDGE_PER_PASS_MICRO_USD,

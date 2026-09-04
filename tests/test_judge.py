@@ -48,6 +48,7 @@ from half.consolidate.judge import (
     ALLOWED_METHODS,
     ANSWER_FOR_LABEL,
     BOUND_SECONDS,
+    CLASSIFY_TIER,
     BREAK_AFTER,
     BREAK_FOR,
     CANNOT_BOTH_BE_TRUE,
@@ -697,7 +698,7 @@ def test_the_stricter_predicate_is_the_one_this_constructor_uses():
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def _real_classifier(transport, tier="cheap"):
+def _real_classifier(transport, tier=CLASSIFY_TIER):
     from half.model.anthropic import AnthropicProvider
     from half.model.tier import Tiers
 
@@ -1532,21 +1533,22 @@ def test_a_deployment_that_did_nothing_writes_no_line_at_shutdown(caplog):
 
 @pytest.mark.cap7
 @pytest.mark.cap7_judgement
-def test_a_main_with_a_tier_and_a_key_is_equipped_in_the_shipped_wiring(
-    tmp_path
-):
+def test_a_main_with_a_key_is_equipped_in_the_shipped_wiring(tmp_path):
     """*"Wire the judge, its provider, its tier and its budget."* Run, not
-    grepped: the object graph the product builds, with a real credential file
-    and a real tier."""
+    grepped: the object graph the product builds, with a real credential file.
+
+    **A key equips a main, and a tier does not** — the deployment here sets
+    ``HALF_MAINS`` and no ``HALF_MODEL_TIERS`` at all, and the judge is there.
+    """
     from half.__main__ import build
-    from half.config import MAINS_ENV, ROOT_ENV, TIERS_ENV, load
+    from half.config import MAINS_ENV, ROOT_ENV, load
     from half.secrets import FileSecretStore
 
     root = tmp_path / "mains"
     root.mkdir()
     FileSecretStore.beside(root).put(MAIN, "model_api_key", "sk-fine")
-    config = load({ROOT_ENV: str(root), MAINS_ENV: f"123:{MAIN}",
-                   TIERS_ENV: f"{MAIN}:cheap"})
+    config = load({ROOT_ENV: str(root), MAINS_ENV: f"123:{MAIN}"})
+    assert config.tier_for(MAIN) is None, "the fixture configured a tier"
     wiring = build(config, token="123:fake")
     try:
         assert wiring.judges.holds(MAIN)
@@ -1559,38 +1561,100 @@ def test_a_main_with_a_tier_and_a_key_is_equipped_in_the_shipped_wiring(
 
 @pytest.mark.cap7
 @pytest.mark.cap7_judgement
-def test_a_main_with_no_tier_is_skipped_rather_than_defaulted(tmp_path, caplog):
-    """AD-20: the tier travels with the main and there is no default.
+def test_every_main_is_judged_on_the_pinned_tier_and_never_their_own(
+    tmp_path, monkeypatch
+):
+    """**SPEC's constraint, not a preference**: *the nightly pass runs on a
+    cheaper model tier than conversation, batched, since cost is dominated by it
+    and the free tier depends on that gap.*
 
-    A silent fallback tier is either a bill nobody authorised or a quality
-    regression nobody sees. The consequence is stated rather than hidden: a
-    deployment that sets ``HALF_MAINS`` and not ``HALF_MODEL_TIERS`` mints no
-    tensions at all, and the line says so.
+    The pass is the only recurring spend in the product — every night, whether
+    or not anybody writes, ``JUDGEMENTS`` times per main — so a tier that
+    followed the main would make the one cost the free tier is sized against
+    follow what a deployment pays for **conversation**, which is that gap
+    closed. And there is nothing here for a better tier to buy on a main's
+    behalf: a judgement is one label from a closed set and nobody reads it.
+
+    Asserted from **both sides of the provider**, because either one alone is
+    satisfiable by the mutation the other catches: a tier followed inside the
+    wiring passes any check on the rendered payload of a separately-built
+    classifier, and a tier pinned in the wiring and then resolved from the main
+    inside the provider passes any check on what the wiring handed over. So the
+    ``Tiers`` the composition root actually constructs is captured, and the
+    model a real request actually names is read off the payload.
+
+    Driven with one main a deployment put on the **frontier** tier and one with
+    no tier at all: both are equipped, and neither resolves to anything but
+    ``CLASSIFY_TIER``.
     """
-    from half.__main__ import build
     from half.config import MAINS_ENV, ROOT_ENV, TIERS_ENV, load
+    from half.model.tier import DEFAULT_MODELS, Tier
     from half.secrets import FileSecretStore
+
+    assert CLASSIFY_TIER == "cheap"
+    assert CLASSIFY_TIER in {str(tier) for tier in Tier}
+    assert CLASSIFY_TIER != str(Tier.FRONTIER)
 
     root = tmp_path / "mains"
     root.mkdir()
-    store = FileSecretStore.beside(root)
+    secrets = FileSecretStore.beside(root)
     for main in (MAIN, OTHER_MAIN):
-        store.put(main, "model_api_key", "sk-fine")
+        secrets.put(main, "model_api_key", "sk-fine")
     config = load({ROOT_ENV: str(root),
                    MAINS_ENV: f"123:{MAIN}, 456:{OTHER_MAIN}",
-                   TIERS_ENV: f"{MAIN}:cheap"})
-    with caplog.at_level(logging.DEBUG, logger="half"):
-        wiring = build(config, token="123:fake")
-    try:
-        assert wiring.judges.holds(MAIN)
-        assert not wiring.judges.holds(OTHER_MAIN)
-        assert wiring.judges.for_main(OTHER_MAIN) is None
-    finally:
-        wiring.registry.close()
-    assert any(
-        "no model tier" in r.getMessage() and "no tension is minted" in
-        r.getMessage() and OTHER_MAIN in r.getMessage()
-        for r in caplog.records
+                   TIERS_ENV: f"{MAIN}:frontier"})
+    assert config.tier_for(MAIN) == "frontier", "the fixture pays for nothing"
+    assert config.tier_for(OTHER_MAIN) is None
+
+    # Side one: what the composition root hands the provider. The production
+    # function is called directly rather than through ``build``, because
+    # ``build`` equips four subsystems through the same constructor and three of
+    # them are somebody else's rule.
+    import half.__main__ as entrypoint
+
+    given: list[tuple[object, object]] = []
+    real = entrypoint.AnthropicProvider
+
+    def watched(transport, *, tiers, budget):
+        given.append((tiers, budget))
+        return real(transport, tiers=tiers, budget=budget)
+
+    monkeypatch.setattr(entrypoint, "AnthropicProvider", watched)
+    seat = entrypoint.judges(config, secrets)
+
+    assert seat.holds(MAIN) and seat.holds(OTHER_MAIN), "a key equips a main"
+    assert len(given) == 2, given
+    for tiers, budget in given:
+        (main,) = tiers.mains
+        assert tiers.of(main) is Tier.CHEAP, (main, dict(tiers.mains))
+        assert budget.per_call_micro_usd == PER_CALL_MICRO_USD
+
+    # Side two: the model a real request actually names, end to end.
+    transport = Counting()
+    elsewhere = Judges({MAIN: _real_classifier(transport)})
+    assert asked(elsewhere) is False
+    assert transport.payloads[0]["model"] == DEFAULT_MODELS[Tier.CHEAP].model
+    assert transport.payloads[0]["model"] != DEFAULT_MODELS[Tier.FRONTIER].model
+
+    # And the composition root **reads** this module's constant rather than
+    # spelling a tier name of its own, so the two cannot drift apart. Read off
+    # the source, because the binding existing proves nothing: a mutation that
+    # replaced the reference with the literal ``"cheap"`` left every assertion
+    # above this one green while putting the tier in two places.
+    assert entrypoint.JUDGE_TIER is CLASSIFY_TIER
+    wiring = next(
+        node for node in ast.walk(
+            ast.parse((ROOT / "half/__main__.py").read_text(encoding="utf-8"))
+        )
+        if isinstance(node, ast.FunctionDef) and node.name == "judges"
+    )
+    parsed = [
+        node for node in ast.walk(wiring)
+        if isinstance(node, ast.Call) and ast.unparse(node.func) == "Tiers.parse"
+    ]
+    assert len(parsed) == 1, [ast.unparse(n) for n in parsed]
+    assert ast.unparse(parsed[0]) == "Tiers.parse({main_id: JUDGE_TIER})", (
+        ast.unparse(parsed[0])
     )
 
 
@@ -1600,14 +1664,18 @@ def test_a_deployment_with_no_credentials_still_boots(tmp_path):
     """Nothing in the wiring may fail a boot. No key, an unreadable credential
     file, an unknown tier, a missing SDK — each is a deployment that has not
     equipped that main for a nightly judgement, and none is a reason to hold up
-    a Half that still answers everything they say."""
+    a Half that still answers everything they say.
+
+    **This is also the skip that survived the tier being pinned**: a main with no
+    credential gets no judge and nothing is minted for them, which is story 9d's
+    shipped behaviour exactly.
+    """
     from half.__main__ import build
-    from half.config import MAINS_ENV, ROOT_ENV, TIERS_ENV, load
+    from half.config import MAINS_ENV, ROOT_ENV, load
 
     root = tmp_path / "mains"
     root.mkdir()
-    config = load({ROOT_ENV: str(root), MAINS_ENV: f"123:{MAIN}",
-                   TIERS_ENV: f"{MAIN}:cheap"})
+    config = load({ROOT_ENV: str(root), MAINS_ENV: f"123:{MAIN}"})
     wiring = build(config, token="123:fake")
     try:
         assert not wiring.judges.holds(MAIN)
@@ -1712,7 +1780,8 @@ def test_every_judgement_guarantee_this_story_rests_on_still_exists():
         "test_the_order_of_the_two_entries_is_never_used_for_anything",
         "test_the_prompt_carries_two_claims_the_instructions_and_no_third_thing",
         "test_this_story_added_no_fourth_copy_of_the_consultation",
-        "test_a_main_with_no_tier_is_skipped_rather_than_defaulted",
+        "test_every_main_is_judged_on_the_pinned_tier_and_never_their_own",
+        "test_a_deployment_with_no_credentials_still_boots",
         "test_the_module_says_plainly_that_two_claims_leave_the_machine",
     }
     missing = required - _cases_defined_here()

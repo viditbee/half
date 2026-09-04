@@ -105,11 +105,20 @@ than less: 9d's catch remains the guarantee for any judge, and this one does not
 lean on it.
 
 **Per main, and that is why there is a bench.** ``Disagreement.disagree`` takes
-two entries and no ``main_id`` — widening it is Ask-First — while the provider,
-the key and the tier are all per main (AD-11, AD-20). So ``Judges`` holds the
-book and ``Judges.for_main`` hands out the one-main ``Judge`` the pass then uses
-for that main's whole night. The resolution happens once per pass, above the
-seam, and the seam is untouched.
+two entries and no ``main_id`` — widening it is Ask-First — while the provider
+and the key behind it are per main (AD-11). So ``Judges`` holds the book and
+``Judges.for_main`` hands out the one-main ``Judge`` the pass then uses for that
+main's whole night. The resolution happens once per pass, above the seam, and
+the seam is untouched.
+
+**The tier is the one thing that is not the main's** (``CLASSIFY_TIER``). SPEC's
+constraint is that the nightly pass runs on a cheaper tier than conversation
+*because the free tier depends on that gap*, and this pass is the only recurring
+spend in the product. A judgement is also not a sentence anybody reads — it is
+one label from a closed set — so there is nothing here for a better tier to buy
+on a main's behalf, which is the same argument the crisis and correction
+classifiers make for pinning theirs. A main is equipped by having a **key**, not
+by having been assigned a tier.
 """
 
 from __future__ import annotations
@@ -339,6 +348,40 @@ INSTRUCTIONS: Final[tuple[str, ...]] = (
 #: hanging to its limit, on a night with a full budget. ``_check_constants``
 #: pins that relation.
 BOUND_SECONDS: Final[float] = 5.0
+
+#: Which tier judges, for **every** main. Not the main's own conversation tier,
+#: and this is the one number here that a constraint decides rather than a
+#: preference.
+#:
+#: SPEC's constraint: *the nightly pass runs on a cheaper model tier than
+#: conversation, batched, since cost is dominated by it and the free tier
+#: depends on that gap.* That is the free tier's economics rather than cost
+#: hygiene — the pass is the only recurring spend in the product, it happens
+#: every night whether or not anybody writes, and ``JUDGEMENTS`` of these happen
+#: per main per night. A tier that followed the main would make the one cost the
+#: free tier is sized against follow what somebody pays for **conversation**,
+#: which is the gap the constraint names, closed.
+#:
+#: **Why this differs from the turn and the morning, which do follow the main.**
+#: AD-20 puts the tier on the main because the thing being bought there is the
+#: sentence the main reads: a deployment that pays for a better conversation is
+#: buying a better conversation. Nothing here is read by anybody. A judgement is
+#: an internal classification whose whole output is one label from a closed set,
+#: and its quality question — *does the cheap tier tell a tension from a
+#: contradiction, in every script* — is the same question for every main, which
+#: is the same argument ``half.crisis.classifier`` and
+#: ``half.correction.candidate`` make for pinning theirs.
+#:
+#: A **name** rather than an enum member, so this module still cannot reach the
+#: model package's tier table — the composition root parses it and a name this
+#: build does not know is refused at boot. Pinned by value in
+#: ``tests/test_judge.py``, so following the main again is a red test and a
+#: deliberate edit rather than a quiet multiplication of every main's nightly
+#: bill.
+#:
+#: Whether the cheap tier judges well enough, in every script and across two of
+#: them, is not answerable here and no arrangement of green cases answers it.
+CLASSIFY_TIER: Final[str] = "cheap"
 
 #: The most of one main's scheduler slot the judgements may take, in the worst
 #: case, leaving the rest for the re-evaluation and the appends.
@@ -1024,6 +1067,12 @@ def _check_constants() -> None:
     # deleting it left the whole suite green, which is what a guard that cannot
     # fire looks like from the outside, and a guard nobody can test is a
     # sentence rather than a check.
+    if not isinstance(CLASSIFY_TIER, str) or not CLASSIFY_TIER.strip():
+        raise JudgeError(
+            f"{CLASSIFY_TIER!r} is not a tier name. The composition root parses "
+            "this and a name this build does not know is refused at boot, so an "
+            "empty one is a nightly pass with no model resolved for anybody"
+        )
     if not INSTRUCTIONS or any(not block.strip() for block in INSTRUCTIONS):
         raise JudgeError("the instructions must not be empty")
     for label in LABELS:
@@ -1097,6 +1146,7 @@ __all__ = [
     "BREAK_FOR",
     "CANNOT_BOTH_BE_TRUE",
     "CANNOT_SAY",
+    "CLASSIFY_TIER",
     "INSTRUCTIONS",
     "LABELS",
     "NO_TENSION",

@@ -638,7 +638,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m ad9 -q --collect-only \
             | grep -c '::' || true)
           echo "AD-9 cases collected: $collected"
-          if [ "$collected" -lt 96 ]; then
+          if [ "$collected" -lt 95 ]; then
             echo "::error::the AD-9 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -1094,9 +1094,9 @@ jobs:
         #   and the bench bypassed in `half/consolidate/pass_.py`, so no judge is
         #   ever resolved for anybody — nine.
         #
-        # None is red only in one place by accident, and none is red anywhere
-        # outside this file — which is the second half of what a subset gate has
-        # to be true for.
+        # None is red only in one place by accident, and none in the first two
+        # rounds is red anywhere outside this file — which is the second half of
+        # what a subset gate has to be true for.
         #
         # **The two import-time refusals are the interesting rows**, and they
         # are the reason this gate has three cases it would not otherwise have.
@@ -1122,6 +1122,21 @@ jobs:
         # guard deleted (one), the tally counting by verdict instead of by label
         # (eight), and the holder allowlist turned back into a denylist (two) —
         # are all red.
+        #
+        # **A third round of four, run when the tier was pinned.** SPEC's
+        # constraint — *the nightly pass runs on a cheaper tier than
+        # conversation, since the free tier depends on that gap* — is what
+        # decides `CLASSIFY_TIER`, so the two mutations that matter are the
+        # wiring following the main's tier again and the pinned tier becoming
+        # the frontier one; both are red on the case that asserts it from both
+        # sides of the provider. A third — the tier name respelled as a literal
+        # in the composition root instead of read from this module — was
+        # **green** on the first attempt, because a case can assert that a
+        # constant is *bound* without asserting that it is *used*; the case now
+        # reads the `Tiers.parse` call out of `half/__main__.py` by AST, and it
+        # is red. The fourth, a main equipped without a credential, is red here
+        # and in `tests/test_minting.py`, which is correct: whether a key equips
+        # a main is a claim both files make.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap7_judgement -q --collect-only \
