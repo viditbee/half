@@ -1420,9 +1420,13 @@ jobs:
         #   reads no body twice, and a later pull reaching the same conclusion
         #   writes no second claim;
         #   and that it is **worldwide**: five scripts, each admitting a claim,
-        #   with the rendered request compared between them, and a claim that is
-        #   the same constant in all five because it is Half's own word rather
-        #   than the mail's.
+        #   with the rendered request compared between them, and a claim written
+        #   in the script its sources were written in — which is the assertion
+        #   story 15c inverted. It used to read *the same constant in all five*,
+        #   because 15b's claims were a closed vocabulary of six English
+        #   sentences; that is what made CAP-2's *previously unstated by the
+        #   main* unreachable, and the `cap3_particular` gate below is the rest
+        #   of that story.
         #
         # **The margin is deliberately zero: 28 selected, 28 required.** Every
         # case in this gate is the only one asserting its rule, which is the
@@ -1496,14 +1500,21 @@ jobs:
         # raises reaches no provider; that the threshold is two and **no call
         # site can lower it**, asserted as the absence of a parameter rather
         # than as a value; that a claim which could not be true cannot be
-        # constructed, in five shapes, each asserting the refusal that named it;
+        # constructed, in seven shapes, each asserting the refusal that named
+        # it — two of them story 15c's, because *a claim says something* stopped
+        # being true by construction the moment its words stopped being a
+        # literal in the tree;
         # that every import-time guard has a **bypass case**, so a mutation of
         # the data those guards protect is red *by name* somewhere rather than
         # only red everywhere at once — and that those same guards pass on the
         # shipped constants, which is the other half a bypass case needs; that
         # the holder **cannot author a claim**, checked as an allowlist; that
         # the bench is sealed; that the four gates are 15a's by identity and are
-        # not respelled here; that the tier is pinned **and** read from
+        # not respelled here; that the **label** vocabulary is closed and is
+        # never the body's words — the *claim* vocabulary this line used to name
+        # is gone, because story 15c generates the sentence and only the label
+        # and the subject remain constants; that the tier is pinned **and** read
+        # from
         # `half/derive/revealed.py` by the composition root, because a case can
         # assert that a constant is bound without asserting that it is used;
         # that no logging call in the module can carry content, scanned over the
@@ -1517,11 +1528,159 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap3_structure -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-3 structural cases collected: $collected"
-          if [ "$collected" -lt 33 ]; then
+          if [ "$collected" -lt 36 ]; then
             echo "::error::the CAP-3 structural gate collected $collected cases; the scrub ordering, the threshold that nothing can lower, the closed vocabulary or the narrow holder has stopped being asserted"
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap3_structure
+
+      - name: 'CAP-3: a claim worth hearing, on the support it actually has'
+        # The third gate on this capability, and it exists because the first two
+        # could both be green for a product that says six things.
+        #
+        # Story 15b shipped the claim's *sentence* as a constant, one per label,
+        # so Half could tell anybody in the world that they travel, buy things,
+        # pay for a subscription, keep appointments, do paid work or study — and
+        # nothing else, ever. Story 7 found those six were the complete set, and
+        # CAP-2 asks for a statement "confirmed as true **and previously
+        # unstated by the main**": nobody learns that they travel. The cause was
+        # a clause in 15b's frozen block forbidding anything derived from a body
+        # "including a summary or an embedding", which was never AD-13's rule —
+        # AD-13 forbids keeping the *body*, and its own accepted-cost note
+        # ("rebuild can no longer re-derive claims from original text") presumes
+        # claims are derived from bodies and kept. The clause is corrected on
+        # the record in 15b's Spec Change Log.
+        #
+        # What it protects, each rule with no second case:
+        #
+        #   that a claim **says something the label alone could not have said**,
+        #   asserted three ways rather than by comparing against a constant: the
+        #   writer's own text came back, no shipped `Doing` carries it, and it
+        #   appears nowhere as a literal in `half/derive/revealed.py`;
+        #
+        #   **that a specific claim is admitted only on the support that claim
+        #   itself has** — the rule this whole gate is written around. The
+        #   fixture gives a label two independent groups and gives the sentence
+        #   one, so the two numbers differ by exactly the margin that decides
+        #   admission, and both are computed in the case from the same
+        #   union-find the runtime uses. Two against one is the widest they can
+        #   be at that moment: generation fires the instant a label reaches two
+        #   independent groups, so the label's count is always exactly two when
+        #   a sentence is written, and a fixture claiming a bigger gap would be
+        #   describing a state the runtime cannot reach;
+        #
+        #   that an admitted claim **cites only the sources that confirmed it**,
+        #   which is the positive half of the same rule and fails the same
+        #   build;
+        #   that **only an explicit confirmation is support** — a denial, an
+        #   honest *cannot say*, an answer from no known set and a provider that
+        #   did not answer are four different facts and none of them counts,
+        #   each driven beside a source that *does* confirm so the case is red
+        #   in both directions;
+        #
+        #   that there is **one generation per admitted claim and not one per
+        #   body**: nine messages in a thread and a tenth on its own cost ten
+        #   classifications and one generation, and support arriving after the
+        #   crossing buys no second attempt. Asserted on the *crossing* count
+        #   and the *held-text* count as well as on the writer's, because two
+        #   rules cover this one between them and a case reading only the
+        #   writer's call count is green with either of them deleted — which is
+        #   what the probes found;
+        #
+        #   that the claim is **Half's own words**: a sentence repeating a run
+        #   of `QUOTE_RUN_WORDS` words from any source is thrown away rather
+        #   than trimmed, in any script, including one reflowed across the
+        #   source's line breaks — and that a shared *particular* is not a
+        #   quotation, because a floor of two words would refuse every specific
+        #   claim there is and delete the capability rather than protect
+        #   anything. The unit is `half.context.build`'s own and only the length
+        #   is this caller's, asserted over the import graph as well as by
+        #   behaviour;
+        #   that an empty, multi-line, over-long, secret-bearing or
+        #   redaction-marker-bearing sentence is **refused under its own reason**
+        #   and never repaired, with the usable one returned unchanged so the
+        #   tripwire is not red either way;
+        #
+        #   **the scrubbed-text window**, which is the story's Ask First and is
+        #   asserted rather than described: a label holds its texts only until
+        #   it generates and drops them in the same call; a label that never
+        #   crosses holds them until the run ends and no longer; leaving a
+        #   `Run`'s scope releases everything **including on a raise**; the
+        #   shipped `ingest_mail` runs the pull *inside* such a scope, asserted
+        #   over `half/__main__.py`'s syntax tree because no behavioural case
+        #   can see that; the run refuses to hold anything that is not scrubber
+        #   output, which is the second door out of ingestion typed like the
+        #   first; the held text is bounded by `MAX_SOURCES` **and the bound
+        #   prefers independence**, since a first-come ceiling would hold nine
+        #   messages from one thread, drop the tenth, and admit nothing in
+        #   exactly the case where something should be admitted; and a `Run`
+        #   reports itself in counts, never in contents (AD-22);
+        #
+        #   that a writer that is absent, slow, raising, refusing or
+        #   unreadable costs that group its claim and never costs the run its
+        #   receipts — five counters, because "no claim" is true of all of them
+        #   and of the eight states 15b already lists;
+        #   that **two holders can never be one object** (AD-19): the reader
+        #   cannot author and the writer cannot decide, both allowlists driven
+        #   in both directions with the narrow pair accepted;
+        #   that a generation carries the bodies and **no label**, since the
+        #   label is Half's own word about the main and would tell the writer
+        #   which answer to reach for;
+        #   that a confirmation is shown **one source and never the group**,
+        #   because a confirmation shown the whole group answers a question
+        #   whose answer is already yes;
+        #   that the writing tier is pinned **and** read from
+        #   `half/derive/particular.py` by the composition root;
+        #   that every import-time guard in that module has a **bypass case**
+        #   and that the shipped constants pass them;
+        #   and that nothing in it logs, reads a clock, opens a store or writes
+        #   a record — a claim Half wrote about somebody is as much AD-22's
+        #   subject as the mail it came from.
+        #
+        # **The margin is deliberately zero: 62 selected, 62 required.** Every
+        # case in this gate is the only one asserting its rule, which is the
+        # condition under which a zero margin is right, and it is why no
+        # existing floor was inflated instead. It also means every case added
+        # here owes an edit to this number, which is why `cap3_particular` is
+        # applied **per case** rather than as a module-wide `pytestmark`.
+        #
+        # **Fifteen mutations were run against these before this gate was
+        # written**, each with a purged bytecode cache on both sides, a green
+        # baseline asserted either side of it, and the failing case *names*
+        # recorded rather than an exit code. The ones worth naming, with how
+        # many cases caught each:
+        #
+        #   the sentence vouched for with the **label's** support rather than
+        #   its own — seven, and the first of them is the case this gate is
+        #   written around;
+        #   the *count* taken over the label's group while the *support set* was
+        #   taken from the confirming sources — **one**, and it is the only
+        #   fixture in the tree where those two numbers differ;
+        #   `independent` written as `len(standing)` — two;
+        #   an unsure confirmation counted as support — two;
+        #   the quotation check disabled — one; a long sentence trimmed rather
+        #   than refused — one; the ceiling on held text removed — one;
+        #   `release` made a no-op — three; a label's texts surviving its own
+        #   generation — two; the pull moved outside the `Run`'s scope — one;
+        #   the writer allowlist removed — one; a confirmation shown the whole
+        #   group — one; the absent-writer check removed — one.
+        #
+        # **Three came back green and each was the same shape**: a guard covered
+        # by another guard. `Run.ready` and `Run.hold` both refuse a label that
+        # has already generated, so removing either left the writer's call count
+        # at one; and `hold`'s refusal is invisible in the claim because the
+        # texts are released at the end of the run anyway. The cases now read
+        # the crossing count and the held-text count, and all three are red.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap3_particular -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-3 generated-claim cases collected: $collected"
+          if [ "$collected" -lt 62 ]; then
+            echo "::error::the CAP-3 generated-claim gate collected $collected cases; the claim's own support, the one generation per group, the scrubbed-text window or Half's own words has stopped being asserted"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap3_particular
 
       - name: 'CAP-2: the demonstration — one claim offered, never asserted'
         # The gate for the capability the whole product is acquired through.
