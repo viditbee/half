@@ -44,7 +44,7 @@ from half.__main__ import build, ingest_mail
 from half.config import MAINS_ENV, ROOT_ENV, load
 from half.derive import revealed as reading
 from half.derive.claim import Derivers
-from half.derive.gates import GATES, Gate
+from half.derive.gates import GATES
 from half.derive.revealed import (
     BOUND_SECONDS,
     CLASSIFY_TIER,
@@ -72,7 +72,7 @@ from half.governance import ladder
 from half.ingest import pipeline as ingesting
 from half.ingest.pipeline import Pipeline, Receipt
 from half.ingest.port import Message
-from half.ingest.scrub import Scrubbed, scrub
+from half.ingest.scrub import scrub
 from half.model.port import Decision, Failure, Kind, Reason, Usage
 from half.retrieval.prefix import build_prefix
 from half.store.records import CLAIM, DERIVATION, DERIVED, LEDGER, SUBJECT
