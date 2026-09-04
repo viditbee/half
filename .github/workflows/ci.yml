@@ -1576,7 +1576,17 @@ jobs:
         #   a sentinel through every byte written under the main's tree and
         #   every captured log line.
         #
-        # **The margin is deliberately zero: 89 selected, 89 required.** Every
+        # Two of them exist because a ``Reason`` nothing can produce reads as
+        # coverage and asserts nothing. A demonstration the platform **dropped**
+        # leaves no offer standing, or a later *yes* promotes a claim the main
+        # never received; and a fetch that **hangs before it yields** does not
+        # hold the main past the budget, asserted as elapsed wall time rather
+        # than as an outcome — a backstop wired to the pull's own constant share
+        # rather than to the budget reaches the same outcome, minutes later,
+        # which is the assertion-identical-either-way shape. A structural case
+        # beside them sweeps the enum and fails for any reason no case names.
+        #
+        # **The margin is deliberately zero: 91 selected, 91 required.** Every
         # case is the only one asserting its rule, which is the condition under
         # which a zero margin is right — and it is why no existing floor was
         # inflated instead. It also means every case added here owes an edit to
@@ -1621,12 +1631,16 @@ jobs:
         # that the offered door is unreachable from the package was asserting
         # `not hasattr(<function>, "split")` — a **dead anchor**, true of every
         # function there has ever been.
+        #
+        # Two later probes were added with two later guards and both are red:
+        # the send result of the demonstration ignored, and the pull backstop
+        # wired to `PULL_SECONDS` instead of the budget. Twenty-nine in total.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap2 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-2 demonstration cases collected: $collected"
-          if [ "$collected" -lt 89 ]; then
+          if [ "$collected" -lt 91 ]; then
             echo "::error::the CAP-2 gate collected $collected cases; the notice before the source, the single offered claim, the ladder's door, story 12's door or the ninety seconds has stopped being asserted"
             exit 1
           fi
@@ -1673,7 +1687,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap2_structure -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-2 structural cases collected: $collected"
-          if [ "$collected" -lt 41 ]; then
+          if [ "$collected" -lt 42 ]; then
             echo "::error::the CAP-2 structural gate collected $collected cases; the consent module that ships no sentence, the flow that admits nothing of its own, the single recogniser or the offer that cannot stand for a message nobody saw has stopped being asserted"
             exit 1
           fi

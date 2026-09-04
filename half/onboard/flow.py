@@ -487,10 +487,22 @@ async def demonstrate(
         # main knowing nothing, so nothing is connected on the strength of it.
         return done(Reason.NOTICE_NOT_SENT)
 
-    # 3 — the mailbox, cut at the deadline rather than allowed to eat the whole
-    #     budget. A truncated pull keeps every receipt already written.
+    # 3 — the mailbox, under **two deadlines with two different jobs**, and it
+    #     matters that they are different or one of them is dead code.
+    #
+    #     ``half.__main__.Bounded`` is the pull's own share: the *source* stops
+    #     yielding after ``PULL_SECONDS``, so the pipeline's loop ends normally
+    #     and every receipt written and every candidate gathered survives. That
+    #     is the ordinary cut and it is the one that keeps a claim.
+    #
+    #     This one is the backstop for the case that check cannot see — a fetch
+    #     that hangs before it yields anything, where the source is never given
+    #     the chance to stop. It is the **whole** budget rather than the pull's
+    #     share, because past it there is no demonstration left to protect: what
+    #     follows is ``OUT_OF_TIME``, which is exactly how that outcome becomes
+    #     reachable rather than a branch nothing can reach.
     if pull is not None:
-        await _pulled(pull, main_id=main_id, seconds=PULL_SECONDS)
+        await _pulled(pull, main_id=main_id, seconds=budget_seconds)
 
     # 4 — one claim, from the fold.
     beliefs = await _beliefs(registry, main_id)

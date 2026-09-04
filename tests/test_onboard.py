@@ -49,6 +49,7 @@ import ast
 import asyncio
 import inspect
 import logging
+import pathlib
 import time
 import unicodedata
 from pathlib import Path
@@ -229,6 +230,21 @@ class Wire:
     @property
     def wire(self) -> str:
         return "\n".join(self.sent)
+
+
+class DropsTheSecond(Wire):
+    """A platform that carries the notice and drops the demonstration.
+
+    Its own class rather than a counter on ``Wire``, because the two failures
+    are different products: a notice that did not land means nothing is
+    connected, and a demonstration that did not land means no offer may stand.
+    """
+
+    async def send(self, main_id: str, text: str) -> SendResult:
+        result = await Wire.send(self, main_id, text)
+        if len(self.sent) == 1:
+            return result
+        return SendResult(external_id=result.external_id, parts=0)
 
 
 class FakeMail:
@@ -1402,6 +1418,54 @@ def test_a_send_that_raises_costs_the_demonstration_and_never_the_process(
     assert result.offer is None
 
 
+@pytest.mark.cap2
+def test_a_demonstration_the_platform_dropped_leaves_no_offer_standing(
+    registry, tmp_path
+):
+    """*The demonstration*, at the last thing that can go wrong.
+
+    The message was composed, passed the judge, the tripwire and the inclusion
+    check — and the platform did not carry it. **No offer stands**, because a
+    *yes* on a later turn would then promote a claim the main was never shown,
+    which is CAP-2's own criterion inverted.
+
+    ``SendResult.parts`` of zero is the contract, not a raise: an adapter
+    answers it for a body the platform would reject, and a caller that
+    discarded the result would record a non-delivery as a message sent — the
+    failure that once spent a main's one unprompted morning on nothing.
+    """
+    a_claim(tmp_path / "mains")
+
+    result, channel = a_demonstration(registry, wire=DropsTheSecond())
+
+    assert result.reason is Reason.NOT_SENT
+    assert result.offer is None, "an offer stands for a message nobody received"
+    assert len(channel.sent) == 2, "the demonstration was never attempted"
+    with Store(tmp_path / "mains" / MAIN, prefix=build_prefix) as store:
+        assert store.state().beliefs[TRAVEL_ID]["license"] == str(ladder.FLOOR)
+
+
+@pytest.mark.cap2_structure
+def test_every_reason_a_demonstration_can_give_has_a_case_of_its_own():
+    """**No dead outcome.** A ``Reason`` nothing can produce reads as coverage
+    and asserts nothing, and a ``Reason`` no case names is one a mutation can
+    delete for free.
+
+    Swept over the enum rather than over a list kept here, so a value added
+    later fails until somebody writes the case that reaches it.
+    """
+    source = pathlib.Path(__file__).read_text(encoding="utf-8")
+    for reason in Reason:
+        # Named, not merely reachable through a sweep over the enum: the
+        # parametrised structural case below iterates ``Reason`` without
+        # spelling any of them, so a value nothing else mentions would ride
+        # along inside it and read as covered.
+        spelling = f"Reason.{reason.name}"
+        assert spelling in source, (
+            f"{spelling} is produced by the flow and named by no case"
+        )
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # matrix: re-run, replay, nothing durable
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1668,6 +1732,42 @@ def test_a_budget_gone_before_the_composition_says_so_and_offers_nothing(
     assert result.reason is Reason.OUT_OF_TIME
     assert result.fitted is False, result.seconds
     assert holder.calls == 0, "a composition ran past the budget"
+    assert channel.sent == [NOTICE]
+
+
+@pytest.mark.cap2
+def test_a_fetch_that_hangs_does_not_hold_the_main_past_the_budget(
+    registry, tmp_path
+):
+    """*Ninety seconds*, at the case the source's own deadline cannot see.
+
+    ``half.__main__.Bounded`` stops a source **between messages**, which is the
+    ordinary cut and the one that keeps a claim. It can do nothing about a
+    fetch that hangs before it yields anything — and that is the failure a
+    budget exists for, because the main is sitting in front of the OAuth screen
+    they just came through.
+
+    So the backstop is the **whole budget**, and this case asserts it as
+    elapsed wall time rather than as an outcome: a backstop wired to the pull's
+    own constant share instead of to the budget leaves this demonstration
+    green and the main waiting, which is the assertion-identical-either-way
+    shape — the ``OUT_OF_TIME`` outcome below is reached either way, just
+    minutes later.
+    """
+    a_claim(tmp_path / "mains")
+    hung = asyncio.Event()
+
+    async def pull():
+        hung.set()
+        await asyncio.sleep(30)
+
+    started = time.monotonic()
+    result, channel = a_demonstration(registry, pull=pull, budget=0.05)
+    elapsed = time.monotonic() - started
+
+    assert hung.is_set(), "the pull never ran, so nothing was bounded"
+    assert elapsed < 2.0, f"a hung fetch held the main for {elapsed:.1f}s"
+    assert result.reason is Reason.OUT_OF_TIME
     assert channel.sent == [NOTICE]
 
 
