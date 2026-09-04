@@ -1,0 +1,131 @@
+- id: "1"
+  title: The store — four-layer memory substrate
+  description: >-
+    Build the memory substrate behind CAP-5 and CAP-14: content-addressed
+    immutable sources, an append-only JSONL belief log, markdown projections
+    per subject, and a rebuildable index directory.
+  spec_checkpoint: true
+  invoke_dev_with: >-
+    The log is the source of truth and the markdown projections are views
+    folded from it. Never let a projection become authoritative, and never
+    mutate a log record in place — corrections are appends. Export must fall
+    out of the log's own format rather than needing a serializer.
+
+- id: "2"
+  title: Channel and thread
+  description: >-
+    Deliver CAP-1: a WhatsApp/Telegram gateway with one persistent thread per
+    main and exactly one Half behind it. No thread creation, no app surface.
+
+- id: "3"
+  title: Ingestion and secret exclusion
+  description: >-
+    Deliver CAP-3 and CAP-13: Gmail OAuth, immutable source capture, and
+    independence-gated belief admission — with credentials, one-time codes and
+    recovery codes discarded at read time.
+  spec_checkpoint: true
+  done_checkpoint: true
+  invoke_dev_with: >-
+    A secret must never be written, even transiently — not to the log, not to a
+    projection, not to a debug artifact, not to a cache. Detection happens
+    before anything is persisted. Independence is union-find over origin,
+    content hash and publisher: ten mentions in one thread is one support.
+
+- id: "4"
+  title: Retrieval over beliefs
+  description: >-
+    Deliver CAP-9: contextual-prefix plus BM25 retrieval targeting the belief
+    set rather than the source corpus, with strand weighting and correct
+    behaviour when no reranker or vector service is available.
+
+- id: "5"
+  title: Delivery governance
+  description: >-
+    Deliver CAP-10: the license ladder defaulting to behave, the trust balance,
+    the unsaid and unasked queues with release conditions, the irreversibility
+    interrupt rule, and the per-loop nagging bound.
+  spec_checkpoint: true
+  invoke_dev_with: >-
+    This is the most novel subsystem in the product and the one most likely to
+    be flattened into a generic notification policy. Read constitution.md in
+    full first. Half must be capable of sending nothing for an extended period,
+    and an unspent trust balance is a defect rather than a success.
+
+- id: "6"
+  title: Crisis protocol
+  description: >-
+    Deliver CAP-12: the pre-filter mode, the safe word, ledger retrieval
+    disabled, prefilled handoff drafts to a chosen human, refreshable referral
+    data, and the aftercare license ceiling.
+  spec_checkpoint: true
+  done_checkpoint: true
+  invoke_dev_with: >-
+    Implement from the crisis-protocol companion verbatim. Do not paraphrase
+    the response language, do not improvise wording, and do not add
+    counselling behaviour the companion does not specify. The mode is a
+    pre-filter ahead of the normal pipeline, not a branch inside the agent.
+    Qualified clinical review happens at this checkpoint and gates launch.
+
+- id: "7"
+  title: Onboarding demonstration
+  description: >-
+    Deliver CAP-2: one OAuth, no forms, and one true, specific, falsifiable
+    statement about the main inside ninety seconds.
+  done_checkpoint: true
+  invoke_dev_with: >-
+    This story is the point at which external users can reach the product, so
+    story 6 must be complete and reviewed before it ships. The statement must
+    be verifiable by the main the same day; an unfalsifiable pleasantry fails
+    the capability even if it reads well.
+
+- id: "8"
+  title: Open loops
+  description: >-
+    Deliver CAP-6: loop objects carrying state and natural timescale, silence
+    detection past a loop's own period, and loop-based ranking of what
+    surfaces.
+  invoke_dev_with: >-
+    Evidence of non-action must never refute a wanting. A bank statement
+    showing no purchase does not demote "wants to buy farmland" — that
+    disagreement is the product. Loops transition state; they never run
+    through the belief-refutation path.
+
+- id: "9"
+  title: Nightly consolidation and tensions
+  description: >-
+    Deliver CAP-7: the scheduled pass that promotes episodic material, decays
+    unused salience, and mints tensions between the stated and revealed
+    ledgers with computable widening.
+  spec_checkpoint: true
+  invoke_dev_with: >-
+    Cost bounding is the design constraint, not an optimisation. Compare only
+    new or changed entries against the loop set and against beliefs sharing a
+    subject, gated by a cheap relevance filter before any model call. Never
+    all-pairs. The pass runs on the cheapest model tier via the Batch API.
+
+- id: "10"
+  title: The morning surface
+  description: >-
+    Deliver CAP-8: at most one unprompted message per day, traceable to the
+    preceding night's pass, and silence on days with nothing worth saying.
+  done_checkpoint: true
+
+- id: "11"
+  title: Stated-ledger acquisition
+  description: >-
+    Deliver CAP-4: the question engine that accumulates plans, ambitions,
+    preferences and routines through conversation, since the stated ledger
+    cannot be ingested.
+  spec_checkpoint: true
+  invoke_dev_with: >-
+    Favor-buys-question is trivially implementable as a nag and that is the
+    failure to avoid. No question may be asked that was not preceded by a
+    delivered favor, and no onboarding interview or questionnaire may exist
+    anywhere in the product.
+
+- id: "12"
+  title: Correction
+  description: >-
+    Deliver CAP-11: "that's wrong" as a first-class action producing visible
+    belief revision, with retract, revise and expunge kept distinct in the
+    record and in what Half says.

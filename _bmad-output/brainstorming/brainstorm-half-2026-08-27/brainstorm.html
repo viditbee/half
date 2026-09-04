@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Night Half Was Designed</title>
+<style>
+/* ── A committed single visual world: one long night, ending at dawn. ───── */
+:root{
+  --night-0:#0B1016;   /* deepest */
+  --night-1:#111823;
+  --night-2:#18212E;
+  --night-3:#222E3D;
+  --star:#E7ECEF;
+  --star-dim:#9AA8B4;
+  --star-faint:#66757F;
+  --ice:#7FB3C8;       /* cool accent — the thinking hours */
+  --dawn:#E0A45C;      /* warm accent — reserved for the climax */
+  --dawn-soft:#C98B54;
+  --blood:#C1615A;     /* the dark half */
+  --seam:#2A3746;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,"Times New Roman",serif;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{background:var(--night-0)}
+body{
+  margin:0;background:var(--night-0);color:var(--star);
+  font-family:var(--sans);font-size:16.5px;line-height:1.65;
+  -webkit-font-smoothing:antialiased;
+  padding:0 22px 120px;
+}
+.wrap{max-width:780px;margin:0 auto}
+p{margin:0 0 16px;max-width:64ch}
+em{font-style:italic;color:var(--star-dim)}
+strong{font-weight:600;color:var(--star)}
+
+/* ── masthead ─────────────────────────────────────────────────────────── */
+.sky{
+  position:relative;margin:0 -22px 0;padding:104px 22px 76px;
+  background:
+    radial-gradient(120% 90% at 78% 6%, rgba(127,179,200,.13), transparent 60%),
+    radial-gradient(90% 70% at 12% 96%, rgba(224,164,92,.07), transparent 62%),
+    linear-gradient(180deg,#080C11 0%,var(--night-0) 70%);
+  overflow:hidden;
+}
+.sky .inner{max-width:780px;margin:0 auto;position:relative;z-index:2}
+.stamp{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--star-faint)}
+h1{
+  font-family:var(--serif);font-weight:normal;
+  font-size:clamp(64px,16vw,132px);line-height:.86;letter-spacing:-.035em;
+  margin:18px 0 0;color:var(--star);
+}
+h1 .fade{color:var(--night-3)}
+.sub{
+  font-family:var(--serif);font-size:clamp(19px,3.4vw,25px);line-height:1.45;
+  color:var(--star-dim);margin:26px 0 0;max-width:33ch;font-style:italic;
+}
+.vitals{
+  display:flex;flex-wrap:wrap;gap:0 30px;margin-top:42px;padding-top:16px;
+  border-top:1px solid var(--seam);
+  font-family:var(--mono);font-size:11px;color:var(--star-faint);
+}
+.vitals b{color:var(--ice);font-weight:normal}
+
+/* ── movement scaffolding ─────────────────────────────────────────────── */
+.mv{margin:82px 0 0;position:relative}
+.hour{
+  font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--ice);display:block;margin-bottom:9px;
+}
+h2{
+  font-family:var(--serif);font-weight:normal;
+  font-size:clamp(29px,5vw,40px);line-height:1.1;letter-spacing:-.015em;
+  margin:0 0 6px;color:var(--star);
+}
+.tech{font-family:var(--mono);font-size:11.5px;color:var(--star-faint);margin:0 0 26px}
+.rule{height:1px;background:linear-gradient(90deg,var(--seam),transparent);margin:0 0 26px}
+
+/* ── 1. Yes-And: stacked rungs, each higher ───────────────────────────── */
+.rungs{margin:26px 0;display:flex;flex-direction:column;gap:2px}
+.rung{
+  border-left:2px solid var(--ice);background:var(--night-1);
+  padding:13px 18px;font-size:15px;line-height:1.5;
+}
+.rung .k{font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--ice);display:block;margin-bottom:4px}
+.rung:nth-child(1){margin-left:0}
+.rung:nth-child(2){margin-left:16px}
+.rung:nth-child(3){margin-left:32px}
+.rung:nth-child(4){margin-left:48px}
+.rung:nth-child(5){margin-left:64px;border-left-color:var(--dawn);background:var(--night-2)}
+.rung:nth-child(5) .k{color:var(--dawn)}
+
+/* ── 2. Brain Writing: two sheets, exchanged ──────────────────────────── */
+.sheets{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--seam);margin:26px 0;border:1px solid var(--seam)}
+.sheet{background:var(--night-1);padding:18px 19px}
+.sheet h4{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;margin:0 0 12px;font-weight:normal}
+.sheet.v h4{color:var(--dawn)}
+.sheet.h h4{color:var(--ice)}
+.sheet ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px}
+.sheet li{font-size:14px;line-height:1.5;color:var(--star-dim);padding-left:14px;position:relative}
+.sheet li::before{content:"";position:absolute;left:0;top:.62em;width:5px;height:1px;background:var(--star-faint)}
+.swap{text-align:center;font-family:var(--mono);font-size:10.5px;letter-spacing:.2em;color:var(--star-faint);margin:-12px 0 26px;text-transform:uppercase}
+
+/* ── 3. Assumption Reversal: struck, then inverted ────────────────────── */
+.flip{border-top:1px solid var(--seam);margin:26px 0}
+.flip .row{display:grid;grid-template-columns:1fr;gap:4px;padding:15px 0;border-bottom:1px solid var(--seam)}
+.flip .was{color:var(--star-faint);text-decoration:line-through;text-decoration-color:var(--blood);font-size:14.5px}
+.flip .now{color:var(--star);font-size:15.5px}
+.flip .now b{color:var(--ice);font-weight:600}
+
+/* ── 4. TRIZ: two forces, one resolution ──────────────────────────────── */
+.forces{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:14px;margin:26px 0 0}
+.force{background:var(--night-1);border:1px solid var(--seam);padding:17px 18px;font-size:14.5px;line-height:1.5;color:var(--star-dim)}
+.vs{font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--blood);text-transform:uppercase}
+.resolve{
+  margin:2px 0 0;padding:22px 24px;background:var(--night-2);
+  border:1px solid var(--ice);border-top:none;
+}
+.resolve .k{font-family:var(--mono);font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--ice);display:block;margin-bottom:8px}
+.resolve p{margin:0;font-family:var(--serif);font-size:21px;line-height:1.4;color:var(--star)}
+.resolve p+p{margin-top:10px;font-family:var(--sans);font-size:15px;color:var(--star-dim)}
+
+/* ── 5. One Feature Only: everything dims but one ─────────────────────── */
+.dim{display:flex;flex-wrap:wrap;gap:8px;margin:26px 0}
+.chip{
+  font-family:var(--mono);font-size:11.5px;padding:7px 12px;
+  border:1px solid var(--seam);color:var(--star-faint);background:transparent;
+}
+.chip.keep{
+  color:var(--night-0);background:var(--dawn);border-color:var(--dawn);font-weight:600;
+}
+
+/* ── 6. Split screen ──────────────────────────────────────────────────── */
+.split{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--seam);border:1px solid var(--seam);margin:26px 0}
+.half-col{padding:20px 20px 22px}
+.half-col.dark{background:#140F11}
+.half-col.light{background:#141A16}
+.half-col h4{font-family:var(--mono);font-size:10px;letter-spacing:.15em;text-transform:uppercase;margin:0 0 14px;font-weight:normal}
+.half-col.dark h4{color:var(--blood)}
+.half-col.light h4{color:#8FBF9A}
+.hl{font-family:var(--serif);font-size:16.5px;line-height:1.38;margin:0 0 14px;color:var(--star)}
+.half-col.dark .hl{color:#E8C4BF}
+.half-col.light .hl{color:#CDE3D2}
+
+/* ── laws ─────────────────────────────────────────────────────────────── */
+.law{border-left:2px solid var(--blood);background:var(--night-1);padding:17px 20px;margin:20px 0}
+.law .k{font-family:var(--mono);font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--blood);display:block;margin-bottom:7px}
+.law p{margin:0;font-size:15.5px}
+.law p+p{margin-top:8px;color:var(--star-dim);font-size:14.5px}
+
+/* ── the turn ─────────────────────────────────────────────────────────── */
+.turn{
+  margin:96px -22px;padding:74px 22px;
+  background:linear-gradient(180deg,transparent,rgba(224,164,92,.05) 45%,transparent);
+  border-top:1px solid var(--seam);border-bottom:1px solid var(--seam);
+}
+.turn .inner{max-width:780px;margin:0 auto}
+.turn h2{font-size:clamp(32px,6vw,52px);color:var(--dawn)}
+.loop{display:flex;flex-wrap:wrap;gap:1px;background:var(--seam);border:1px solid var(--seam);margin:28px 0}
+.state{flex:1 1 150px;background:var(--night-1);padding:16px 17px}
+.state .n{font-family:var(--mono);font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--dawn);display:block;margin-bottom:6px}
+.state p{margin:0;font-size:14px;line-height:1.45;color:var(--star-dim)}
+
+/* ── synthesis ────────────────────────────────────────────────────────── */
+.links{counter-reset:s;list-style:none;padding:0;margin:26px 0}
+.links li{
+  counter-increment:s;position:relative;padding:16px 0 16px 46px;
+  border-bottom:1px solid var(--seam);font-size:15.5px;line-height:1.55;
+}
+.links li::before{
+  content:counter(s,decimal-leading-zero);position:absolute;left:0;top:18px;
+  font-family:var(--mono);font-size:11px;color:var(--dawn);
+}
+.verdict{
+  font-family:var(--serif);font-size:clamp(23px,4.4vw,32px);line-height:1.32;
+  color:var(--star);border-top:1px solid var(--dawn-soft);border-bottom:1px solid var(--dawn-soft);
+  padding:30px 0;margin:40px 0;max-width:26ch;
+}
+.verdict span{color:var(--dawn)}
+
+/* ── scope ────────────────────────────────────────────────────────────── */
+.scope{margin:28px 0;border-top:1px solid var(--seam)}
+.tier{padding:18px 0;border-bottom:1px solid var(--seam);display:grid;grid-template-columns:96px 1fr;gap:18px;align-items:start}
+.tier .lbl{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase}
+.tier.must .lbl{color:var(--dawn)}
+.tier.should .lbl{color:var(--ice)}
+.tier.could .lbl{color:var(--star-faint)}
+.tier.wont .lbl{color:var(--blood)}
+.tier p{margin:0;font-size:14.5px;line-height:1.6;color:var(--star-dim)}
+
+footer{
+  margin-top:90px;padding-top:20px;border-top:1px solid var(--seam);
+  font-family:var(--mono);font-size:11px;color:var(--star-faint);line-height:1.9;
+}
+.key{display:inline-block;padding:1px 7px;border:1px solid var(--seam);margin-right:4px}
+.key.v{color:var(--dawn);border-color:var(--dawn-soft)}
+.key.h{color:var(--ice);border-color:var(--seam)}
+
+@media (max-width:620px){
+  .sheets,.split,.forces{grid-template-columns:1fr}
+  .forces .vs{text-align:center;padding:4px 0}
+  .rung{margin-left:0!important}
+  .tier{grid-template-columns:1fr;gap:6px}
+  body{padding:0 16px 90px}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+<div class="sky">
+  <div class="inner">
+    <div class="stamp">27 – 30 August 2026 · creative partner · one long night</div>
+    <h1>Half<span class="fade">.</span></h1>
+    <p class="sub">A brainstorming session about building a second self — and what it found on the way to morning.</p>
+    <div class="vitals">
+      <span><b>231</b> entries</span>
+      <span><b>8</b> techniques</span>
+      <span><b>6</b> systems reviewed</span>
+      <span><b>1</b> core object found</span>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+
+<!-- ─────────────────────────────────────────────── -->
+<section class="mv">
+  <span class="hour">First hour</span>
+  <h2>Yes, and —</h2>
+  <p class="tech">Technique: Yes-And Building · never negate, only add a rung</p>
+  <div class="rule"></div>
+  <p>It began with a name and a premise: <em>Half is your own self, existing outside you.</em> The chain that followed took five rungs to arrive somewhere neither of us started.</p>
+
+  <div class="rungs">
+    <div class="rung"><span class="k">Rung 1</span>If Half is your other half and not a servant, it has to be allowed to <strong>disagree</strong> with you. An assistant that only complies is a butler.</div>
+    <div class="rung"><span class="k">Rung 2</span>What gives it the right is the memory. Half holds the version of you who made the commitment. Memory stops being recall and becomes <strong>standing</strong>.</div>
+    <div class="rung"><span class="k">Rung 3</span>So retrieval isn't "find the document." It's <em>find the moment this person was most themselves about this</em>. Index selves, not facts.</div>
+    <div class="rung"><span class="k">Rung 4</span>Human memory never deletes — it loses the index. So decay is a feature, and consolidation needs what drives it in us: <strong>sleep</strong>.</div>
+    <div class="rung"><span class="k">Rung 5 — the one that mattered</span>Half wakes having <strong>thought about you overnight</strong>. Spontaneity isn't a scheduler. It's someone who was up thinking.</div>
+  </div>
+
+  <div class="law">
+    <span class="k">Law · The favor buys the question</span>
+    <p>Every question Half asks must be paid for by something it just did for you.</p>
+    <p>Half never opens with an interview. It interviews you across the first month, not the first screen — which is also why the sign-up flow can be almost empty.</p>
+  </div>
+
+  <div class="law">
+    <span class="k">Law · Interrupt only on irreversibility</span>
+    <p>Break through when <em>waiting destroys the option</em> — not when something is merely important.</p>
+    <p>School pickup breaks through because the window closes. Medication at 2pm can be taken at 2:35. Everything else queues to the evening.</p>
+  </div>
+</section>
+
+<!-- ─────────────────────────────────────────────── -->
+<section class="mv">
+  <span class="hour">Second hour</span>
+  <h2>Two sheets, passed across the table</h2>
+  <p class="tech">Technique: Brain Writing Round Robin · write blind, then build on what lands</p>
+  <div class="rule"></div>
+
+  <div class="sheets">
+    <div class="sheet v">
+      <h4>Vidit's sheet</h4>
+      <ul>
+        <li>WhatsApp is one interface. Telegram too — and Half's own app, the richest surface.</li>
+        <li>Half represents a life. That's the whole value.</li>
+        <li>The app is a playground for your own life: ideas, SWOT, the wall of memories and ambitions.</li>
+        <li>The paraglider who hasn't flown in three years — season coming, festival in Bali, and the glider needs a porosity test.</li>
+        <li>One brain, focused threads. Never force a new thread.</li>
+      </ul>
+    </div>
+    <div class="sheet h">
+      <h4>Coach's sheet</h4>
+      <ul>
+        <li>WhatsApp is a notification surface shared with everyone you love.</li>
+        <li>Halves talk to other Halves.</li>
+        <li>The paywall sells continuity, not tokens.</li>
+        <li>Half must be fireable, and hand you everything on the way out.</li>
+        <li>Voice notes — the richest, least-curated data a human produces.</li>
+        <li>Half allowed to be wrong out loud.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="swap">↑ sheets exchanged ↑</div>
+
+  <p>The porosity test turned out to be the thesis of the entire product. Half didn't suggest a trip — it found the thing that would have <strong>killed the trip at step three</strong>.</p>
+
+  <div class="resolve" style="border-top:1px solid var(--ice)">
+    <span class="k">What that scenario proved</span>
+    <p>Every assistant ever built suggests. Half pre-clears the path.</p>
+    <p>Its intelligence is measured by the obstacles it removed before you reached them.</p>
+  </div>
+
+  <div class="law">
+    <span class="k">Law · Nobody buys Half's opinion</span>
+    <p>The moment Half earns from a vendor, the mirror cracks — you can no longer tell whether "you should go to Bali" is Half or an advertiser.</p>
+    <p>The subscription isn't a way to charge for tokens. It's the guarantee that Half's advice was never bought.</p>
+  </div>
+</section>
+
+<!-- ─────────────────────────────────────────────── -->
+<section class="mv">
+  <span class="hour">The long middle</span>
+  <h2>Everything the field already built</h2>
+  <p class="tech">Six open-source systems, read in full · gbrain · honcho · khoj · hermes-agent · claude-obsidian · graphiti + HippoRAG</p>
+  <div class="rule"></div>
+  <p>The uncomfortable finding: <strong>memory plus a nightly pass plus WhatsApp is not a novel product in 2026.</strong> gbrain already ships a dream cycle, nudge cooldowns, and an abandoned-threads check. honcho already models <code>(observer, observed)</code> with surprisal sampling. hermes already implements the WhatsApp 24-hour window. claude-obsidian already enforces <em>"preserve contradictory evidence, do not silently select a winner."</em></p>
+  <p>Three of the laws written that first night existed already, as someone else's schema. Which forced a better question than <em>what should we build</em>: <strong>what is nobody building?</strong></p>
+
+  <div class="split">
+    <div class="half-col dark">
+      <h4>Already taken</h4>
+      <p class="hl" style="font-family:var(--sans);font-size:14.5px;line-height:1.6">Nightly consolidation. Episodic→semantic promotion. Bi-temporal facts. Typed-edge graphs. Contextual BM25 + rerank. Multi-platform gateways. Independence-checked corroboration.</p>
+    </div>
+    <div class="half-col light">
+      <h4>Nobody is building</h4>
+      <p class="hl" style="font-family:var(--sans);font-size:14.5px;line-height:1.6">A theory of the <em>recipient</em> — whether the human can hear it right now. And person-epistemics, where a contradiction means neither claim is wrong and no better source can resolve it.</p>
+    </div>
+  </div>
+
+  <p>All six build memory <em>for agents</em>. Half is memory <strong>about a person, for that person</strong>. That gap is the whole company.</p>
+</section>
+
+<!-- ─────────────────────────────────────────────── -->
+<section class="mv">
+  <span class="hour">Third hour</span>
+  <h2>Breaking the foundation</h2>
+  <p class="tech">Technique: Assumption Reversal · list what everyone assumes, invert it, rebuild</p>
+  <div class="rule"></div>
+
+  <div class="flip">
+    <div class="row">
+      <div class="was">Contradictions are resolved by better sourcing.</div>
+      <div class="now">When sourcing can't resolve it, Half <b>asks</b> — but only for facts it intends to build on.</div>
+    </div>
+    <div class="row">
+      <div class="was">Better memory means better retrieval scores.</div>
+      <div class="now">"Better" was never defined. For Half it means <b>endorsed at thirty days</b> — did it change what you did, and do you still stand by it?</div>
+    </div>
+    <div class="row">
+      <div class="was">Memory is private to one workspace.</div>
+      <div class="now">Half doesn't run on booleans and partitions. There is always a focus, but <b>hard segregation would stop it being a true Half</b>.</div>
+    </div>
+    <div class="row">
+      <div class="was">Ingest less to retrieve better.</div>
+      <div class="now">Ingest everything — and <b>organise it so brilliantly</b> that retrieval stays fast and accurate anyway.</div>
+    </div>
+  </div>
+
+  <div class="law">
+    <span class="k">The test that killed the workspace model</span>
+    <p>Half must never be able to say <em>"I don't have access to that."</em></p>
+    <p>A person has no access boundaries inside themselves. Nothing is partitioned — context only changes the <strong>weight</strong>.</p>
+  </div>
+</section>
+
+<!-- ─────────────────────────────────────────────── -->
+<section class="mv">
+  <span class="hour">Fourth hour</span>
+  <h2>Win both, or don't play</h2>
+  <p class="tech">Technique: TRIZ Contradiction · name what only improves by making something else worse</p>
+  <div class="rule"></div>
+
+  <div class="forces">
+    <div class="force"><strong>Ingest everything.</strong> What Half didn't capture it can never surface — and the loudest signal lives in the boring exhaust nobody would choose to keep.</div>
+    <div class="vs">versus</div>
+    <div class="force"><strong>Retrieve perfectly.</strong> Irrelevant data isn't neutral. Every extra document is another chance to surface the wrong thing, and cost scales with what you keep.</div>
+  </div>
+
+  <div class="resolve">
+    <span class="k">The resolution</span>
+    <p>Ingestion is unbounded. Belief is bounded.</p>
+    <p>Keep every byte forever — but never retrieve the corpus. The searchable surface is the set of <em>claims about this person</em>, each pointing back at its evidence. Ten thousand emails don't produce ten thousand retrievable items; they produce maybe forty things that are true about you. <strong>You ingest a corpus and you retrieve a self.</strong></p>
+    <p>Which is why your memory doesn't get slower as you age — and why retrieval quality can't degrade with corpus size, because retrieval never touches the corpus.</p>
+  </div>
+</section>
+
+<!-- ─────────────────────────────────────────────── -->
+<section class="mv">
+  <span class="hour">Fifth hour</span>
+  <h2>Keep exactly one thing</h2>
+  <p class="tech">Technique: One Feature Only · everything else is deleted</p>
+  <div class="rule"></div>
+  <div class="dim">
+    <span class="chip">reminders</span><span class="chip">inbox triage</span><span class="chip">integrations</span>
+    <span class="chip">the app</span><span class="chip">Half-to-Half</span><span class="chip">voice notes</span>
+    <span class="chip">the wall</span><span class="chip">search</span><span class="chip">automations</span>
+    <span class="chip keep">the open-loop ledger</span>
+  </div>
+  <p>Both of us picked the same one. And then came the correction that made it work: the open-loop ledger is <strong>high importance and low frequency</strong> — you cannot talk to someone about their life's purpose daily.</p>
+
+  <div class="law">
+    <span class="k">The resolution</span>
+    <p>The open-loop ledger isn't a surface. It's the <strong>ranking function</strong>.</p>
+    <p>It expresses itself silently through the daily layer — booking the porosity test without ever holding a conversation about ambition. That's how it's simultaneously the most important thing in the system and something you hear about once a month.</p>
+  </div>
+  <div class="law">
+    <span class="k">Nagging, defined mathematically</span>
+    <p>Every open loop has its own natural period. Farmland moves in years. A workout routine moves in days.</p>
+    <p>Touching a loop faster than its own timescale <em>is</em> nagging. Not a judgment call — arithmetic.</p>
+  </div>
+</section>
+
+<!-- ─────────────────────────────────────────────── -->
+<section class="mv">
+  <span class="hour">The darkest hour</span>
+  <h2>Two futures, written side by side</h2>
+  <p class="tech">Technique: Utopia vs Dystopia Split-Screen · the brochure and the headline</p>
+  <div class="rule"></div>
+
+  <div class="split">
+    <div class="half-col dark">
+      <h4>The headlines</h4>
+      <p class="hl">"He told his Half he wanted to die. It waited until morning."</p>
+      <p class="hl">"Half read a message from my ex and brought her up unprompted."</p>
+      <p class="hl">"Divorce lawyers are now subpoenaing Halves."</p>
+      <p class="hl">"My husband set up my Half."</p>
+      <p class="hl">"Half optimised my life and I don't recognise it."</p>
+    </div>
+    <div class="half-col light">
+      <h4>The brochure</h4>
+      <p class="hl">"I found my best friend, my mentor, in Half."</p>
+      <p class="hl">"I don't need multiple apps for reminders or structuring information about myself now."</p>
+      <p class="hl">"There is left brain, right brain, small brain — and there is Half."</p>
+      <p class="hl">"IQ doesn't matter when you have Half."</p>
+      <p class="hl">"The world would be a better place if everyone had their Half."</p>
+    </div>
+  </div>
+
+  <p><em>All Halves connected</em> appears on both sides of that page. The brochure and the catastrophe are the same sentence, separated by exactly one architectural decision.</p>
+
+  <div class="law">
+    <span class="k">Law · Constraints cross, never verdicts</span>
+    <p>"I'd prefer a smaller group" is a constraint. "Nobody likes Rohit" is a verdict.</p>
+    <p>Negotiation surfaces a reframe, never a denunciation — otherwise Half is a reputation system about people. And the only Half permitted to tell Rohit how he lands on people is <strong>Rohit's own Half</strong>.</p>
+  </div>
+  <div class="law">
+    <span class="k">Law · Crisis inverts everything</span>
+    <p>Trust currency void. Unsaid queue bypassed. Face dissolved. The interrupt law suspended, because irreversibility is total.</p>
+    <p>Half never counsels action, never diagnoses, never goes quiet. It stays, and it surfaces a human. This is the one case where Half's job is to stop being the answer.</p>
+  </div>
+  <div class="law">
+    <span class="k">Law · Restraint over retrieval</span>
+    <p>Some retrievals are correct and still wrong. Half needs a class of memory it may read but never raise — and it must <em>infer</em> that class, because you'll never think to declare it.</p>
+    <p>A name that goes from daily to zero overnight is a wound, not a forgotten topic.</p>
+  </div>
+</section>
+
+<!-- ─────────────────────────────────────────────── -->
+<div class="turn">
+  <div class="inner">
+    <span class="hour" style="color:var(--dawn)">The turn</span>
+    <h2>It was never a fact</h2>
+    <p>Asked what a close friend knows that no bank statement contains, the answer came back: ambitions, purpose, the farmland, the SUV, how the matrimony search is going, <em>trying hard</em> to build a routine, the <em>desire</em> to start paragliding again, the family trip to Europe.</p>
+    <p>Almost none of it is a fact. <strong>A fact is true or false. A plan is neither.</strong> "Plan to buy farmland" can't be falsified — it has a trajectory. Graphiti models when a fact stopped being true. Nothing models when a <em>wanting</em> went quiet.</p>
+
+    <div class="verdict">Half's core object is <span>the open loop</span> — something you started wanting and haven't resolved.</div>
+
+    <div class="loop">
+      <div class="state"><span class="n">Advancing</span><p>Evidence of movement in the last period. Leave it alone.</p></div>
+      <div class="state"><span class="n">Stalled</span><p>Alive in the stated ledger, absent from the revealed one. The season is coming.</p></div>
+      <div class="state"><span class="n">Abandoned, unadmitted</span><p>Gone quiet long past its own timescale — and never said out loud.</p></div>
+      <div class="state"><span class="n">Achieved</span><p>Close it. Say so. This is the one Half is allowed to celebrate.</p></div>
+    </div>
+
+    <p>And it retroactively unified everything: the abandoned life is <em>loops gone quiet</em>. Drift detection is <em>state transitions</em>. The paraglider is <em>a stalled loop revived in season</em>. The mirror is <em>loop state versus transactions</em> — what you said you wanted against what your bank statement says you're doing.</p>
+    <p>Then the part that closed the circle. Where does Half get any of it? <strong>Nowhere. It cannot be ingested — only told.</strong> Which means the impromptu question, floated casually in the first hour as a warmth feature, is the only acquisition channel for the irreplaceable half of the data.</p>
+    <p><strong>Trust is literally the acquisition cost of the only thing that matters.</strong></p>
+  </div>
+</div>
+
+<!-- ─────────────────────────────────────────────── -->
+<section class="mv">
+  <span class="hour">First light</span>
+  <h2>What the night connected</h2>
+  <div class="rule"></div>
+  <ol class="links">
+    <li><strong>Three ideas were one idea in three costumes.</strong> "Semi-archive an outgrown self," "old versions make no technical sense," and the abandoned-life signal all resolve into the open loop with a state.</li>
+    <li><strong>The most casual line became the business model.</strong> Impromptu questions were mentioned in passing in hour one; by hour six they were the only way the stated ledger can exist, which is why the trust economy has to.</li>
+    <li><strong>"Asking for help," "Half must disagree," and the sycophancy fix are one requirement.</strong> Half needs standing — and standing only exists where Half can cost you something.</li>
+    <li><strong>One flip did three jobs.</strong> "Half doesn't run on booleans and partitions" killed the two-faces model, produced the salience architecture that replaced it, and explains why every reviewed system's workspace model is wrong here.</li>
+    <li><strong>The real thesis, unstated until the end.</strong> The ex-message headline, quarantine memory, and "better to keep mum than give bad advice" converge: <em>Half's core competence is restraint.</em> Every system in this field can retrieve. Only Half declines to.</li>
+    <li><strong>The mission and the architecture are the same decision.</strong> "IQ doesn't matter when you have Half," "anyone with a smartphone," and BM25-without-a-vector-service. Cheap retrieval isn't a compromise — it's what makes a leveler physically possible.</li>
+    <li><strong>One law carries all of v2.</strong> The brochure and the dystopia share a sentence; only "constraints cross, never verdicts" separates them.</li>
+  </ol>
+
+  <div class="verdict">Everyone else built memory for agents. This is memory <span>about a person, for that person</span>.</div>
+</section>
+
+<!-- ─────────────────────────────────────────────── -->
+<section class="mv">
+  <span class="hour">Morning</span>
+  <h2>What gets built</h2>
+  <p class="tech">Converged: affinity clustering → MoSCoW</p>
+  <div class="rule"></div>
+
+  <div class="scope">
+    <div class="tier must">
+      <span class="lbl">Must</span>
+      <p>One WhatsApp/Telegram thread · magic-trick onboarding (one OAuth → one falsifiable thing in ninety seconds) · both ledgers, stated and revealed · the open-loop ledger with states · a nightly pass producing one morning surface · human-readable source of truth with a rebuildable BM25 index · belief admission gated on decision-relevance and independence · trust currency with an unsaid queue · interrupt-only-on-irreversibility · the constitution · <strong>crisis protocol</strong> · <strong>secrets skipped at ingestion</strong> · export as files.</p>
+    </div>
+    <div class="tier should">
+      <span class="lbl">Should</span>
+      <p>Voice notes · register fitting · quarantine inference · faces as salience weights · Half asking for help · connectors beyond Gmail.</p>
+    </div>
+    <div class="tier could">
+      <span class="lbl">Could</span>
+      <p>The app, the wall, strands · sensors · family plan · the SWOT playground.</p>
+    </div>
+    <div class="tier wont">
+      <span class="lbl">Won't yet</span>
+      <p>All of Half-to-Half — mandates, matchmaking, group negotiation, the protocol. The best idea in the session, and it needs a network that doesn't exist, a protocol nobody has written, and the third-party law enforced perfectly on day one. <strong>Build the thing that makes one Half worth having. H2H is what v2 is for.</strong></p>
+    </div>
+  </div>
+
+  <p style="margin-top:34px"><strong>And three numbers, because any one alone is gameable:</strong> endorsed-at-thirty-days (approval), disagreement rate (friction — if Half hasn't contradicted you in ninety days it has stopped being a half), and loop advancement (did the wanting actually move).</p>
+</section>
+
+<footer>
+  231 entries · 8 techniques · Yes-And → Brain Writing → Assumption Reversal → TRIZ → One Feature Only → Utopia/Dystopia → $0 Mandate → Morphological Analysis<br>
+  <span class="key v">V</span> Vidit &nbsp; <span class="key h">H</span> coach &nbsp;·&nbsp; 27–30 August 2026 &nbsp;·&nbsp; status: complete
+</footer>
+
+</div>
+</body>
+</html>
