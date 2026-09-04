@@ -716,8 +716,19 @@ class Run:
         the shape rather than of the call order.
 
         Nothing is held for a label that has already generated — there is no
-        second generation to hold it for — and nothing past ``MAX_SOURCES``,
+        second generation to hold it for — and never more than ``MAX_SOURCES``,
         which is the ceiling on how much of somebody's mail is alive at once.
+
+        **At the ceiling the choice is made on independence, not on arrival
+        order, and that is not a refinement.** Nine messages in one thread and a
+        tenth on its own is the shape CAP-3 is written about; a first-come
+        ceiling would hold the nine, drop the tenth, and generate over a group
+        that is one cluster of mentions — so the run would read ten bodies, pay
+        for a generation, and admit nothing, for the same reason it would have
+        been right to admit something. So a source that brings independence the
+        held ones do not have makes room by displacing one that brings none, and
+        a source that brings none is simply not held. The whole comparison is
+        ``independent_groups``' own, over at most ``MAX_SOURCES`` sources.
         """
         if not isinstance(body, Scrubbed):
             return False
@@ -725,10 +736,24 @@ class Run:
         if label in self._generated:
             return False
         held = self._texts.setdefault(label, [])
-        if len(held) >= particular.MAX_SOURCES:
+        if len(held) < particular.MAX_SOURCES:
+            held.append((candidate, body.text))
+            return True
+        kept = [item for item, _ in held]
+        standing = _groups(kept)
+        if _groups([*kept, candidate]) == standing:
+            # It shares a thread or a content digest with something already
+            # held: it adds a support and no independence, and this run has
+            # nowhere left to put it.
             return False
-        held.append((candidate, body.text))
-        return True
+        for index in range(len(held)):
+            if _groups([c for i, c in enumerate(kept) if i != index]) == standing:
+                held[index] = (candidate, body.text)
+                return True
+        # Every held source is already independent of every other. There is
+        # nothing redundant to displace, and ``MAX_SOURCES`` independent
+        # supports is far past what CAP-3 asks for.
+        return False
 
     def material(self, label: str) -> tuple[tuple[Candidate, str], ...]:
         """This label's held candidates and their scrubbed texts, in order.
@@ -759,10 +784,7 @@ class Run:
         candidates = self._by_label.get(label)
         if not candidates:
             return False
-        groups = independent_groups(
-            candidate.identity() for candidate in candidates
-        )
-        return groups >= MIN_INDEPENDENT
+        return _groups(candidates) >= MIN_INDEPENDENT
 
     def spent(self, label: str) -> None:
         """This label has had its generation. Drops its held text.
@@ -1273,9 +1295,7 @@ class Revealed:
                 self._tally.under_supported += 1
                 self._say_thin(main_id)
                 return
-            groups = independent_groups(
-                candidate.identity() for candidate in standing
-            )
+            groups = _groups(standing)
             if groups < MIN_INDEPENDENT:
                 # **The sentence's own support is a single cluster of
                 # mentions**, even though its *label's* was not. This is the
@@ -1654,6 +1674,17 @@ def holder_of(
             f"main {main_id!r} has no reader; the caller checks before asking"
         )
     return holder
+
+
+def _groups(candidates: Iterable[Candidate]) -> int:
+    """How many independent groups these candidates are, by the one rule.
+
+    A one-line spelling of ``independent_groups`` over ``Candidate.identity``,
+    so that the three places in this module that ask the question — the crossing
+    test, the ceiling's choice, and the count a claim carries — cannot drift
+    into three answers.
+    """
+    return independent_groups(candidate.identity() for candidate in candidates)
 
 
 def writer_of(writers: Mapping[str, Generator], main_id: str) -> Generator:

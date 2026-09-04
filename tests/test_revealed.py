@@ -1356,3 +1356,770 @@ def test_the_body_travels_to_the_provider_whole_and_nothing_else_does():
     rendered = "\n".join((*prompt.system, prompt.turns[0].text))
     for leaked in ("m0", "t1", "d0", "a@x", REVEALED, MAIN):
         assert leaked not in rendered.replace(body, ""), leaked
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# story 15c: what a group's claim says, and what stands behind it
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# One case per row of 15c's matrix, plus the rules that row rests on. The
+# organising rule of this section is the story's own warning: **assume the
+# support is being counted wrong until a case proves otherwise.** So every
+# fixture that is asked about support is built so the claim's count and its
+# label's count are *different numbers*, and each case says which one it read.
+
+
+def three_sources_where_only_two_confirm(*, threads, confirms):
+    """Three independent sources for one label, of which some confirm.
+
+    The instrument for this section's central question. ``threads`` gives the
+    three receipts their thread ids, and ``confirms`` is the three confirmation
+    answers in arrival order. The label's own group count and the claim's are
+    then whatever the two arrangements make them, and a case asserts both.
+    """
+    reader, holder, _, writer = a_reader(confirms=list(confirms))
+    run = observe(
+        reader,
+        [receipt(i, thread=threads[i]) for i in range(3)],
+        texts=["a booking", "an itinerary", "a hotel"],
+    )
+    return reader, run, holder, writer
+
+
+@pytest.mark.cap3_particular
+def test_a_claim_says_something_the_label_alone_could_not_have_said():
+    """**CAP-2's target, and the row this story exists for.**
+
+    Two independent sources about one specific thing, one claim citing both —
+    and *"a case shows it is something a main could not have already known from
+    the label alone"*. That is asserted three ways, because a claim that merely
+    differs from the label would satisfy a build that shipped six longer
+    sentences: what came back is the writer's own text, no ``Doing`` in the
+    shipped vocabulary carries it, and nothing in ``half/derive/revealed.py``
+    contains it as a literal.
+    """
+    reader, _, _, writer = a_reader()
+    run = observe(reader, [receipt(0, thread="t1"), receipt(1, thread="t2")],
+                  texts=["a booking", "an itinerary"])
+    claims = run.admitted()
+    assert len(claims) == 1
+    assert claims[0].claim == A_CLAIM
+    assert claims[0].label == TRAVELS
+    assert claims[0].subject == DOINGS[0].subject
+    assert all(doing.label != A_CLAIM for doing in DOINGS)
+    assert A_CLAIM not in (ROOT / "half/derive/revealed.py").read_text("utf-8")
+    assert writer.calls == 1
+    assert reader.tally.wrote == 1
+
+
+@pytest.mark.cap3_particular
+def test_a_specific_claim_only_one_independent_source_supports_is_refused():
+    """**The hard half, and the case the whole story is a warning about.**
+
+    Three sources for one label: two share a thread and the third does not, so
+    the *label's* support is **two** independent groups — enough to admit. Only
+    the two sharing the thread confirm the sentence, so the *claim's* own
+    support is **one** independent group, and it is not admitted however well it
+    reads.
+
+    Two against one, deliberately, and it is the widest the two numbers can be
+    at this moment: generation happens the instant a label reaches two
+    independent groups, so the label's count is exactly two whenever a sentence
+    is written. A build that vouched for the sentence with the label's support
+    would see two, clear the floor, and write into somebody's ledger a specific
+    claim about their life that one cluster of mentions stands behind. Both
+    numbers are computed here from the same union-find the runtime uses, and the
+    case refuses to run if the fixture ever stops making them differ.
+    """
+    reader, holder, _, writer = a_reader(confirms=[CONFIRMS, CONFIRMS, DENIES])
+    run = observe(
+        reader,
+        # m0 and m1 share a thread; m2 is on its own. The label crosses on m1?
+        # No — m0 and m1 are one group, so it crosses on m2, with all three
+        # texts in hand.
+        [receipt(0, thread="t1"), receipt(1, thread="t1"),
+         receipt(2, thread="t2")],
+        texts=["a booking", "an itinerary", "a hotel"],
+    )
+    from half.ingest.independence import independent_groups
+
+    every = run.supports(TRAVELS)
+    label_groups = independent_groups(c.identity() for c in every)
+    confirming = tuple(c for c in every if c.source_id in {"m0", "m1"})
+    claim_groups = independent_groups(c.identity() for c in confirming)
+
+    assert len(every) == 3
+    assert label_groups == 2, "the fixture no longer gives the label a majority"
+    assert claim_groups == 1, "the fixture no longer makes the two numbers differ"
+    assert label_groups != claim_groups, (
+        "this fixture cannot tell the two supports apart and proves nothing"
+    )
+
+    assert writer.calls == 1, "the group was not worth one generation"
+    assert reader.tally.wrote == 1, "no sentence came back to be checked"
+    assert len(holder.confirmations) == 3, "the sources were not asked"
+    assert run.admitted() == (), (
+        "a claim two sources in one thread stand behind was admitted on the "
+        "strength of a third source that denied it"
+    )
+    assert reader.tally.under_supported == 1
+    assert reader.tally.confirmed == 2
+
+
+@pytest.mark.cap3_particular
+def test_an_admitted_claim_cites_only_the_sources_that_confirmed_it():
+    """The positive half of the same rule, and it fails the same build.
+
+    Three sources for one label — the label's support set has three members.
+    The middle one does not stand behind the sentence, so the claim is admitted
+    **citing the other two and not it**.
+
+    A build that attached the label's support would admit the same claim and
+    cite three messages, one of which said the sentence was not true of it. Both
+    sizes are asserted, and they differ.
+    """
+    reader, holder, _, writer = a_reader(
+        confirms=[CONFIRMS, DENIES, CONFIRMS])
+    run = observe(
+        reader,
+        [receipt(0, thread="t1"), receipt(1, thread="t1"),
+         receipt(2, thread="t2")],
+        texts=["a booking", "an itinerary", "a hotel"],
+    )
+    claims = run.admitted()
+    assert len(claims) == 1
+    claim = claims[0]
+    assert claim.support == ("m0", "m2"), (
+        "the claim cites a source that did not stand behind it"
+    )
+    assert len(run.supports(TRAVELS)) == 3, "the label had three supports"
+    assert len(claim.support) == 2, "the claim was given the label's support"
+    assert claim.independent == 2
+    assert reader.tally.confirmed == 2
+    assert reader.tally.under_supported == 0
+
+
+@pytest.mark.cap3_particular
+def test_two_sources_sharing_only_a_label_admit_nothing_they_do_not_both_say():
+    """Matrix: *generic but supported*. Two independent sources share a label,
+    and neither stands behind the sentence written over them.
+
+    Distinguished from *the gates refused* and *the provider was down* by
+    ``under_supported``, which only this outcome moves — and by the writer
+    having been called, which says the group did reach a generation.
+    """
+    reader, holder, _, writer = a_reader(confirms=DENIES)
+    run = observe(reader, [receipt(0, thread="t1"), receipt(1, thread="t2")],
+                  texts=["a booking", "an itinerary"])
+    assert writer.calls == 1
+    assert len(holder.confirmations) == 2
+    assert reader.tally.confirmed == 0
+    assert reader.tally.under_supported == 1
+    assert run.admitted() == ()
+
+
+@pytest.mark.cap3_particular
+@pytest.mark.parametrize("answer", [
+    DENIES, CONFIRM_UNSURE, "a label from no set at all",
+    Failure(kind=Kind.UNAVAILABLE, because=Reason.TRANSPORT_FAILED),
+])
+def test_only_an_explicit_confirmation_counts_as_support(answer):
+    """Everything that is not *yes* leaves a source out, and they are four
+    different facts.
+
+    A denial, an honest *cannot say*, an answer from no known set and a
+    provider that did not answer all mean the same thing here — the source is
+    not counted — and the direction matters: a source counted as support
+    because its confirmation timed out is exactly the inflated evidence the
+    confirmation exists to prevent.
+
+    Driven with **two** sources, one of which confirms, so the case is red for
+    a build that counts this answer as support (which would admit) and red for
+    a build that counts nothing at all (``confirmed`` would be zero).
+    """
+    reader, _, _, _ = a_reader(confirms=[CONFIRMS, answer])
+    run = observe(reader, [receipt(0, thread="t1"), receipt(1, thread="t2")],
+                  texts=["a booking", "an itinerary"])
+    assert reader.tally.confirmed == 1, "the confirming source was not counted"
+    assert run.admitted() == (), f"{answer!r} was counted as support"
+    assert reader.tally.under_supported == 1
+
+
+@pytest.mark.cap3_particular
+def test_a_group_of_ten_supporting_sources_is_one_generation(sources):
+    """Matrix: *one generation*. **Cost, and the rule stated as a number.**
+
+    Nine messages in one thread and a tenth on its own: the label crosses on
+    the tenth, one generation happens over the group, and the nine bodies
+    before it cost a classification apiece and no generation at all.
+
+    Asserted as *the writer was called once* rather than *a claim exists*,
+    because a claim exists either way and only this number says how much it
+    cost.
+    """
+    reader, holder, _, writer = a_reader()
+    run = pull(
+        [mail(i, f"booking number {i}", thread="t1") for i in range(9)]
+        + [mail(9, "an itinerary", thread="t2", sender="b@y")],
+        reader, sources,
+    )
+    assert holder.calls == 10, "a body was not read"
+    assert writer.calls == 1, "a generation happened per body"
+    assert reader.tally.groups == 1
+    assert reader.tally.generations == 1
+    assert len(run.admitted()) == 1
+
+
+@pytest.mark.cap3_particular
+def test_a_label_that_has_generated_never_generates_again(sources):
+    """The other half of *one generation per admitted claim*: more support
+    arriving **after** the crossing buys no second attempt.
+
+    A group of two crosses and writes a claim; two further travel messages
+    arrive in two further threads. The label's support grows to four and the
+    writer is still called once — which is what makes the cost rule a property
+    of ``Run.ready`` rather than something the caller remembers.
+
+    **The deferral this pins is real and is recorded**: the later sources are
+    not offered to the standing claim, because deciding that they support it is
+    a second confirmation pass over text this run no longer holds.
+    """
+    reader, _, _, writer = a_reader()
+    run = pull([mail(0, "a booking", thread="t1"),
+                mail(1, "an itinerary", thread="t2", sender="b@y"),
+                mail(2, "a hotel", thread="t3", sender="c@z"),
+                mail(3, "a border crossing", thread="t4", sender="d@w")],
+               reader, sources)
+    assert len(run.supports(TRAVELS)) == 4
+    assert writer.calls == 1, "a later source bought a second generation"
+    # **Two counters, because two rules cover this one between them and either
+    # alone would make the other unfailable.** ``Run.ready`` refuses a label
+    # that has generated, and ``Run.hold`` refuses to keep text for one — so
+    # removing either leaves ``writer.calls`` at one and a case reading only
+    # that number is green for a build with no one-shot rule at all.
+    # ``groups`` counts every crossing that reached ``_say``, so it is the
+    # number that separates them.
+    assert reader.tally.groups == 1, (
+        "the label was treated as a fresh group each time it gained support"
+    )
+    assert reader.tally.generations == 1
+    # And **nothing was held for it again**, which is the window's half of the
+    # same rule: a label that has generated has nothing left to hold text for,
+    # so the two later bodies leave none of themselves alive in this run.
+    assert run.holding == 0, (
+        "two bodies were kept alive for a generation that had already happened"
+    )
+    claims = run.admitted()
+    assert len(claims) == 1
+    assert claims[0].support == ("m0", "m1")
+
+
+@pytest.mark.cap3_particular
+def test_two_labels_crossing_in_one_run_are_two_generations_and_two_claims(
+        sources):
+    """Two different things a mailbox shows, each with its own group.
+
+    Here to keep *one generation per admitted claim* from being read as *one
+    generation per run*, and to show the claims are kept apart: two labels, two
+    sentences, two subjects, two belief ids.
+    """
+    reader, _, _, writer = a_reader(
+        answers=[TRAVELS, TRAVELS, BUYS, BUYS],
+        writes=[A_CLAIM, ANOTHER_CLAIM],
+    )
+    run = pull([mail(0, "a booking", thread="t1"),
+                mail(1, "an itinerary", thread="t2", sender="b@y"),
+                mail(2, "an order", thread="t3", sender="c@z"),
+                mail(3, "a dispatch", thread="t4", sender="d@w")],
+               reader, sources)
+    claims = run.admitted()
+    assert writer.calls == 2
+    assert [c.label for c in claims] == [TRAVELS, BUYS]
+    assert [c.claim for c in claims] == [A_CLAIM, ANOTHER_CLAIM]
+    assert len({c.subject for c in claims}) == 2
+    assert len({c.belief_id for c in claims}) == 2
+
+
+@pytest.mark.cap3_particular
+def test_a_deployment_with_a_reader_and_no_writer_admits_nothing(sources,
+                                                                 caplog):
+    """Matrix: *generator absent*. **Never fatal**, and the difference from
+    every other silence is a counter of its own.
+
+    The mail is read, the candidates are gathered, the receipts are captured —
+    and no claim is written, because there is nothing to write it with. Story
+    3's shipped behaviour with one more reason.
+    """
+    reader, holder, _, writer = a_reader(writer=False)
+    with caplog.at_level(logging.INFO):
+        run = pull([mail(0, "a booking", thread="t1"),
+                    mail(1, "an itinerary", thread="t2", sender="b@y")],
+                   reader, sources)
+    assert len(sources) == 2, "the receipts did not survive"
+    assert holder.calls == 2, "the mail was not read"
+    assert len(run.supports(TRAVELS)) == 2, "no candidate was gathered"
+    assert writer.calls == 0
+    assert reader.tally.groups == 1
+    assert reader.tally.no_writer == 1
+    assert reader.tally.generations == 0
+    assert run.admitted() == ()
+    assert reader.writes(MAIN) is False
+
+
+@pytest.mark.cap3_particular
+def test_a_writer_past_its_bound_yields_no_claim_and_the_pull_completes(
+        sources):
+    """Matrix: *generator slow*. Counted under ``gen_bound_exceeded``, which
+    only this row moves — *"no claim"* is also true of a refusal, an absent
+    writer and a group nobody stood behind."""
+    reader, _, _, writer = a_reader(writing_sleep=0.05, bound_seconds=0.01)
+    run = pull([mail(0, "a booking", thread="t1"),
+                mail(1, "an itinerary", thread="t2", sender="b@y")],
+               reader, sources)
+    assert len(sources) == 2, "the receipts did not survive"
+    assert writer.calls == 1
+    assert reader.tally.gen_bound_exceeded == 1
+    assert reader.tally.wrote == 0
+    assert run.admitted() == ()
+
+
+@pytest.mark.cap3_particular
+def test_a_writer_that_raises_yields_no_claim_and_the_pull_completes(sources):
+    """Matrix: *generator failing*, the raising half. Counted under
+    ``gen_raised``, and the receipts are already durable when it happens."""
+    reader, _, _, writer = a_reader(writes=RuntimeError("the writer blew up"))
+    run = pull([mail(0, "a booking", thread="t1"),
+                mail(1, "an itinerary", thread="t2", sender="b@y")],
+               reader, sources)
+    assert len(sources) == 2
+    assert reader.tally.gen_raised == 1
+    assert run.admitted() == ()
+
+
+@pytest.mark.cap3_particular
+def test_a_writer_that_reports_a_failure_yields_no_claim(sources):
+    """Matrix: *generator failing*, the answered half. The port reports a fault
+    as a **value**, so this is not the raising case and is counted apart —
+    ``gen_failures`` carries the port's own two closed enums and never a
+    provider's sentence (AD-22)."""
+    reader, _, _, _ = a_reader(writes=Failure(
+        kind=Kind.OVER_BUDGET, because=Reason.PER_CALL_BUDGET))
+    run = pull([mail(0, "a booking", thread="t1"),
+                mail(1, "an itinerary", thread="t2", sender="b@y")],
+               reader, sources)
+    assert len(sources) == 2
+    assert reader.tally.gen_failures == {"over-budget/per-call-budget": 1}
+    assert reader.tally.gen_raised == 0
+    assert run.admitted() == ()
+
+
+@pytest.mark.cap3_particular
+def test_a_writer_that_answers_with_something_unreadable_yields_no_claim(
+        sources):
+    """Neither a completion nor one of the port's four failures. Its own
+    counter, because a future port return type must not read as a claim."""
+    reader, _, _, _ = a_reader(writes=object())
+    pull([mail(0, "a booking", thread="t1"),
+          mail(1, "an itinerary", thread="t2", sender="b@y")], reader, sources)
+    assert reader.tally.gen_unreadable == 1
+    assert reader.tally.wrote == 0
+
+
+@pytest.mark.cap3_particular
+def test_a_claim_that_quotes_a_source_is_thrown_away(sources):
+    """Matrix: *Half's own words*. **The sentence is refused, never trimmed.**
+
+    The writer answers with a run of words lifted straight out of one of the
+    bodies. It is refused under its own reason, no claim is admitted, and
+    nothing repaired the sentence — a claim is a durable belief about somebody's
+    life and a repaired one is a sentence nobody wrote filed as a fact.
+    """
+    body = "your flight to Delhi departs on 14 March from terminal three"
+    reader, _, _, writer = a_reader(writes="they take a " + body)
+    run = pull([mail(0, body, thread="t1"),
+                mail(1, "an itinerary", thread="t2", sender="b@y")],
+               reader, sources)
+    assert writer.calls == 1
+    assert reader.tally.refused_text == {str(Refusal.QUOTED): 1}
+    assert reader.tally.wrote == 0
+    assert run.admitted() == ()
+
+
+@pytest.mark.cap3_particular
+@pytest.mark.parametrize("written,reason", [
+    ("", Refusal.EMPTY),
+    ("   \n  ", Refusal.EMPTY),
+    ("x" * (MAX_CLAIM_CHARS + 1), Refusal.TOO_LONG),
+    ("a claim\nand a second line", Refusal.NOT_ONE_LINE),
+    ("their key is " + SECRET, Refusal.SECRET),
+    ("they travel with [redacted: password] every month", Refusal.REDACTION),
+])
+def test_every_unusable_sentence_is_refused_under_its_own_reason(written,
+                                                                 reason):
+    """Six ways a generated sentence is not a claim, each its own value.
+
+    Counted apart rather than collapsed into *the generation failed*, because
+    they mean different things: an empty answer is a model that said nothing, a
+    long one is a model that wrote an essay, and a secret in Half's **own**
+    sentence means a model invented something key-shaped — the material could
+    not have carried one, since ``scrub`` ran before the writer saw it.
+
+    Read through ``usable`` directly as well as driven, so the pair is checked
+    against the enum rather than against whichever branch happened to fire.
+    """
+    claim, refusal = usable(written, ["a booking", "an itinerary"])
+    assert claim == ""
+    assert refusal is reason
+
+
+@pytest.mark.cap3_particular
+def test_a_usable_sentence_is_returned_unchanged_and_unrepaired():
+    """The other side of the six above, which are worth nothing if the tripwire
+    refuses everything. What comes back is the sentence, stripped of
+    surrounding whitespace and otherwise untouched."""
+    claim, refusal = usable(f"  {A_CLAIM}  ", ["a booking"])
+    assert refusal is None
+    assert claim == A_CLAIM
+
+
+@pytest.mark.cap3_particular
+def test_the_quotation_floor_is_a_run_and_not_a_particular():
+    """*"No quotation or near-quotation"*, and **the floor is why the rule is
+    not simply AD-18's**.
+
+    ``half.context.build``'s own floor is the adjacent pair, which is right
+    where the cost of refusing is a directive dropped. Here a refusal is the
+    whole capability: a revealed claim's job is to carry the particulars, and a
+    place, a date or a service name is exactly the two-word run it shares with
+    the mail. So both halves are asserted — a four-word run is a quotation, and
+    a shared particular is not — because a rule that only ever answered *yes*
+    would be indistinguishable from one that refused every claim.
+    """
+    source = "Your flight to Delhi departs on 14 March from terminal three"
+    assert QUOTE_RUN_WORDS == 4
+    assert quotes("they take your flight to Delhi twice a month", [source])
+    assert not quotes("flies to Delhi about twice a month", [source]), (
+        "a shared particular was read as a quotation, which would refuse every "
+        "specific claim there is"
+    )
+    assert not quotes(A_CLAIM, [source])
+    assert not quotes("", [source])
+
+
+@pytest.mark.cap3_particular
+def test_a_quotation_reflowed_across_lines_is_still_a_quotation():
+    """The source's own line breaks are its formatting, not its wording. A
+    model that repeated a phrase with the newlines in different places would
+    walk past a rule that compared line by line."""
+    source = "Your flight to Delhi\ndeparts on 14 March"
+    assert quotes("they take your flight to Delhi departs early", [source])
+
+
+@pytest.mark.cap3_particular
+@pytest.mark.parametrize("script", sorted(SCRIPTS))
+def test_the_fixture_claim_is_not_a_quotation_of_any_fixture_body(script):
+    """**The fixtures themselves, checked.**
+
+    Every case above that expects a claim to be admitted would be green for a
+    build that refused it as a quotation *if the fixture claim happened to
+    quote its fixture body* — the case would then be asserting the refusal it
+    was written to rule out. So the fixtures are held to the rule they rely on,
+    in every script, rather than to the eye of whoever wrote them.
+    """
+    assert not quotes(IN_SCRIPT[script], [SCRIPTS[script]])
+    assert not quotes(A_CLAIM, list(SCRIPTS.values()))
+    assert not quotes(ANOTHER_CLAIM, list(SCRIPTS.values()))
+
+
+@pytest.mark.cap3_particular
+def test_re_ingesting_a_mailbox_generates_no_second_claim(tmp_path):
+    """Matrix: *re-ingest*. The same mailbox twice through the shipped path —
+    no body is read twice, so no group crosses twice and nothing is written
+    twice. Asserted on the writer as well as on the ledger, because a second
+    generation that produced an identical sentence would be invisible in the
+    beliefs and visible only in the bill."""
+    config = load({ROOT_ENV: str(tmp_path), MAINS_ENV: f"123:{MAIN}"})
+    wiring = build(config, token="123:fake")
+    try:
+        reader, _, _, writer = a_reader()
+        wiring = type(wiring)(
+            **{**{f: getattr(wiring, f) for f in wiring.__dataclass_fields__},
+               "revealed": reader})
+        messages = [mail(0, "your booking is confirmed", thread="t1"),
+                    mail(1, "your itinerary", thread="t2", sender="b@y")]
+        for _ in range(2):
+            asyncio.run(ingest_mail(
+                wiring, main_id=MAIN, source=FakeMail(messages)))
+        with Store(tmp_path / MAIN, prefix=build_prefix) as store:
+            beliefs = store.state().beliefs
+    finally:
+        wiring.registry.close()
+    assert writer.calls == 1, "the second pull generated the claim again"
+    assert list(beliefs) == [f"r_{TRAVELS}"]
+    assert beliefs[f"r_{TRAVELS}"][CLAIM] == A_CLAIM
+
+
+@pytest.mark.cap3_particular
+def test_the_shipped_composition_writes_a_generated_claim_into_the_ledger(
+        tmp_path):
+    """**The story in the shipped product.** ``build`` is driven for real and
+    one mailbox is pulled through ``ingest_mail`` — the only path in the tree
+    from a body to a revealed claim. What lands in the ledger is the writer's
+    sentence, at the weakest rung, citing the sources that confirmed it."""
+    config = load({ROOT_ENV: str(tmp_path), MAINS_ENV: f"123:{MAIN}"})
+    wiring = build(config, token="123:fake")
+    try:
+        reader, _, _, writer = a_reader()
+        wiring = type(wiring)(
+            **{**{f: getattr(wiring, f) for f in wiring.__dataclass_fields__},
+               "revealed": reader})
+        asyncio.run(ingest_mail(
+            wiring, main_id=MAIN,
+            source=FakeMail([mail(0, "your booking is confirmed", thread="t1"),
+                             mail(1, "your itinerary", thread="t2",
+                                  sender="b@y")]),
+        ))
+        with Store(tmp_path / MAIN, prefix=build_prefix) as store:
+            beliefs = store.state().beliefs
+    finally:
+        wiring.registry.close()
+    record = beliefs[f"r_{TRAVELS}"]
+    assert record[CLAIM] == A_CLAIM
+    assert record[SUBJECT] == DOINGS[0].subject
+    assert record[LEDGER] == REVEALED
+    assert record["independent"] == 2
+    assert record["support"] == ["m0", "m1"]
+    assert record["license"] == str(ladder.FLOOR)
+    assert writer.calls == 1
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# story 15c: the window — how long scrubbed text lives, and that it is gone
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# The story's Ask First, answered and then asserted. The widening is real: a
+# body can no longer die inside one ``async for`` iteration, because generating
+# over a group needs the group's texts together. What is built is the narrowest
+# window that does the job — a label holds at most ``MAX_SOURCES`` texts, drops
+# them the instant it generates, and a ``Run`` is a scope rather than an object
+# somebody has to remember to empty.
+
+
+@pytest.mark.cap3_particular
+def test_scrubbed_text_is_held_only_until_its_label_generates():
+    """**The window, at its two ends.**
+
+    One body for a label holds one text — the group has not crossed and nothing
+    could have been written yet. The second body crosses it, the claim is
+    generated over both, and the texts are gone **in the same call**: not at the
+    end of the run, not when the next body arrives, and not when the caller
+    remembers.
+
+    Asserted on ``holding``, which is a count and never the texts, so the case
+    can say the window closed without being handed what was in it.
+    """
+    reader, _, _, _ = a_reader()
+    run = Run()
+    assert run.holding == 0
+
+    async def one(index, thread):
+        await reader.observe(receipt(index, thread=thread),
+                             scrub(f"a booking in {thread}"),
+                             main_id=MAIN, into=run)
+
+    asyncio.run(one(0, "t1"))
+    assert run.holding == 1, "the scrubbed text was not held at all"
+    assert run.ready(TRAVELS) is False
+
+    asyncio.run(one(1, "t2"))
+    assert len(run.admitted()) == 1, "nothing crossed, so this proves nothing"
+    assert run.holding == 0, (
+        "the group's scrubbed texts outlived the generation they were held for"
+    )
+
+
+@pytest.mark.cap3_particular
+def test_a_label_that_never_crosses_holds_its_text_until_the_run_ends():
+    """The other half of the window, and the honest cost of it.
+
+    A label with one support can never drop its text early: nothing before the
+    end of the run can know it will not cross. So it is held — bounded, and
+    released by the scope. This case exists so that the bound is a measured
+    number rather than a claim, and so the cost is written down where the next
+    reader will find it.
+    """
+    reader, _, _, _ = a_reader()
+    with Run() as run:
+        observe(reader, [receipt(0, thread="t1")], run=run)
+        assert run.holding == 1
+        assert run.ready(TRAVELS) is False
+    assert run.holding == 0
+
+
+@pytest.mark.cap3_particular
+def test_leaving_a_runs_scope_releases_every_held_body_including_on_a_raise():
+    """*"Given the scrubbed text, when the run ends, then none of it is still
+    held"* — **asserted, not assumed**, and on both paths.
+
+    The exception path is the half that matters: a pull that died half way is
+    exactly when a forgotten release would leave somebody's mail alive in a
+    process that keeps running.
+    """
+    reader, _, _, _ = a_reader()
+    ordinary = Run()
+    with ordinary as run:
+        observe(reader, [receipt(0, thread="t1")], run=run)
+        assert run.holding == 1
+    assert ordinary.holding == 0
+
+    raising = Run()
+    with pytest.raises(RuntimeError):
+        with raising as run:
+            observe(reader, [receipt(1, thread="t2")], run=run)
+            assert run.holding == 1
+            raise RuntimeError("the pull died half way")
+    assert raising.holding == 0, "a body outlived the run that raised"
+
+
+@pytest.mark.cap3_particular
+def test_the_shipped_pull_holds_nothing_when_it_returns(sources):
+    """The window at the end of the **shipped** path, through the real
+    pipeline: every body read, a claim admitted, and nothing held.
+
+    Three sources rather than two, so the run ends with a label that generated
+    *and* with a label that never crossed — the two cases above, together, on
+    the path that actually runs.
+    """
+    reader, _, _, writer = a_reader(answers=[TRAVELS, TRAVELS, BUYS])
+    with Run() as run:
+        pipeline = Pipeline(
+            FakeMail([mail(0, "a booking", thread="t1"),
+                      mail(1, "an itinerary", thread="t2", sender="b@y"),
+                      mail(2, "an order", thread="t3", sender="c@z")]),
+            sources,
+            consumer=consumer_for(reader, main_id=MAIN, into=run),
+        )
+        asyncio.run(pipeline.ingest())
+        assert len(run.admitted()) == 1, "nothing crossed, so this proves nothing"
+        assert len(run.supports(BUYS)) == 1, "no label was left uncrossed"
+        assert run.holding == 1, "the uncrossed label held nothing to release"
+    assert run.holding == 0
+
+
+@pytest.mark.cap3_particular
+def test_ingest_mail_runs_the_pipeline_inside_a_runs_own_scope():
+    """The release, as a property of ``half/__main__.py``'s syntax tree.
+
+    A behavioural case can show that leaving a ``Run``'s scope releases what it
+    held; only this one shows that the shipped path is *inside* such a scope.
+    Both are needed, and neither substitutes for the other: the first is red for
+    a ``Run`` that never releases, the second for a caller that never enters.
+    """
+    tree = ast.parse((ROOT / "half/__main__.py").read_text("utf-8"))
+    inside = [node for node in ast.walk(tree)
+              if isinstance(node, ast.AsyncFunctionDef)
+              and node.name == "ingest_mail"]
+    assert len(inside) == 1, "the anchor is dead: ingest_mail was renamed"
+    scopes = [
+        node for node in ast.walk(inside[0])
+        if isinstance(node, ast.With)
+        and any(isinstance(item.context_expr, ast.Call)
+                and isinstance(item.context_expr.func, ast.Name)
+                and item.context_expr.func.id == "Run"
+                for item in node.items)
+    ]
+    assert len(scopes) == 1, "the mailbox pull does not run inside a Run's scope"
+    body = ast.unparse(scopes[0])
+    assert "pipeline.ingest" in body, (
+        "the pull happens outside the scope that releases the bodies it held"
+    )
+    assert "run.admitted" in body
+    # And nothing constructs a Run anywhere else in that function, which is how
+    # a second, unreleased one would arrive.
+    made = [node for node in ast.walk(inside[0])
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "Run"]
+    assert len(made) == 1, made
+
+
+@pytest.mark.cap3_particular
+def test_a_run_refuses_to_hold_anything_that_is_not_scrubber_output():
+    """The **second** door out of ingestion, typed like the first.
+
+    A reordering of scrub and derive would hand the run a ``str``; it refuses,
+    exactly as ``Revealed.observe`` refuses one, because the held text is the
+    other thing a body could reach a provider through.
+    """
+    run = Run()
+    candidate = Candidate(label=TRAVELS, source_id="m0", thread_id="t1",
+                          digest="d0")
+    for body in ("a plain string", b"bytes", None, {"text": "a dict"}):
+        assert run.hold(candidate, body) is False
+    assert run.holding == 0
+    assert run.hold(candidate, scrub("a booking")) is True
+    assert run.holding == 1
+
+
+@pytest.mark.cap3_particular
+def test_the_held_text_is_bounded_and_the_bound_prefers_independence():
+    """**The ceiling, and the choice it makes when it binds.**
+
+    Ten sources for one label, of which the first nine share a thread. A
+    first-come ceiling would hold the first ``MAX_SOURCES`` — all of them one
+    cluster — drop the tenth, and generate over a group CAP-3 refuses: ten
+    bodies read, a generation paid for, and nothing admitted, in exactly the
+    case where something should be.
+
+    So the ceiling displaces a source that brings no independence rather than
+    refusing one that does. Both halves are asserted: the count never passes the
+    bound, and the claim is still admitted.
+    """
+    reader, holder, _, writer = a_reader()
+    run = Run()
+    receipts = [receipt(i, thread="t1") for i in range(9)]
+    receipts.append(receipt(9, thread="t2"))
+    observe(reader, receipts, run=run,
+            texts=[f"a booking number {i}" for i in range(10)])
+    assert len(run.supports(TRAVELS)) == 10
+    assert writer.calls == 1
+    assert len(writer.texts[0].split(particular.SOURCE_JOIN)) == MAX_SOURCES, (
+        "more of the mailbox left the machine than the ceiling allows"
+    )
+    claims = run.admitted()
+    assert len(claims) == 1, (
+        "the ceiling threw away the one source that made the group independent"
+    )
+    assert claims[0].independent == 2
+    assert "m9" in claims[0].support
+
+
+@pytest.mark.cap3_particular
+def test_a_run_reports_itself_in_counts_and_never_in_contents():
+    """A ``Run`` holds bodies, and a traceback goes wherever tracebacks go
+    (AD-22). ``__repr__`` is spelled out so the guarantee is a method rather
+    than an accident of nobody having written one."""
+    reader, _, _, _ = a_reader()
+    sentinel = "sandalwood-nineteen-quicksilver"
+    run = Run()
+    observe(reader, [receipt(0, thread="t1")], run=run,
+            texts=[f"a booking {sentinel}"])
+    assert run.holding == 1
+    assert sentinel not in repr(run)
+    assert "holding=1" in repr(run)
+
+
+@pytest.mark.cap3_particular
+def test_a_second_claim_for_one_label_is_refused():
+    """One label is one belief id, so a second claim for it would overwrite the
+    first in the fold and nothing would say which one the main was told.
+
+    Refused on ``Run.record`` rather than left to the caller, because the caller
+    is the only thing that could notice and it is the thing that would be
+    wrong.
+    """
+    run = Run()
+    run.record(a_written_claim())
+    with pytest.raises(DeriveError, match="a second claim"):
+        run.record(a_written_claim(claim="a different sentence entirely"))
+    with pytest.raises(DeriveError, match="is not a claim"):
+        run.record("a bare string")
