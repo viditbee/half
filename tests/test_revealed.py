@@ -2465,3 +2465,51 @@ def test_no_body_reaches_disk_from_a_run_that_wrote_a_generated_claim(
     assert A_CLAIM.encode() in written, (
         "the anchor is dead: nothing this run wrote is in the bytes scanned"
     )
+
+
+@pytest.mark.cap3_particular
+def test_a_later_pull_pays_for_a_generation_it_then_throws_away(tmp_path):
+    """**A cost this story does not close, pinned rather than described.**
+
+    A second pull carrying *new* messages crosses the same label again, so a
+    sentence is generated — and the append then finds the belief id already in
+    the ledger and leaves the standing claim exactly as it is, which is 15b's
+    cross-run deferral and is unchanged. The generation is paid for and thrown
+    away.
+
+    It is bounded: at most one per label per pull, so at most ``len(DOINGS)``
+    however large the mailbox. Closing it means telling a ``Run`` which belief
+    ids the ledger already holds, and the only honest way to do that is a
+    constructor parameter — which is the shape ``Run.__init__`` deliberately has
+    none of, so that no call site can hand it a threshold either. Two rules
+    meeting on one signature is a decision, not a tidy-up, and it is left on the
+    record here rather than made in passing.
+
+    The case exists so that the waste is a number somebody can read, and so
+    that a later story closing it has something to turn green.
+    """
+    config = load({ROOT_ENV: str(tmp_path), MAINS_ENV: f"123:{MAIN}"})
+    wiring = build(config, token="123:fake")
+    try:
+        reader, _, _, writer = a_reader(writes=[A_CLAIM, "a different sentence"])
+        wiring = type(wiring)(
+            **{**{f: getattr(wiring, f) for f in wiring.__dataclass_fields__},
+               "revealed": reader})
+        asyncio.run(ingest_mail(wiring, main_id=MAIN, source=FakeMail([
+            mail(0, "your booking is confirmed", thread="t1"),
+            mail(1, "your itinerary", thread="t2", sender="b@y")])))
+        asyncio.run(ingest_mail(wiring, main_id=MAIN, source=FakeMail([
+            mail(2, "a different booking", thread="t3", sender="c@z"),
+            mail(3, "a different itinerary", thread="t4", sender="d@w")])))
+        with Store(tmp_path / MAIN, prefix=build_prefix) as store:
+            beliefs = store.state().beliefs
+            appends = sum(1 for record in store.log
+                          if record.id == f"r_{TRAVELS}")
+    finally:
+        wiring.registry.close()
+    assert writer.calls == 2, "the fixture no longer reaches the second crossing"
+    assert appends == 1, "the later pull wrote the claim a second time"
+    assert beliefs[f"r_{TRAVELS}"][CLAIM] == A_CLAIM, (
+        "the later pull's sentence replaced the standing claim"
+    )
+    assert beliefs[f"r_{TRAVELS}"]["support"] == ["m0", "m1"]
