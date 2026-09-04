@@ -400,6 +400,39 @@ def test_a_wanting_with_no_period_is_not_interrupted_about_even_once(tmp_path):
 
 
 @pytest.mark.cap10
+def test_a_raise_that_cannot_be_measured_is_counted_and_warned_about(
+    tmp_path, caplog
+):
+    """The bypass case inside gate 4, and it is the shape of a corruption
+    nobody would otherwise notice.
+
+    ``touchable`` treats a raise it cannot measure as **no raise** — the
+    correction that stopped one corrupt record silencing a wanting for ever —
+    so the wanting is still weighed. What must not happen is that it is weighed
+    *quietly*: review found three things missing from the morning's version of
+    this path, and they were a recovery, an alert and a counter.
+
+    Found by mutation: deleting the counter left all eighty-nine other cases
+    green.
+    """
+    from dataclasses import replace
+
+    view = replace(
+        a_view(tmp_path), touches={"swim-weekly": {"t": "half past four"}},
+    )
+    gate, channel, judge = a_gate(False)
+    with caplog.at_level(logging.WARNING):
+        outcome = run(gate, view)
+
+    assert outcome.degraded == 1, "an unmeasurable raise was not counted"
+    assert judge.calls == 1, "the wanting was refused rather than treated as new"
+    assert any(
+        "could not be measured" in record.getMessage()
+        for record in caplog.records
+    ), "an unmeasurable raise was weighed with nothing anywhere saying so"
+
+
+@pytest.mark.cap10
 def test_a_finished_wanting_is_not_interrupted_about(tmp_path):
     """Finished is not silent: an `achieved` wanting has stopped running, so
     nothing about it can be closing — and the reason it refuses with is the
