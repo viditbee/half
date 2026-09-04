@@ -426,7 +426,7 @@ CONFIRM_SOURCE: Final[tuple[str, ...]] = (
 #: where the reverse would append a correction the main did not make.
 DECLINE_SOURCE: Final[tuple[str, ...]] = (
     # English
-    "no", "nope", "nah", "not true", "not right", "no thats wrong",
+    "no", "nope", "nah", "not true", "not right", "not quite",
     "definitely not", "not me", "thats not me", "no i dont",
     # Romance
     "no es cierto", "para nada", "não", "nao", "de jeito nenhum",

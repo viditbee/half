@@ -85,6 +85,7 @@ from half.correction.signals import Meaning, is_confirmation, is_decline, recogn
 from half.derive.claim import BOUND_SECONDS as GATE_BOUND
 from half.derive.revealed import BOUND_SECONDS as READ_BOUND, REVEALED
 from half.errors import OnboardError
+from half.model.consult import a_bound
 from half.governance import ladder
 from half.governance.ladder import License
 from half.onboard import consent as consenting
@@ -438,11 +439,12 @@ async def demonstrate(
     time, which is the same reader ``half.actor.runtime`` uses for its turn
     deadline and is not a wall clock.
     """
-    if (
-        not isinstance(budget_seconds, (int, float))
-        or isinstance(budget_seconds, bool)
-        or budget_seconds <= 0
-    ):
+    if not a_bound(budget_seconds):
+        # ``half.model.consult.a_bound``: positive, a number, not a bool, and
+        # **finite**. Infinity and NaN are refused there for the reason they are
+        # refused here — a deadline that never fires is not a bound, it is a
+        # guard that reports success, and this one sits in front of a person
+        # who has just connected their mail and is waiting.
         raise OnboardError(
             f"a budget of {budget_seconds!r} demonstrates nothing to anybody, "
             "for ever, and nothing would say so. CAP-2's number is "
@@ -524,7 +526,12 @@ async def demonstrate(
     context, hidden = split(
         Ranked(beliefs=(
             Candidate(
-                id=offer.belief_id, claim=offer.claim, prefix="",
+                # No prefix and no ``bm25``: nothing was retrieved. The
+                # demonstration's ranked set is one belief chosen from the
+                # fold, so there is no query behind it and no score to carry —
+                # ``None`` is what the backstop already means by *this
+                # candidate did not come from a term match*.
+                id=offer.belief_id, claim=offer.claim, prefix="", bm25=None,
                 belief=beliefs[offer.belief_id],
             ),
         )),

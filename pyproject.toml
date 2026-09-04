@@ -93,4 +93,6 @@ markers = [
     "cap5_admission: a message is evidence and a claim is a belief — the four admission gates, each naming itself and reporting every refusal, the mark that keeps a message out of every belief path, and the three readers that still read it",
     "cap5_structure: the single-case structural rules the separation rests on — the closed derivation vocabulary, the doors that hand out claims, the narrow holder that cannot author a claim, and a derivation that never costs a reply",
     "offline: the suite reaches no network, asserted at the socket rather than by convention",
+    "cap2: the onboarding demonstration — one OAuth, the notice before the source, exactly one falsifiable claim offered for confirmation, the answer routed to the ladder or to story 12, and ninety seconds measured",
+    "cap2_structure: the single-case structural rules the demonstration rests on — a consent module that ships no sentence, a flow that admits nothing of its own, one recogniser for an answer, and an offer that cannot stand for a message nobody saw",
 ]
