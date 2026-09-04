@@ -19,6 +19,19 @@ Beside them sits **the interruption's own bound**, which is not one of the
 five: a main who has just been interrupted is not interrupted again, whatever
 it would be about.
 
+**The mode is first, and the story says two things about that.** Its Always
+list enumerates the five as *"reachability, crisis, the ceiling, the nagging
+bound, then urgency"*, and four bullets later says *"crisis refuses before
+anything else runs"*. Both cannot be true, and the second is the one this build
+implements: the enumeration's load-bearing claim is that the judgement is not
+first, which holds either way, while CAP-12's claim is about a main who must not
+be reasoned about at all — and the morning surface already asks the mode first
+for exactly that reason. The consequence is visible and asserted: a main who is
+both in the mode and unreachable is refused as ``crisis``, and the platform is
+not asked about them. **This is the one place this module departs from the
+story's own wording**, and it is here rather than in a commit message so a
+reviewer meets it where the code is.
+
 **Why urgency is judged last, and why that ordering is load-bearing rather
 than stylistic.** The first four refusals are free and local — a boolean, a
 platform query, a comparison of two rungs and arithmetic over the fold — and
