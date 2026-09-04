@@ -246,6 +246,33 @@ class CorrectionError(HalfError, ValueError):
     """
 
 
+class DeriveError(HalfError, ValueError):
+    """A record whose derivation mark the append gate refuses (CAP-5, 15a).
+
+    Raised by ``records.validate_derivation`` for a value outside the closed
+    two-word vocabulary — *this record is evidence* and *this record is a claim
+    Half derived* — and for a mark on an op that holds neither.
+
+    Loud on purpose, on the same terms as ``TouchError`` and ``TrustError``.
+    The mark is what separates a message from a belief, and the log is
+    append-only: a value nothing can read is a record that is permanently
+    neither, so retrieval would rank a main's own ``ok`` for ever and
+    ``half.questions.answered`` would count a claim Half wrote as the main
+    having spoken.
+
+    **The reading half never raises**, and that asymmetry is deliberate.
+    ``underived`` and ``derived_claim`` run on the turn's own path and on every
+    retrieval door; a mark this build cannot read costs that record its
+    exclusion, never the main their reply.
+
+    A ``ValueError`` as well, for the reason ``LoopError``, ``ScheduleError``,
+    ``TensionError``, ``TouchError``, ``TrustError`` and ``CorrectionError``
+    are: no public store operation raises a non-``HalfError``, while
+    ``validate_fields`` has raised a bare ``ValueError`` for every malformed
+    field since story 1, and one refusal must answer to both names.
+    """
+
+
 class RetrievalError(HalfError):
     """A fault in the retrieval layer (CAP-9)."""
 

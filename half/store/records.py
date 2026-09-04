@@ -21,6 +21,7 @@ from half.civil import instant
 from half.errors import (
     CorrectionError,
     CorruptLogError,
+    DeriveError,
     LoopError,
     SchemaVersionError,
     ScheduleError,
@@ -359,6 +360,57 @@ ASKED_FIELDS: Final[frozenset[str]] = frozenset({QUESTION, ABOUT})
 LEDGER: Final[str] = "ledger"
 STATED: Final[str] = "stated"
 
+#: Whether a record is **evidence Half was given** or **a claim Half derived**
+#: from it (CAP-5, story 15a), and the two words that say which.
+#:
+#: Named here for the reason ``LEDGER`` is: the layer that owns record shapes
+#: owns the spelling. Four unrelated files read it — the retrieval door
+#: (``half.store.db``), the minting door (``ActorRegistry.mint_view``), the
+#: correction aim (``half.correction.apply``) and responsiveness
+#: (``half.questions.answered``) — and a second literal in any of them is a
+#: rename that reaches three places out of four, silently.
+#:
+#: **Why a field and not an op** (the story's Ask First). Story 1's closed
+#: vocabulary already has the op this needs: an inbound message *is* an
+#: ``assert`` on the stated ledger, and it is the same record three subsystems
+#: read today. Replacing it with an op of its own would take the language
+#: sample, the responsiveness fold and the correction aim with it and hand each
+#: of them a shape it has never seen. A field leaves the record exactly where it
+#: is and adds the one fact that was missing — *this is not a claim* — which is
+#: the smaller change that still makes the distinction explicit. AD-29 trades a
+#: schema bump for an op and refuses one for a field, and this is a field.
+#:
+#: **Absent means a claim, and that is the direction that never silently
+#: excludes** — ``PASS_RAN``'s rule, one field over. Every belief in every log
+#: written before this story is unmarked, and reading absence as *evidence*
+#: would take a main's whole existing ledger out of retrieval, permanently and
+#: with nothing saying so. Reading it as *a claim* is what those logs already
+#: do, so an old log behaves exactly as it did and every new message carries the
+#: mark.
+#:
+#: **Two words rather than one flag**, and the second is not decoration.
+#: ``half.questions.answered.responsive`` reads *"the main said something"* off
+#: an assert on the stated ledger — and a derived claim is also an assert on the
+#: stated ledger, written on the same turn. Without ``DERIVED`` to say so, one
+#: message would retire two questions: the message, and then the claim derived
+#: from it. A single boolean cannot carry that, because the only other value it
+#: has is the one every legacy record already means.
+DERIVATION: Final[str] = "derivation"
+
+#: This record is a message the main sent. Evidence, never a belief: it is what
+#: a claim may cite, and it is invisible to retrieval, to the context builder,
+#: to the minter and to the ladder.
+UNDERIVED: Final[str] = "underived"
+
+#: This record is a claim Half derived from evidence it holds, and it cites that
+#: evidence in its support set (CAP-5).
+DERIVED: Final[str] = "derived"
+
+#: The whole of the vocabulary. Closed, and refused at the append: the log is
+#: append-only, so a third word is a record that is permanently neither a
+#: message nor a claim, and every reader below resolves it differently.
+DERIVATIONS: Final[frozenset[str]] = frozenset({UNDERIVED, DERIVED})
+
 #: What a correction says about **why** the belief left (CAP-11, story 12), and
 #: the field the correction names.
 #:
@@ -438,6 +490,107 @@ def is_civil_day(value: object) -> bool:
         and _CIVIL_DAY.fullmatch(value) is not None
         and moment(value) is not None
     )
+
+
+def underived(record: Mapping[str, Any] | Any) -> bool:
+    """Whether ``record`` is evidence rather than a claim (CAP-5, story 15a).
+
+    **The one question every belief-consuming door asks**, spelled here so that
+    the retrieval door, the minting door, the correction aim and responsiveness
+    give one answer rather than four. ``half.governance.ladder.quarantined``
+    is the same discipline for the same reason: two layers need the reading and
+    only one of them may own it.
+
+    Read strictly, and **nothing else counts**: absence is a claim, and so is a
+    value from a vocabulary this build does not know. That is the direction that
+    never silently excludes (see ``DERIVATION``) — a mark this build cannot read
+    leaves the record exactly where an older build left it, which is inside the
+    ledger, rather than removing a main's material with nothing saying so.
+
+    Never raises. It runs on the turn's own path and on every read door, and a
+    record that is not a mapping is one this build cannot call evidence.
+    """
+    if not isinstance(record, Mapping):
+        return False
+    return record.get(DERIVATION) == UNDERIVED
+
+
+def derived_claim(record: Mapping[str, Any] | Any) -> bool:
+    """Whether ``record`` is a claim Half derived from evidence it holds.
+
+    **Not the complement of ``underived``**, and that is the whole reason it
+    exists. Every belief written before this story is neither: unmarked, a
+    claim, and — for ``half.questions.answered.responsive`` — the main having
+    said something. Only a record carrying ``DERIVED`` is Half's own conclusion,
+    so only a record carrying ``DERIVED`` is excluded there.
+
+    Never raises, on the same terms as ``underived``.
+    """
+    if not isinstance(record, Mapping):
+        return False
+    return record.get(DERIVATION) == DERIVED
+
+
+def belief_record(record: Mapping[str, Any] | Any) -> bool:
+    """Whether ``record`` may leave the store as a **belief**.
+
+    The narrowing itself, kept here rather than in the retriever or the minter
+    for the reason ``handoff_record`` and ``plan_record`` are kept here: the
+    layer that owns record shapes owns which shapes may leave it for which
+    consumer. Retrieval, the context builder, the tension minter and the ladder
+    are handed the beliefs this admits and never the messages it does not —
+    enforced by what those paths *receive*, which is story 10's lesson and the
+    only version of a rule like this that has held on this project.
+
+    A message is evidence. It stays in the log, it stays in the fold, and it
+    stays readable by the three subsystems that read it — the language sample,
+    responsiveness, and the correction aim's exclusion — because none of those
+    asks for a belief. What it stops being is something Half ranks, quotes,
+    mints a tension against, or resolves a rung for.
+    """
+    return not underived(record)
+
+
+def validate_derivation(fields: Mapping[str, Any], *, op: Op | None) -> None:
+    """Reject a derivation mark no reader could resolve (CAP-5, story 15a).
+
+    **Write strict, read tolerant**, on the same terms as a touch, a spend and a
+    loop transition — and here the strictness protects the sentence the whole
+    story rests on: *a message is evidence; a claim is a belief*.
+
+    * the value is one of the two words, or nothing. A third, once durable, is
+      a record that is permanently neither: retrieval would rank it, the minter
+      would compare it, and responsiveness would count it, each having resolved
+      the unknown word its own way. The log is append-only, so it would say it
+      for ever.
+    * the mark belongs on an ``assert`` and on no other op. A ``retract`` or a
+      ``touch`` carrying one would be a correction or a raise claiming to be
+      evidence — a shape no reader below looks for, written durably where
+      nothing would ever read it back.
+
+    There is no branch here that supplies a missing mark. **Absence is the
+    legacy reading and has to stay reachable**: every belief in every log
+    written before this story is unmarked, and a gate that required the field
+    would refuse a promotion of one of them.
+    """
+    value = fields.get(DERIVATION)
+    if value is None:
+        return
+    if value not in DERIVATIONS:
+        # The value is quoted back and the claim beside it is not: this is a
+        # closed vocabulary of two ASCII words that a build wrote, never a
+        # main's own text (AD-22).
+        raise DeriveError(
+            f"field {DERIVATION!r} must be {UNDERIVED!r} or {DERIVED!r}, got "
+            f"{value!r}; a third word is a record that is permanently neither "
+            f"a message nor a claim, and every reader resolves it differently"
+        )
+    if op is not None and op is not Op.ASSERT:
+        raise DeriveError(
+            f"a {op.value} record may not carry {DERIVATION!r}: the mark says "
+            f"whether a *belief* is evidence or a claim derived from it, and an "
+            f"op that asserts none has nothing for it to be about"
+        )
 
 
 #: The one record kind the scheduler may see, and the only fields of it that
@@ -621,7 +774,15 @@ def plan_projection(record: Mapping[str, Any]) -> dict[str, Any]:
 #: that simply omits the field is the most ordinary operation there is, and
 #: without this it would unpin the belief and replay would reproduce it
 #: unpinned. Permanence that lasts one record is not permanence.
-STICKY: Final[tuple[str, ...]] = (QUARANTINED,)
+#: ``DERIVATION`` is here for the same reason and a sharper version of it. A
+#: message is evidence for ever — there is no event that turns one into a claim,
+#: because the claim is a *different record* citing it — and an ``assert`` for
+#: an existing belief that simply omits the field is the most ordinary operation
+#: there is (a promotion, a demotion, a quarantine). Without this, any one of
+#: them would unmark the message, put it back into retrieval and the minter, and
+#: replay would reproduce it unmarked. Permanence that lasts one record is not
+#: permanence.
+STICKY: Final[tuple[str, ...]] = (QUARANTINED, DERIVATION)
 
 
 def pinned(value: object) -> bool:
@@ -658,6 +819,12 @@ _TYPED_FIELDS: Final[dict[str, type | tuple[type, ...]]] = {
     "subject": str,
     "claim": str,
     "ledger": str,
+    # Whether this record is evidence or a claim derived from it (CAP-5, story
+    # 15a). Validated at the append for the reason ``ledger`` is: the log is
+    # append-only, so a mark stored as a number is a record permanently outside
+    # the vocabulary every reader below resolves against. What a *valid* value
+    # looks like is ``validate_derivation``'s question; this is the type.
+    DERIVATION: str,
     "license": str,
     "independent": int,
     "support": (list, tuple),
@@ -1292,6 +1459,12 @@ def validate_fields(fields: dict[str, Any], *, op: Op | None = None) -> None:
                 f"are the whole of why a belief *left*, and an op that removes "
                 f"nothing has no cause to record"
             )
+    # **Before the generic type check**, for the reason the five gates above
+    # are first: a mark outside the vocabulary must refuse as a ``DeriveError``
+    # rather than as a bare ``ValueError``, so a caller wrapping the write path
+    # in ``except DeriveError`` catches every refusal this gate makes —
+    # including "that is not a string".
+    validate_derivation(fields, op=op)
     if op in CORRECTIONS:
         # First, for the reason the five gates above are first: a correction
         # attributing itself to two causes at once must refuse as a
