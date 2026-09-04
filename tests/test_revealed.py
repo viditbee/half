@@ -2123,3 +2123,273 @@ def test_a_second_claim_for_one_label_is_refused():
         run.record(a_written_claim(claim="a different sentence entirely"))
     with pytest.raises(DeriveError, match="is not a claim"):
         run.record("a bare string")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# story 15c: the structural rules the generated claim rests on
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.cap3_particular
+def test_the_writer_cannot_decide_and_the_reader_cannot_write():
+    """**Two operations, two holders, and neither can do the other's job**
+    (AD-19).
+
+    This is the first path in the tree on which somebody's mail meets a model
+    that may *author* text, and the separation is what keeps a model out of the
+    admission: the thing that writes a sentence is not the thing that says two
+    sources stand behind it.
+
+    Both allowlists are driven, in both directions, and the last two lines are
+    the half that stops this being red either way: the narrow pair is accepted.
+    """
+    class Both:
+        async def classify(self, work): ...
+        async def generate(self, work): ...
+
+    class CallableWriter:
+        async def generate(self, work): ...
+        def __call__(self, work): ...
+
+    for writer in (Both(), CallableWriter(), object(), None, ReadHolder()):
+        with pytest.raises(DeriveError):
+            Revealed({MAIN: ReadHolder()}, writers={MAIN: writer})
+    with pytest.raises(DeriveError):
+        Revealed({MAIN: Both()}, writers={MAIN: WriteHolder()})
+
+    bench = Revealed({MAIN: ReadHolder()}, writers={MAIN: WriteHolder()})
+    assert bench.holds(MAIN) and bench.writes(MAIN)
+    assert particular.ALLOWED_METHODS == frozenset({"generate"})
+
+
+@pytest.mark.cap3_particular
+def test_a_bench_with_a_writer_is_still_sealed():
+    """The writers cannot be swapped in after the check that each is narrow,
+    which is the same rule the readers have and would be worth nothing on only
+    one of the two mappings."""
+    reader, _, _, _ = a_reader()
+    with pytest.raises(DeriveError):
+        reader._writers = {MAIN: object()}
+
+
+@pytest.mark.cap3_particular
+def test_what_leaves_the_machine_for_a_generation_is_the_bodies_and_nothing_else():
+    """The generation request, scanned.
+
+    The scrubbed bodies, the instructions, and **no label**: the group's label
+    is Half's own word about the main and would tell the writer which answer to
+    reach for, which is the difference between reading the mail and confirming
+    a guess. No message id, no thread, no digest, no sender, no subject, no
+    ledger name and no ``main_id`` in any payload either.
+    """
+    bodies = ["a booking in Delhi", SCRIPTS["devanagari"]]
+    prompt = particular.prompt_for(bodies, main_id=MAIN)
+    assert prompt.system == particular.INSTRUCTIONS
+    assert len(prompt.turns) == 1
+    rendered = prompt.turns[0].text
+    for body in bodies:
+        assert body in rendered, "a body was truncated, folded or dropped"
+    stripped = rendered
+    for body in bodies:
+        stripped = stripped.replace(body, "")
+    for leaked in ("m0", "t1", "d0", "a@x", REVEALED, MAIN, *LABELS):
+        assert leaked not in stripped, leaked
+    assert not any(label in block for block in particular.INSTRUCTIONS
+                   for label in LABELS), (
+        "a reading label is respelled in the writing instructions"
+    )
+
+
+@pytest.mark.cap3_particular
+def test_a_confirmation_is_shown_one_source_and_never_the_group(sources):
+    """*"Asked one source at a time"*, which is what makes the question
+    askable at all: a confirmation shown every source answers *does this group
+    support it*, whose answer is already yes.
+
+    Driven rather than read, so it is the requests the provider actually saw.
+    """
+    reader, holder, _, _ = a_reader()
+    pull([mail(0, "the first body", thread="t1"),
+          mail(1, "the second body", thread="t2", sender="b@y")],
+         reader, sources)
+    assert len(holder.confirmations) == 2
+    for work in holder.confirmations:
+        assert tuple(work.labels) == CONFIRM_LABELS
+        assert work.prompt.system == particular.CONFIRM_INSTRUCTIONS
+        seen = work.prompt.turns[0].text
+        assert A_CLAIM in seen, "the sentence being confirmed was not shown"
+        bodies = [b for b in ("the first body", "the second body") if b in seen]
+        assert len(bodies) == 1, bodies
+
+
+@pytest.mark.cap3_particular
+def test_the_writers_tier_is_pinned_and_is_read_from_its_own_module():
+    """SPEC:124 — *the recurring spend runs on a cheaper tier than
+    conversation, because the free tier depends on that gap*.
+
+    Asserted from both sides of the provider, as the reader's tier is: the
+    constant, and the ``Tiers`` the composition root actually parses. A case
+    that asserted only the constant would be green for a build that bound it
+    and never used it.
+    """
+    assert particular.GENERATE_TIER == "cheap"
+
+    tree = ast.parse((ROOT / "half/__main__.py").read_text("utf-8"))
+    inside = [node for node in ast.walk(tree)
+              if isinstance(node, ast.FunctionDef) and node.name == "writers"]
+    assert len(inside) == 1, "the anchor is dead: writers() was renamed"
+    parsed = [node for node in ast.walk(inside[0])
+              if isinstance(node, ast.Call)
+              and isinstance(node.func, ast.Attribute)
+              and node.func.attr == "parse"]
+    assert len(parsed) == 1
+    names = {node.id for node in ast.walk(parsed[0])
+             if isinstance(node, ast.Name)}
+    assert "PARTICULAR_TIER" in names, (
+        "the writer's tier is not read from half.derive.particular"
+    )
+    assert not any(isinstance(node, ast.Constant) and node.value == "cheap"
+                   for node in ast.walk(parsed[0])), (
+        "the tier is respelled as a literal in the composition root"
+    )
+    assert "config.tier_for" not in ast.unparse(inside[0]), (
+        "the writer's tier follows the main's conversation tier"
+    )
+
+
+@pytest.mark.cap3_particular
+def test_the_shipped_composition_equips_a_writer_beside_every_reader():
+    """A surface reachable only from a test is a surface nobody has run.
+    ``build`` is driven, and the reader it produces is asked whether it can
+    write for the main the deployment named."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as root:
+        config = load({ROOT_ENV: root, MAINS_ENV: f"123:{MAIN}"})
+        wiring = build(config, token="123:fake")
+        try:
+            # No key is present, so neither holder is equipped — what is being
+            # asserted is that the *path* exists and answers, in the same shape
+            # for both, rather than that this environment has credentials.
+            assert wiring.revealed.holds(MAIN) is wiring.revealed.writes(MAIN)
+        finally:
+            wiring.registry.close()
+
+
+@pytest.mark.cap3_particular
+@pytest.mark.parametrize("attribute,value", [
+    ("BOUND_SECONDS", 0),
+    ("BOUND_SECONDS", float("nan")),
+    ("MAX_CLAIM_CHARS", 0),
+    ("MAX_OUTPUT_TOKENS", 1),
+    ("QUOTE_RUN_WORDS", 1),
+    ("MAX_SOURCES", 1),
+    ("GENERATE_TIER", "  "),
+    ("CONFIRM_LABELS", (CONFIRMS, CONFIRMS, CONFIRM_UNSURE)),
+    ("CONFIRM_LABELS", (CONFIRMS, DENIES, "a label defined nowhere")),
+    ("CONFIRM_INSTRUCTIONS", ("", "")),
+])
+def test_each_import_time_guard_in_the_writer_has_a_bypass(monkeypatch,
+                                                           attribute, value):
+    """Every guard in ``particular._check_constants`` driven on its own.
+
+    Without these the guards are red *everywhere at once* — the module refuses
+    itself, four files fail to collect, and the failure names nothing. Each of
+    these is red **by name**, so a mutation of the data they protect says which
+    rule it broke.
+
+    ``QUOTE_RUN_WORDS`` at one is the interesting one: a floor of a single word
+    makes every particular a quotation, so the rule would not protect anything,
+    it would delete the capability.
+    """
+    monkeypatch.setattr(particular, attribute, value)
+    with pytest.raises(DeriveError):
+        particular._check_constants()
+
+
+@pytest.mark.cap3_particular
+def test_the_writers_import_time_guards_pass_on_the_shipped_constants():
+    """The bypass cases above are worth nothing if the guards refuse the real
+    build too — an assertion that is red either way. This is the other side."""
+    particular._check_constants()
+
+
+@pytest.mark.cap3_particular
+def test_no_logging_call_in_the_writer_can_carry_content():
+    """Scanned over the **arguments of every logging call**, which is the form
+    this guarantee takes everywhere in this tree: a generated sentence in a
+    variable is invisible to a grep, and an invisible log call is how content
+    gets logged.
+
+    A claim Half wrote about somebody is as much AD-22's subject as the mail it
+    came from — arguably more, since it is the thing that would read as a fact.
+    """
+    tree = ast.parse((ROOT / "half/derive/particular.py").read_text("utf-8"))
+    calls = [node for node in ast.walk(tree)
+             if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Attribute)
+             and isinstance(node.func.value, ast.Name)
+             and node.func.value.id == "logger"]
+    for node in calls:
+        for argument in node.args[1:]:
+            names = {n.id for n in ast.walk(argument) if isinstance(n, ast.Name)}
+            assert names <= {"main_id"}, ast.unparse(argument)
+    # And the module holds no logging call that takes a claim at all, which is
+    # the honest reading of a scan that finds none: it is stated here so that a
+    # future call arriving without an argument check is a change to this case.
+    assert len(calls) == 0, (
+        "half/derive/particular.py now logs; every argument needs the scan "
+        "above, and a generated claim may never be one of them"
+    )
+
+
+@pytest.mark.cap3_particular
+def test_the_writer_reads_no_clock_opens_no_store_and_writes_no_record():
+    """AD-30, and ``half.derive``'s own rule. The module answers *what would a
+    claim say*; nothing else."""
+    source = (ROOT / "half/derive/particular.py").read_text("utf-8")
+    tree = ast.parse(source)
+    imported = {node.module for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom) and node.module}
+    forbidden = {name for name in imported
+                 if name.startswith(("half.store.store", "half.store.log",
+                                     "half.actor", "half.schedule"))}
+    assert not forbidden, forbidden
+    for banned in ("datetime", "time.time", "utcnow", "now()"):
+        assert banned not in source, banned
+
+
+@pytest.mark.cap3_particular
+def test_the_quotation_rule_is_the_context_builders_own_unit():
+    """*"Half's own words"* is decided on ``half.context.build``'s unit and
+    only its **length** is this module's.
+
+    The unit — invisible characters removed, a Devanagari matra kept attached to
+    its letter, folded by ``half.text.normalize`` — took two stories and a
+    script sweep to get right, and a copy of it beside a generator would have
+    been a Latin-only copy of whatever somebody remembered. Asserted over the
+    import graph as well as by behaviour, because the behaviour of a good copy
+    and of the real thing agree until the day they do not.
+    """
+    from half.context.build import runs as unit_runs
+
+    tree = ast.parse((ROOT / "half/derive/particular.py").read_text("utf-8"))
+    imports = {
+        (node.module, alias.name)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+        for alias in node.names
+    }
+    assert ("half.context.build", "runs") in imports
+    assert ("half.context.build", "leaks") in imports
+
+    # Devanagari: a matra must not split its letter, which is what a home-made
+    # unit rule always gets wrong — ``यात्रा`` shatters into three consonants
+    # under the index tokenizer and would then collide with almost any other
+    # Devanagari string, so every claim in an Indic script would read as a
+    # quotation.
+    assert len(unit_runs("यात्रा बुकिंग", length=1)) == 2
+
+    # And the floor is a run rather than a pair, in that script as in Latin.
+    assert quotes("क ख ग घ ङ", ["क ख ग घ च"])
+    assert not quotes("क ख ङ", ["क ख ग घ च"])
