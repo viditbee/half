@@ -75,6 +75,7 @@ markers = [
     "cap7_resolution: a correction resolves a tension and never deletes one — the deliberate inverse of the loop firewall",
     "cap7_neutrality: neither side of a tension is wrong — nothing ranks the two entries or records one as mistaken",
     "cap7_minting: minting is bounded — new or changed against the loop set and the subject set, a cheap filter before any judgement, a fixed per-main budget, never all-pairs, and nothing minted twice",
+    "cap7_judgement: the disagreement judgement — the gap and never the truth, a contradiction that answers no, three values that cannot collapse, a bound that fits the pass, two claims in any script and nothing durable",
     "cap8: the morning surface — at most one unprompted message a day, traceable to the preceding pass, and silence when there is nothing worth saying",
     "cap8_silence: silence is the ordinary outcome and not a degraded one — every gate, in every order, and the ceiling that makes aftercare silent with no aftercare branch",
     "cap8_nagging: a loop is never touched faster than its own timescale — the bound derived per loop, the record it reads, and its separation from both movement and a spent day",

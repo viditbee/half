@@ -979,6 +979,18 @@ def _check_constants() -> None:
             "every label needs a verdict and no others: "
             f"{sorted(set(ANSWER_FOR_LABEL) ^ set(LABELS))}"
         )
+    # **Asked before the count, and the order is the message.** A mapping that
+    # mints a contradiction also has two minting labels, so the general check
+    # below would fire first and an editor would read *"exactly one label may
+    # mint"* — arithmetic — where what they need to read is *why this label may
+    # not be the one*.
+    if ANSWER_FOR_LABEL[CANNOT_BOTH_BE_TRUE] is not False:
+        raise JudgeError(
+            "two entries that cannot both be true are not a tension. One of "
+            "them is wrong, which is the correction path's object (CAP-11): "
+            "Half asks the main and removes a belief. Minting a permanent link "
+            "between them instead is a worse story 12 wearing CAP-7's clothes"
+        )
     minting = sorted(
         label for label, answer in ANSWER_FOR_LABEL.items() if answer is True
     )
@@ -987,13 +999,6 @@ def _check_constants() -> None:
             f"{minting} mint a tension, and exactly one label may. A tension is "
             "two entries that disagree where neither of them is wrong, and a "
             "second way to reach that record is a second meaning it can have"
-        )
-    if ANSWER_FOR_LABEL[CANNOT_BOTH_BE_TRUE] is not False:
-        raise JudgeError(
-            "two entries that cannot both be true are not a tension. One of "
-            "them is wrong, which is the correction path's object (CAP-11): "
-            "Half asks the main and removes a belief. Minting a permanent link "
-            "between them instead is a worse story 12 wearing CAP-7's clothes"
         )
     if not any(answer is None for answer in ANSWER_FOR_LABEL.values()):
         raise JudgeError(
