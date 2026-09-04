@@ -634,11 +634,56 @@ def test_the_shipped_composition_admits_a_claim_from_a_seeded_mailbox(tmp_path):
 
 
 @pytest.mark.cap3
-def test_the_same_mailbox_pulled_twice_admits_no_duplicate_claim(tmp_path):
-    """The other half of idempotency, at the append. A claim already in the
-    ledger is left exactly as it is — which is also how cross-run accumulation
-    is deferred, without a rule for deciding two derived claims are the same
-    claim."""
+def test_a_later_pull_reaching_the_same_conclusion_writes_no_second_claim(
+        tmp_path):
+    """**Idempotency at the append**, which is a different rule from the
+    pipeline's and needs its own case: a second pull carrying *new* messages
+    that reach the same conclusion reaches the append with a claim in hand, and
+    the ledger already holds one.
+
+    A mutation probe found the case below green for this — the pipeline skips
+    every message on a re-read, so ``admitted`` is empty and the append guard is
+    never reached at all. This is the case that reaches it.
+
+    It also pins the **deferral**: the later support is *not* added. Doing so
+    needs a rule for deciding that two derived claims are the same claim, which
+    is a second matching problem and is not this story.
+    """
+    config = load({ROOT_ENV: str(tmp_path), MAINS_ENV: f"123:{MAIN}"})
+    wiring = build(config, token="123:fake")
+    try:
+        reader, _, _ = a_reader()
+        wiring = type(wiring)(
+            **{**{f: getattr(wiring, f) for f in wiring.__dataclass_fields__},
+               "revealed": reader})
+        first = [mail(0, "your booking is confirmed", thread="t1"),
+                 mail(1, "your itinerary", thread="t2", sender="b@y")]
+        later = [mail(2, "a different booking", thread="t3", sender="c@z"),
+                 mail(3, "a different itinerary", thread="t4", sender="d@w")]
+        asyncio.run(ingest_mail(wiring, main_id=MAIN, source=FakeMail(first)))
+        asyncio.run(ingest_mail(wiring, main_id=MAIN, source=FakeMail(later)))
+        with Store(tmp_path / MAIN, prefix=build_prefix) as store:
+            beliefs = store.state().beliefs
+            appends = sum(1 for record in store.log
+                          if record.id == f"r_{TRAVELS}")
+    finally:
+        wiring.registry.close()
+    assert appends == 1, "the later pull wrote the claim a second time"
+    assert beliefs[f"r_{TRAVELS}"]["support"] == ["m0", "m1"], (
+        "the later pull's support was accumulated onto the standing claim"
+    )
+    assert beliefs[f"r_{TRAVELS}"]["independent"] == 2
+
+
+@pytest.mark.cap3
+def test_the_same_mailbox_pulled_twice_reads_no_body_twice(tmp_path):
+    """Matrix row ten at the far end: the same mailbox, twice, through the
+    shipped path. The pipeline skips every message whose digest it already
+    holds, so the second pull has nothing to admit and nothing to append.
+
+    Deliberately **not** the case for the append's own guard — see above, which
+    is the one that reaches it.
+    """
     config = load({ROOT_ENV: str(tmp_path), MAINS_ENV: f"123:{MAIN}"})
     wiring = build(config, token="123:fake")
     try:
@@ -802,22 +847,31 @@ def test_the_threshold_is_two_and_no_call_site_can_lower_it():
 
 
 @pytest.mark.cap3_structure
-@pytest.mark.parametrize("fields,because", [
-    ({"support": ("m0",), "independent": 1}, "one source"),
-    ({"support": (), "independent": 2}, "no source at all"),
-    ({"support": ("m0", "m0"), "independent": 2}, "the same source twice"),
-    ({"support": ("m0", "m1"), "independent": 1}, "one independent group"),
-    ({"support": ("m0", "m1"), "independent": 3}, "more groups than sources"),
+@pytest.mark.parametrize("fields,names", [
+    ({"support": ("m0",), "independent": 1}, "citing 1 source"),
+    ({"support": (), "independent": 2}, "citing 0 source"),
+    ({"support": ("m0", "m0"), "independent": 2}, "names a source twice"),
+    ({"support": ("m0", "m1"), "independent": 1}, "independence count of 1"),
+    ({"support": ("m0", "m1"), "independent": 3}, "More groups than sources"),
 ])
-def test_a_claim_that_could_not_be_true_cannot_be_constructed(fields, because):
+def test_a_claim_that_could_not_be_true_cannot_be_constructed(fields, names):
     """*"A claim whose support set is empty or whose count is one is a defect,
     not a state."*
 
     Refused on the type, because the log is append-only and every one of these
-    is permanent once written. Five separate shapes, because each is a different
-    mistake and a single case would pass for a build that caught only one.
+    is permanent once written. Five shapes, because each is a different mistake.
+
+    **Each asserts the refusal's own message, not merely that something
+    raised**, and that is the correction a mutation probe forced. The
+    support-size check is redundant — a count below the floor and a count above
+    the support size together already forbid every support set smaller than two
+    — so disabling it left every case here green: four guards, and three of them
+    covering the fourth, which is a guard that cannot fire because a rule below
+    it already forbids its case. Reading the message is what tells them apart,
+    and it is worth telling them apart because a refusal has to name the right
+    thing.
     """
-    with pytest.raises(DeriveError):
+    with pytest.raises(DeriveError, match=names):
         Claim(label=TRAVELS, claim="travels", subject="travel", **fields)
 
 

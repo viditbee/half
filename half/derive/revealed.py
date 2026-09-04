@@ -465,6 +465,18 @@ class Claim:
 
         *"A claim whose support set is empty or whose count is one is a defect,
         not a state."*
+
+        **Four checks, and the first is deliberately redundant.** A count below
+        the floor and a count above the support size together already forbid
+        every support set smaller than two, so this check can never be the only
+        thing standing between the ledger and a bad record — the mutation probe
+        found exactly that and it is recorded here rather than removed. It stays
+        because a refusal has to *name the right thing*: an empty support set
+        refused as *"more groups than sources"* sends whoever reads that message
+        to the union-find, which is working. So each of the four is asserted by
+        its own message rather than by the fact that something raised, which is
+        the only way a case can tell four guards apart when three of them cover
+        the fourth.
         """
         if len(self.support) < MIN_INDEPENDENT:
             raise DeriveError(
