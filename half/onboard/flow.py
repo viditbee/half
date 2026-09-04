@@ -31,13 +31,14 @@ had no classifier wired, which removed the very route the assertion claimed to
 bound; 13b's review found it. So the negative here is asserted with this module
 constructed, a demonstration already sent and an offer standing.
 
-**Two things this module cannot do, by construction.** It never promotes and it
-never corrects. ``confirmed`` returns the fields
-``half.governance.ladder.promote`` produced and ``denied`` returns the
-``Removal`` ``half.correction.apply.plan`` produced; the append is
-``answered``'s, under the actor's own mutex, in the shape
-``half.actor.runtime`` already appends a correction. There is no second rung
-mover and no second correction path in this tree.
+**Two things this module cannot do, by construction.** It never decides that a
+rung may move and it never decides what a correction is. ``answered`` hands the
+belief to ``half.governance.ladder.promote``, which refuses without the main's
+acknowledgement, without a receipt, and for a quarantined belief; and it hands a
+denial to ``half.correction.apply.plan``, which is story 12's own door. The
+append is made under the actor's mutex in the shape ``half.actor.runtime``
+already appends a correction. There is no second rung mover and no second
+correction path in this tree.
 
 **Exactly one claim, never a list.** A digest of everything Half worked out is
 a form, and CAP-4 forbids forms. ``chosen`` picks one, deterministically, and

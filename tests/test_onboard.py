@@ -440,7 +440,6 @@ def test_the_notice_reaches_the_main_before_a_single_message_is_read(registry):
     or the main consented to something that had already happened.
     """
     order: list[str] = []
-    channel = Wire()
 
     class Recording(Wire):
         async def send(self, main_id, text):
