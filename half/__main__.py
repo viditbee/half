@@ -12,6 +12,7 @@ handed to the main in an archive and resurrected on every replay.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 import os
@@ -22,7 +23,7 @@ from half.actor.registry import ActorRegistry, validate_main_id
 from half.actor.runtime import Runtime
 from half.channel.telegram import TelegramChannel
 from half.channel.telegram_transport import PTBTransport
-from half.config import TELEGRAM_TOKEN_ENV, Config, load
+from half.config import MAINS_ENV, TELEGRAM_TOKEN_ENV, Config, load
 from half.consolidate.judge import (
     CLASSIFY_TIER as JUDGE_TIER,
     PER_CALL_MICRO_USD as JUDGE_PER_CALL_MICRO_USD,
@@ -60,6 +61,8 @@ from half.derive.revealed import (
 )
 from half.errors import HalfError, ModelError
 from half.governance import ladder
+from half.ingest.gmail import GmailSource
+from half.ingest.gmail_transport import HttpTransport
 from half.ingest.pipeline import Ingested, Pipeline
 from half.ingest.port import MailSource
 from half.interrupt.gate import Interrupt
@@ -72,6 +75,7 @@ from half.model.budget import Budget
 from half.model.port import Classifier, Generator
 from half.model.tier import Tiers
 from half.questions.engine import QuestionEngine
+from half.schedule.clock import SystemClock
 from half.schedule.tick import Scheduler
 from half.surface.morning import MorningPass, Mornings, MorningSurface
 from half.secrets import FileSecretStore
@@ -703,6 +707,29 @@ async def onboard(
     )
 
 
+async def onboarded(
+    wiring: Wiring, *, main_id: str, t: str
+) -> onboarding.Demonstration:
+    """The demonstration against a **real mailbox**, built from the secret store.
+
+    The one place in the tree that constructs the networked Gmail transport.
+    ``onboard`` above takes any ``MailSource``, which is what keeps every case
+    above this line offline; this function is the half-line that says *the
+    source is Gmail and its token comes from where AD-11 says a token may live*.
+
+    Separated from ``_onboard_command`` so that the path from a stored
+    credential to a receipt can be driven end to end against a fake HTTP layer,
+    with the platform channel doubled — which is the only way this story's
+    integration is assertable without a live key and a live bot.
+
+    A main with no stored token raises ``MailboxMisconfigured`` — a
+    ``ChannelError`` and so a ``HalfError`` — **before any request is made**,
+    which the command turns into one plain line rather than a traceback.
+    """
+    source = GmailSource(HttpTransport.from_secrets(wiring.secrets, main_id))
+    return await onboard(wiring, main_id=main_id, source=source, t=t)
+
+
 def derivers(config: Config, secrets: FileSecretStore) -> Derivers:
     """The claim derivers, for the mains a deployment has equipped (CAP-5, 15a).
 
@@ -1152,11 +1179,80 @@ async def serve(config: Config, token: str) -> None:
         wiring.registry.close()
 
 
+def arguments(argv: list[str] | None = None) -> argparse.Namespace:
+    """The command line: ``half``, ``half run``, ``half onboard <main>``.
+
+    **``onboard`` asks for nothing but the token** (CAP-4). There is no form and
+    no interview: the main answers no questions, and the operator names which
+    configured main to onboard because a composition root serving several must
+    be told which one. The interactive OAuth consent flow that would turn a
+    browser redirect into a credential is still deferred — story 3 deferred it
+    and story 7 declined it — so the token is supplied out of band into the
+    ``SecretStore`` and this command reads it from there.
+
+    A bare ``half`` still serves, which is what every existing deployment and
+    the console script in ``pyproject.toml`` invoke.
+    """
+    parser = argparse.ArgumentParser(
+        prog="half", description="A second self that lives in your messaging app."
+    )
+    commands = parser.add_subparsers(dest="command")
+    commands.add_parser(
+        "run", help="serve the inbound loop and the due-time queue (the default)"
+    )
+    first = commands.add_parser(
+        "onboard", help="run the first demonstration against a real mailbox"
+    )
+    first.add_argument(
+        "main_id", help="which main in HALF_MAINS to onboard"
+    )
+    return parser.parse_args(argv)
+
+
+def onboard_command(config: Config, token: str, main_id: str) -> int:
+    """``half onboard`` — story 7's flow, against a real mailbox, reported.
+
+    **It reports the outcome and never the words.** ``Demonstration.text`` is
+    what was said to the main; printing it here would put a main's own content
+    on an operator's terminal, and the reason, the seconds and whether they
+    fitted are what CAP-2 asks anybody to hold this to (AD-22).
+
+    An outcome that is not ``DEMONSTRATED`` is still a **successful run** and
+    exits zero: *nothing cleared the gates* and *the deployment wrote no
+    notice* are answers this path is designed to produce, and turning one into
+    a non-zero exit would invent an outcome story 7 does not have. What exits
+    non-zero is a refusal to start at all — no such main, no stored token —
+    which ``main`` prints as one line.
+    """
+    if main_id not in config.mains.values():
+        raise HalfError(
+            f"{main_id!r} is not a main in {MAINS_ENV}; "
+            f"configured: {sorted(config.mains.values())}"
+        )
+    wiring = build(config, token)
+    try:
+        done = asyncio.run(
+            onboarded(
+                wiring,
+                main_id=main_id,
+                # The one clock reader in the tree (AD-30). Nothing below this
+                # line asks what time it is.
+                t=SystemClock().read().stamp,
+            )
+        )
+    finally:
+        wiring.registry.close()
+    over = "" if done.fitted else " (over CAP-2's ninety seconds)"
+    print(f"half: onboarded {main_id}: {done.reason} in {done.seconds:.1f}s{over}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=os.environ.get("HALF_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    args = arguments(argv)
     try:
         config = load()
         if not config.mains:
@@ -1164,8 +1260,13 @@ def main(argv: list[str] | None = None) -> int:
                 "no mains configured; set HALF_MAINS='<chat_id>:<main_id>'"
             )
         token = os.environ.get(TELEGRAM_TOKEN_ENV, "")
+        if args.command == "onboard":
+            return onboard_command(config, token, args.main_id)
         asyncio.run(serve(config, token))
     except HalfError as exc:
+        # One line, never a traceback: a missing credential is an operator's
+        # ordinary Tuesday, and the class of every failure on this path is
+        # already a sentence somebody can act on.
         print(f"half: {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
