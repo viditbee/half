@@ -30,6 +30,17 @@ once the send has been attempted, so no path here can cost a main their answer:
 absent, standing down, slow, refusing, over budget, unreadable or raising all
 produce the same thing, which is no claim.
 
+**A claim derived here is an *explicit* conclusion, and that is the vocabulary
+rather than a simplification.** honcho separates a conclusion the person stated —
+session-scoped, carrying a trustworthy stamp — from a deductive or inductive one
+the system reached across sessions, which fails closed
+(``src/utils/representation.py``; extraction manifest, marked taken). A message
+is the main saying something now, so what a gate admits is the explicit kind:
+its words are theirs, its evidence is the message, and its scope is the turn it
+arrived on. The cross-session kind is the nightly pass's object and story 15b's,
+and it fails closed here by simply not existing — there is no path in this module
+that reaches a second record, a second session or a second main.
+
 **The claim is the message's own words, and this module never touches them.** A
 derivation decides *whether* there is a claim; it does not reword one, and it
 does not hand one back — ``Derived`` has no field for text, so the caller writes

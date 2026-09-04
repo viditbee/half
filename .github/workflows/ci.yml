@@ -1148,6 +1148,146 @@ jobs:
           fi
           uv run --locked --extra dev pytest -q -m cap7_judgement
 
+      - name: 'CAP-5: a message is evidence, and a claim is a belief'
+        # The gate for the capability's last unbuilt clause. CAP-5 ends
+        # *"Admission gates (decision-relevance, durability, independence,
+        # falsifiability) are individually testable"*, and until story 15a none
+        # of the four existed anywhere in the tree: `half/actor/runtime.py`
+        # wrote every inbound message into a main's ledger as a stated belief,
+        # so `ok`, `thanks` and `hello?` were beliefs — ranked by retrieval,
+        # quotable once promoted, eligible for a tension against the revealed
+        # side, and the thing a correction aims at.
+        #
+        # What it protects, each rule with no second case:
+        #
+        #   that **all four gates run, whatever any of them says**. A set that
+        #   stopped at the first refusal could not be individually tested: every
+        #   case for a later gate would pass whether that gate worked or an
+        #   earlier one refused first. Asserted twice — as a refusal naming both
+        #   gates, and as a holder still asked four times — and refused at import
+        #   besides;
+        #   that **refused, unsure and never-answered stay three things**. All
+        #   three leave no claim, so *"no belief was written"* is satisfied by a
+        #   gate that refused, a model that could not tell, a provider that was
+        #   down, a breaker standing a main down, and a deployment that equipped
+        #   nobody. Each has a case that fails for its own reason and a counter
+        #   only it moves;
+        #   that **a message is not a belief, by what each path is handed**.
+        #   Retrieval (both doors — the term match and the backstop behind a
+        #   query that matched no term), the context builder, the tension minter
+        #   and the ladder are driven over a store holding a message, and it is
+        #   absent from each because the door does not emit it. Never because a
+        #   filter looked for it: that is story 10's lesson, and a filter inside
+        #   the context builder would put the main's own wordings into the
+        #   withheld set, where the AD-18 tripwire would refuse an ordinary reply
+        #   for reusing two consecutive words of what they had just written;
+        #   that **the three readers still read the record**. The language
+        #   sample, responsiveness and the correction aim were each built
+        #   assuming every message becomes a stated belief. Each is driven here,
+        #   and **two of them had to be re-pointed**: a derived claim is also an
+        #   `assert` on the stated ledger written on the same turn, so
+        #   `responsive` would have retired two questions on one reply, and the
+        #   aim — which excluded *the newest stated record* — would have excluded
+        #   the derived claim from every correction, silently, on the belief
+        #   corrections are most often about. Both have the case that catches it;
+        #   that a derivation **never costs a reply** — after the send, asserted
+        #   as an order rather than as a latency, because a latency assertion is
+        #   a clock in a test and would be green on a fast machine whatever the
+        #   ordering; and absent, slow, raising, over budget or unable to append
+        #   all leave the turn untouched;
+        #   and that it is **worldwide**: five scripts, each derived, with the
+        #   rendered request compared between them so that *no English rubric and
+        #   no locale on the path* is a measurement rather than a sentence.
+        #
+        # **The margin is deliberately zero: 41 selected, 41 required.** Every
+        # case in this gate is the only one asserting its rule, which is the
+        # condition under which a zero margin is right — and it is why no
+        # existing floor was inflated instead. It also means every case added
+        # here owes an edit to this number, which is the cost of a zero margin
+        # and is why `cap5_admission` is applied **per case** rather than as a
+        # module-wide `pytestmark`.
+        #
+        # **Ten mutations were run against these before this gate was written**,
+        # each with a purged bytecode cache on both sides, a green baseline
+        # asserted either side of it, every anchor asserted unique, and the
+        # failing case *names* recorded rather than an exit code. Every one is
+        # red. In order, with how many cases caught it:
+        #
+        #   the message written without the mark — seven;
+        #   `admission` stopping at the first refusal — **caught at import**: the
+        #   module refuses itself, so the whole suite fails to collect;
+        #   the term-match retrieval door no longer excluding messages — three;
+        #   the backstop no longer excluding them — three;
+        #   the minting door no longer excluding them — one;
+        #   responsiveness counting a derived claim as the main speaking — one;
+        #   the aim reverted to excluding the newest stated record — two,
+        #   including the half of `tests/test_correction.py`'s own case that this
+        #   story added;
+        #   derivation moved in front of the reply — one;
+        #   an absent mark read as evidence — 267, across eleven files, which is
+        #   the measurement behind *"the direction that never silently
+        #   excludes"*: reading absence the other way takes every belief in every
+        #   log written before this story out of retrieval;
+        #   and the mark made non-sticky — one.
+        #
+        # **The probe's first run reported the second of those green, and that
+        # was the probe rather than the gate.** A module that refuses itself
+        # produces pytest *collection errors*, and the harness parsed only
+        # `FAILED` lines. It parses `ERROR` lines too now, and the same mutation
+        # comes back as eighteen errors. It is recorded here because a probe that
+        # does not parse is indistinguishable from a rule nobody asserted.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap5_admission -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-5 admission cases collected: $collected"
+          if [ "$collected" -lt 41 ]; then
+            echo "::error::the admission gate collected $collected cases; a gate, a door, or one of the three readers has stopped being asserted"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap5_admission
+
+      - name: 'CAP-5: the structural rules the separation rests on'
+        # A second gate over a subset, for the reason the CAP-12 and CAP-4 subset
+        # gates exist: a floor on the superset cannot stop this half being
+        # hollowed out, because the whole of it could be deleted with the step
+        # above still green and still above its own floor.
+        #
+        # What it covers, each rule with no second case: that the derivation
+        # vocabulary is **closed** and refused before it is durable, and may not
+        # ride on an op that asserts nothing; that the mark is **sticky**, so the
+        # most ordinary append there is — restating a belief — cannot unmark a
+        # message, put it back into retrieval and have replay reproduce it
+        # unmarked; that an **absent** mark reads as a claim, which is the
+        # direction that never silently excludes and is what keeps every log
+        # written before this story readable; that the holder **cannot author a
+        # claim**, checked as an allowlist because the denylist this pattern
+        # replaced let an object through that could classify and also chat; that
+        # the tier is pinned by value **and** read from `half/derive/claim.py` by
+        # the composition root, because a case can assert that a constant is
+        # *bound* without asserting that it is *used* — the failure story 9e's
+        # third mutation round found; that the four gates run **concurrently**,
+        # measured on a clock, because the arithmetic relation between the bound
+        # and the turn's own deadline stays green for a build that runs them in
+        # series; that each import-time guard has a **bypass case**, so a
+        # mutation of the data those guards protect is red *by name* somewhere
+        # rather than only red everywhere at once; and that no logging call in
+        # the package can carry content, scanned over the *arguments* of every
+        # logging call rather than over the file.
+        #
+        # **The margin is zero here too, and for the same reason**: every case is
+        # the only one asserting its rule.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap5_structure -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-5 structural cases collected: $collected"
+          if [ "$collected" -lt 28 ]; then
+            echo "::error::the CAP-5 structural gate collected $collected cases; the closed vocabulary, the sticky mark, the narrow holder or the pinned tier has stopped being asserted"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap5_structure
+
       - name: 'CAP-11: a correction removes the belief, and never on inference alone'
         # The gate for the capability that lets a main disagree with Half. The
         # ops have been in the closed vocabulary since story 1 and the fold has

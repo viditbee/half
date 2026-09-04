@@ -262,7 +262,10 @@ def test_a_message_worth_keeping_derives_one_claim(tmp_path, registry):
 
 @pytest.mark.cap5_admission
 @pytest.mark.parametrize("text,gate", [
+    # The acceptance criterion's own three, by name.
     (NOT_RELEVANT, DECISION_RELEVANCE),
+    ("thanks", DECISION_RELEVANCE),
+    ("hello?", DECISION_RELEVANCE),
     (NOT_DURABLE, DURABILITY),
     ("yes", INDEPENDENCE),
     (NOT_FALSIFIABLE, FALSIFIABILITY),
@@ -382,10 +385,11 @@ def test_the_reply_goes_out_before_anything_is_derived(tmp_path, registry):
 
     transport.send_message = watched
     channel = TelegramChannel(transport=transport, mains={CHAT: MAIN})
-    seed_belief(Store(tmp_path / "mains" / MAIN, prefix=build_prefix),
-                "b_fly", "2026-07-01T00:00:00Z", subject="self",
-                claim="wants to fly a paraglider again",
-                rung=ladder.License.ASSERT, support=["s_1"], ledger="revealed")
+    with Store(tmp_path / "mains" / MAIN, prefix=build_prefix) as store:
+        seed_belief(store, "b_fly", "2026-07-01T00:00:00Z", subject="self",
+                    claim="wants to fly a paraglider again",
+                    rung=ladder.License.ASSERT, support=["s_1"],
+                    ledger="revealed")
     asyncio.run(Runtime(channel=channel, registry=registry,
                         derivers=deriver).run())
 
@@ -595,7 +599,6 @@ def test_the_tension_minter_is_handed_claims_and_never_the_message(
 
 
 @pytest.mark.cap5_admission
-@pytest.mark.cap8_voice
 def test_the_language_sample_still_reads_the_main_s_own_message(tmp_path):
     """**Reader one** (``half.voice.compose.sample_from``).
 
@@ -621,7 +624,6 @@ def test_the_language_sample_still_reads_the_main_s_own_message(tmp_path):
 
 
 @pytest.mark.cap5_admission
-@pytest.mark.cap4_bought
 def test_responsiveness_still_reads_the_main_s_own_message():
     """**Reader two** (``half.questions.answered.responsive``).
 
@@ -639,7 +641,6 @@ def test_responsiveness_still_reads_the_main_s_own_message():
 
 
 @pytest.mark.cap5_admission
-@pytest.mark.cap4_bought
 def test_one_reply_retires_one_question_though_a_claim_was_derived_from_it():
     """**Reader two's regression, and the reason it had to be re-pointed.**
 
@@ -677,7 +678,6 @@ def test_one_reply_retires_one_question_though_a_claim_was_derived_from_it():
 
 
 @pytest.mark.cap5_admission
-@pytest.mark.cap11
 def test_the_correction_aim_still_excludes_the_message(tmp_path, registry):
     """**Reader three** (``half.correction.apply.aim``), driven end to end.
 
@@ -711,7 +711,6 @@ def test_the_correction_aim_still_excludes_the_message(tmp_path, registry):
 
 
 @pytest.mark.cap5_admission
-@pytest.mark.cap12
 def test_a_crisis_turn_derives_nothing(tmp_path, registry):
     """*"Crisis: the mode is open → nothing derived; the crisis path owns the
     turn."*
