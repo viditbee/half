@@ -1,12 +1,24 @@
-"""CAP-3 story 15b: what a source is worth keeping.
+"""CAP-3 stories 15b and 15c: what a source is worth keeping, and what it says.
+
+15b's half of this file is unchanged in intent and retargeted in mechanism: a
+group's claim is now *generated* from its scrubbed texts rather than looked up
+in a closed vocabulary, so ``Run.admitted`` returns what a writer wrote and a
+case that used to build candidates and read a constant back now has to drive a
+reader.
+
+15c's half is the section at the end, and it exists for one sentence: **a
+specific claim's support is the sources that support that claim.** Every case
+there is written so that it fails if the *label's* support is used instead —
+and the fixtures are built so the two numbers genuinely differ, because a
+fixture where they agree proves nothing at all.
 
 Ingestion captured receipts and derived nothing, so the revealed ledger was
 empty and story 3's union-find — built precisely to make CAP-3's central
 sentence true — had never once decided anything outside its own unit tests.
-This file is one case per row of the story's matrix, plus the structural rules
-the story rests on.
+This file is one case per row of both stories' matrices, plus the structural
+rules they rest on.
 
-Four things it refuses to do, because each would let it pass while the product
+Five things it refuses to do, because each would let it pass while the product
 failed:
 
 **It never asserts *"no claim was admitted"* on its own.** That is true of a
@@ -29,6 +41,12 @@ that the exception path reaches no provider either.
 **It hunts the body.** A sentinel and a secret are chased through every byte
 written, every request the provider saw, every captured log line, the tally, the
 candidates and the admitted claims.
+
+**It never lets a claim's support and its label's support be the same number in
+a fixture that is asked to tell them apart.** Story 15c's central case builds a
+label group of three independent sources of which two confirm the sentence and
+share a thread — three against one — because a fixture where the two numbers
+agree is green for the build the story exists to prevent.
 """
 
 from __future__ import annotations
@@ -42,9 +60,21 @@ import pytest
 
 from half.__main__ import build, ingest_mail
 from half.config import MAINS_ENV, ROOT_ENV, load
-from half.derive import revealed as reading
+from half.derive import particular, revealed as reading
 from half.derive.claim import Derivers
 from half.derive.gates import GATES
+from half.derive.particular import (
+    CONFIRMS,
+    CONFIRM_LABELS,
+    CONFIRM_UNSURE,
+    DENIES,
+    MAX_CLAIM_CHARS,
+    MAX_SOURCES,
+    QUOTE_RUN_WORDS,
+    Refusal,
+    quotes,
+    usable,
+)
 from half.derive.revealed import (
     BOUND_SECONDS,
     CLASSIFY_TIER,
@@ -73,7 +103,7 @@ from half.ingest import pipeline as ingesting
 from half.ingest.pipeline import Pipeline, Receipt
 from half.ingest.port import Message
 from half.ingest.scrub import scrub
-from half.model.port import Decision, Failure, Kind, Reason, Usage
+from half.model.port import Completion, Decision, Failure, Kind, Reason, Usage
 from half.retrieval.prefix import build_prefix
 from half.store.records import CLAIM, DERIVATION, DERIVED, LEDGER, SUBJECT
 from half.store.sources import LocalSourceStore
@@ -86,6 +116,21 @@ MAIN = "vidit"
 #: The label every double answers with unless a case says otherwise.
 TRAVELS = DOINGS[0].label
 BUYS = DOINGS[2].label
+
+#: What the writer double answers with unless a case says otherwise.
+#:
+#: **Deliberately something no label could have produced.** The whole of story
+#: 15c is that a main learns something they did not already know from the word
+#: *travels*, so a fixture claim that read like a label would make every case
+#: here green for the build this story replaces.
+#:
+#: It also shares no run of ``QUOTE_RUN_WORDS`` words with any body in this
+#: file, which is asserted rather than eyeballed —
+#: ``test_the_fixture_claim_is_not_a_quotation_of_any_fixture_body``.
+A_CLAIM = "makes long journeys about twice a month, usually alone"
+
+#: A second one, for the case where two labels cross in one run.
+ANOTHER_CLAIM = "orders household things in small batches, several times a month"
 
 #: A secret, spelled in halves so this file is not itself a finding.
 SECRET = "".join(("AKIA", "IOSFODNN7EXAMPLE"))
@@ -102,6 +147,22 @@ SCRIPTS: dict[str, str] = {
     "amharic": "ማስያዣዎ ተረጋግጧል። ጉዞ መጋቢት 14።",
     "arabic": "تم تأكيد حجزك. المغادرة في 14 مارس.",
     "japanese": "ご予約が確定しました。3月14日出発。",
+}
+
+#: What a writer answers with, in each of those scripts.
+#:
+#: **Not translations of one another and not translations of the bodies**: the
+#: point is that the claim comes back in the script its sources were written in
+#: and that nothing on the path reads either. Each shares no run of
+#: ``QUOTE_RUN_WORDS`` comparison words with its body, which
+#: ``test_the_fixture_claim_is_not_a_quotation_of_any_fixture_body`` asserts
+#: rather than leaving to the eye.
+IN_SCRIPT: dict[str, str] = {
+    "latin": "makes long journeys about twice a month, usually alone",
+    "devanagari": "हर महीने दो बार लंबी दूरी तय करता है",
+    "amharic": "በየወሩ ሁለት ጊዜ ረጅም ጉዞ ያደርጋል",
+    "arabic": "يسافر مسافات طويلة مرتين كل شهر تقريبا",
+    "japanese": "毎月二回ほど遠くへ移動している",
 }
 
 
@@ -139,24 +200,49 @@ class GateHolder:
         return len(self.seen)
 
 
-class ReadHolder:
-    """The narrow classifier that answers *what does this show they do*.
+def _next(answers: list, taken: int):
+    """The answer for the ``taken``-th call; the last one repeats.
 
-    ``answers`` is consumed in order and the last one repeats, so a case can say
-    *"the first body travels, everything after it buys"* without knowing how
-    many bodies there are.
+    So a case can say *"the first source confirms, everything after it does
+    not"* without knowing how many sources there are.
+    """
+    return answers[min(taken - 1, len(answers) - 1)]
+
+
+class ReadHolder:
+    """The narrow classifier, answering **both** questions asked through it.
+
+    ``answers`` is *what does this body show they do*; ``confirms`` is *does
+    this one source stand behind this sentence*. They are told apart by the
+    request's own closed label set rather than by call order, because the two
+    interleave: a reading crosses a group, the confirmations run inside it, and
+    the next reading follows.
+
+    Each is consumed in order and the last one repeats. The two are counted
+    apart — ``calls`` is readings and ``confirmations`` is the other — so an
+    assertion about how many bodies were read does not quietly become an
+    assertion about how many sources were asked.
     """
 
-    def __init__(self, answers: object = TRAVELS, *, sleep: float = 0.0) -> None:
+    def __init__(self, answers: object = TRAVELS, *, sleep: float = 0.0,
+                 confirms: object = CONFIRMS) -> None:
         self._answers = list(answers) if isinstance(answers, list) else [answers]
+        self._confirms = (
+            list(confirms) if isinstance(confirms, list) else [confirms]
+        )
         self._sleep = sleep
         self.seen: list = []
+        self.confirmations: list = []
 
     async def classify(self, work):
-        self.seen.append(work)
-        if self._sleep:
-            await asyncio.sleep(self._sleep)
-        answer = self._answers[min(len(self.seen) - 1, len(self._answers) - 1)]
+        if tuple(work.labels) == CONFIRM_LABELS:
+            self.confirmations.append(work)
+            answer = _next(self._confirms, len(self.confirmations))
+        else:
+            self.seen.append(work)
+            if self._sleep:
+                await asyncio.sleep(self._sleep)
+            answer = _next(self._answers, len(self.seen))
         if isinstance(answer, BaseException):
             raise answer
         if isinstance(answer, str):
@@ -171,18 +257,63 @@ class ReadHolder:
     def texts(self) -> list[str]:
         return [work.prompt.turns[0].text for work in self.seen]
 
+    @property
+    def confirmed_texts(self) -> list[str]:
+        return [work.prompt.turns[0].text for work in self.confirmations]
+
+
+class WriteHolder:
+    """The narrow generator that writes what a group's claim says.
+
+    Narrow on purpose: one public method, which is what ``check_writer``
+    requires and what keeps the thing that *writes* from also being the thing
+    that *decides*.
+    """
+
+    def __init__(self, answers: object = A_CLAIM, *, sleep: float = 0.0) -> None:
+        self._answers = list(answers) if isinstance(answers, list) else [answers]
+        self._sleep = sleep
+        self.seen: list = []
+
+    async def generate(self, work):
+        self.seen.append(work)
+        if self._sleep:
+            await asyncio.sleep(self._sleep)
+        answer = _next(self._answers, len(self.seen))
+        if isinstance(answer, BaseException):
+            raise answer
+        if isinstance(answer, str):
+            return Completion(text=answer, usage=Usage(micro_usd=90))
+        return answer
+
+    @property
+    def calls(self) -> int:
+        return len(self.seen)
+
+    @property
+    def texts(self) -> list[str]:
+        return [work.prompt.turns[0].text for work in self.seen]
+
 
 def a_reader(answers=TRAVELS, *, gates=None, main=MAIN, sleep=0.0,
-             bound_seconds=1.0, tally=None):
-    """A ``Revealed``, the reading holder inside it, and the gate holder."""
+             bound_seconds=1.0, tally=None, writes=A_CLAIM,
+             confirms=CONFIRMS, writing_sleep=0.0, writer=True):
+    """A ``Revealed``, and the three holders inside it.
+
+    ``writer=False`` is the *no provider wired* deployment: the mail is read,
+    candidates are gathered, and nothing is written.
+    """
     gate_holder = GateHolder(gates)
-    read_holder = ReadHolder(answers, sleep=sleep)
+    read_holder = ReadHolder(answers, sleep=sleep, confirms=confirms)
+    write_holder = WriteHolder(writes, sleep=writing_sleep)
     reader = Revealed(
         {main: read_holder},
+        writers={main: write_holder} if writer else None,
         gates=Derivers({main: gate_holder}, bound_seconds=1.0),
-        bound_seconds=bound_seconds, tally=tally,
+        bound_seconds=bound_seconds, writing_bound_seconds=bound_seconds,
+        tally=tally,
     )
-    return reader, read_holder, gate_holder
+    return reader, read_holder, gate_holder, write_holder
 
 
 def receipt(index: int, *, thread="t1", digest=None, text="body") -> Receipt:
@@ -193,25 +324,53 @@ def receipt(index: int, *, thread="t1", digest=None, text="body") -> Receipt:
     )
 
 
-def observe(reader, receipts, *, run=None, main=MAIN, text="a booking"):
-    """Read every receipt through one reader, into one run."""
+def observe(reader, receipts, *, run=None, main=MAIN, text="a booking",
+            texts=None):
+    """Read every receipt through one reader, into one run.
+
+    ``texts`` gives each receipt its own body, which matters wherever the claim
+    that comes back is compared against the sources it was written from.
+    """
     run = run if run is not None else Run()
+    bodies = list(texts) if texts is not None else [text] * len(receipts)
 
     async def drive():
-        for rec in receipts:
-            await reader.observe(rec, scrub(text), main_id=main, into=run)
+        for rec, body in zip(receipts, bodies):
+            await reader.observe(rec, scrub(body), main_id=main, into=run)
 
     asyncio.run(drive())
     return run
 
 
 def candidates(*specs, label=TRAVELS) -> Run:
-    """A run holding one candidate per ``(id, thread, digest)`` spec."""
+    """A run holding one candidate per ``(id, thread, digest)`` spec.
+
+    **No scrubbed text and therefore no generation**, which is what makes it the
+    right instrument for the questions that are purely about grouping —
+    ``supports`` and ``ready`` — and the wrong one for any question about what a
+    claim says. Those go through a reader.
+    """
     run = Run()
     for source_id, thread_id, digest in specs:
         run.add(Candidate(label=label, source_id=source_id,
                           thread_id=thread_id, digest=digest))
     return run
+
+
+def a_written_claim(*, label=TRAVELS, claim=A_CLAIM, support=("m0", "m1"),
+                    independent=2, subject=None) -> Claim:
+    """One claim of the shape a run produces, without driving a run.
+
+    For the cases about what a claim *is written as* — the fold, the rung, the
+    record's fields — where driving a reader would put a provider double in
+    front of a question about a dataclass. The cases about how a claim is
+    *arrived at* all go through a reader.
+    """
+    return Claim(
+        label=label, claim=claim,
+        subject=subject if subject is not None else doing_named(label).subject,
+        support=tuple(support), independent=independent,
+    )
 
 
 class FakeMail:
@@ -272,12 +431,16 @@ def test_two_independent_senders_admit_one_claim_citing_both():
     them apart is ``test_the_count_is_the_union_finds_answer_...`` below, and
     this one is deliberately not asked to do that work.
     """
-    run = candidates(("m0", "t1", "d0"), ("m1", "t2", "d1"))
+    reader, _, _, writer = a_reader()
+    run = observe(reader, [receipt(0, thread="t1"), receipt(1, thread="t2")],
+                  texts=["a booking", "an itinerary"])
     claims = run.admitted()
     assert len(claims) == 1
     assert claims[0].independent == 2
     assert claims[0].support == ("m0", "m1")
-    assert claims[0].claim == DOINGS[0].claim
+    # **What it says came from the writer, not from a constant in the tree.**
+    assert claims[0].claim == A_CLAIM
+    assert writer.calls == 1
 
 
 @pytest.mark.cap3
@@ -293,6 +456,9 @@ def test_ten_messages_sharing_a_thread_admit_no_claim():
     """
     run = candidates(*((f"m{i}", "t1", f"d{i}") for i in range(10)))
     assert len(run.supports(TRAVELS)) == 10
+    assert run.ready(TRAVELS) is False, (
+        "ten messages in one thread were treated as a group worth a generation"
+    )
     assert run.admitted() == ()
 
 
@@ -310,6 +476,7 @@ def test_a_forward_of_the_same_content_is_one_support():
     """
     run = candidates(("m0", "t1", "same"), ("m1", "t2", "same"))
     assert len(run.supports(TRAVELS)) == 2
+    assert run.ready(TRAVELS) is False
     assert run.admitted() == ()
 
 
@@ -319,12 +486,13 @@ def test_a_byte_identical_forward_never_reaches_the_reader(sources):
     already holds is skipped before the consumer is called, so a forward with
     identical bytes is not a second support — it is not a reading at all, and
     costs nothing."""
-    reader, holder, _ = a_reader()
+    reader, holder, _, writer = a_reader()
     body = "Your booking is confirmed. Departure 14 March."
     run = pull([mail(0, body, thread="t1", sender="a@x"),
                 mail(1, body, thread="t2", sender="b@y")], reader, sources)
     assert holder.calls == 1, "the identical body was read twice"
     assert len(run.supports(TRAVELS)) == 1
+    assert writer.calls == 0, "a claim was written from one source"
     assert run.admitted() == ()
 
 
@@ -334,6 +502,7 @@ def test_one_message_admits_nothing():
     cluster there is."""
     run = candidates(("m0", "t1", "d0"))
     assert len(run.supports(TRAVELS)) == 1
+    assert run.ready(TRAVELS) is False
     assert run.admitted() == ()
 
 
@@ -346,7 +515,7 @@ def test_two_independent_bodies_the_gates_refuse_admit_nothing():
     is also true of a provider that was down, and this case is about the gates
     working.
     """
-    reader, holder, _ = a_reader(gates={"durability": "only_now"})
+    reader, holder, _, writer = a_reader(gates={"durability": "only_now"})
     run = observe(reader, [receipt(0, thread="t1"), receipt(1, thread="t2")])
     assert run.admitted() == ()
     assert reader.tally.refused_by_gates == 2
@@ -359,7 +528,7 @@ def test_no_body_reaches_disk_from_a_run_that_admitted_a_claim(tmp_path,
                                                                sources):
     """Matrix row six, AD-13, story 3. A full pull that ends in an admitted
     claim, with every byte written scanned for the body."""
-    reader, _, _ = a_reader()
+    reader, _, _, writer = a_reader()
     sentinel = "sandalwood-nineteen-quicksilver"
     run = pull([mail(0, f"booking {sentinel} confirmed", thread="t1"),
                 mail(1, f"itinerary {sentinel} attached", thread="t2",
@@ -377,7 +546,7 @@ def test_a_secret_in_a_body_reaches_neither_disk_nor_provider(tmp_path,
                                                               sources):
     """Matrix row seven, and the story's widest change: a main's mail now leaves
     the machine. The scrubber runs first, so what leaves is redacted."""
-    reader, holder, gate_holder = a_reader()
+    reader, holder, gate_holder, writer = a_reader()
     pull([mail(0, f"the key is {SECRET} please use it", thread="t1"),
           mail(1, f"reminder: {SECRET}", thread="t2", sender="b@y")],
          reader, sources)
@@ -394,7 +563,7 @@ def test_a_secret_in_a_body_reaches_neither_disk_nor_provider(tmp_path,
 def test_an_undecodable_body_derives_nothing_and_sends_nothing(sources):
     """Matrix row eight. Story 3 skips a body whose representation it could not
     resolve; derivation never becomes a reason to relax that."""
-    reader, holder, _ = a_reader()
+    reader, holder, _, writer = a_reader()
     run = pull([mail(0, BINARY)], reader, sources)
     assert holder.calls == 0
     assert run.admitted() == ()
@@ -407,7 +576,7 @@ def test_a_body_that_was_nothing_but_secrets_derives_nothing():
     after redaction is nothing, so there is nothing to read and nothing to
     send. Fails closed, and counted under its own name so this is not the same
     assertion as an absent provider."""
-    reader, holder, _ = a_reader()
+    reader, holder, _, writer = a_reader()
     body = scrub(SECRET)
     assert body.empty_after_redaction, "the fixture no longer redacts anything"
 
@@ -423,7 +592,7 @@ def test_a_body_that_was_nothing_but_secrets_derives_nothing():
 def test_re_ingesting_a_mailbox_derives_nothing_twice(sources):
     """Matrix row ten. The same mailbox pulled twice: no body is read a second
     time, and the second run has nothing to admit."""
-    reader, holder, _ = a_reader()
+    reader, holder, _, writer = a_reader()
     messages = [mail(0, "booking one", thread="t1"),
                 mail(1, "booking two", thread="t2", sender="b@y")]
     first = pull(messages, reader, sources)
@@ -452,7 +621,7 @@ def test_a_reader_past_its_bound_yields_no_claim_and_the_pull_completes(
     """Matrix row twelve, the slow half. Counted under ``bound_exceeded``, which
     only this row moves — *"no claim"* is also true of a refusal and of a
     provider that answered honestly that it could not tell."""
-    reader, _, _ = a_reader(sleep=0.05, bound_seconds=0.01)
+    reader, _, _, writer = a_reader(sleep=0.05, bound_seconds=0.01)
     run = pull([mail(0, "booking one", thread="t1"),
                 mail(1, "booking two", thread="t2", sender="b@y")],
                reader, sources)
@@ -464,7 +633,7 @@ def test_a_reader_past_its_bound_yields_no_claim_and_the_pull_completes(
 @pytest.mark.cap3
 def test_a_reader_that_raises_yields_no_claim_and_the_pull_completes(sources):
     """Matrix row twelve, the raising half. Counted under ``raised``."""
-    reader, _, _ = a_reader(answers=RuntimeError("provider blew up"))
+    reader, _, _, writer = a_reader(answers=RuntimeError("provider blew up"))
     run = pull([mail(0, "booking one", thread="t1"),
                 mail(1, "booking two", thread="t2", sender="b@y")],
                reader, sources)
@@ -477,7 +646,7 @@ def test_a_reader_that_raises_yields_no_claim_and_the_pull_completes(sources):
 def test_a_run_past_its_cap_stops_deriving_and_says_so(sources, caplog):
     """Matrix row thirteen. *"Stops deriving and says so"* — a silent cap looks
     exactly like a mailbox with nothing in it worth keeping."""
-    reader, holder, _ = a_reader()
+    reader, holder, _, writer = a_reader()
     run = Run(budget=2)
     with caplog.at_level(logging.INFO):
         pull([mail(i, f"booking {i}", thread=f"t{i}") for i in range(5)],
@@ -491,13 +660,23 @@ def test_a_run_past_its_cap_stops_deriving_and_says_so(sources, caplog):
 
 @pytest.mark.cap3
 def test_an_admitted_claim_cites_the_messages_it_came_from():
-    """Matrix row fourteen, CAP-5. ``support`` names them and ``independent``
-    carries the count, and each source appears exactly once."""
-    run = candidates(("m2", "t1", "d0"), ("m0", "t2", "d1"), ("m1", "t3", "d2"))
+    """Matrix row fourteen, CAP-5. ``support`` names the messages, sorted and
+    each exactly once, whatever order they arrived in.
+
+    Driven with a **redelivery** in the middle, because that is the half of this
+    rule nothing else here reaches: the same message observed twice is one
+    support, so it is held once, confirmed once and cited once. Sorted rather
+    than in arrival order so that two runs over the same mailbox in a different
+    order produce the same record and a replay folds identically (AD-30).
+    """
+    reader, _, _, _ = a_reader()
+    run = observe(reader, [receipt(2, thread="t1"), receipt(2, thread="t1"),
+                           receipt(0, thread="t2")],
+                  texts=["a booking", "a booking", "an itinerary"])
     claim = run.admitted()[0]
-    assert claim.support == ("m0", "m1", "m2")
+    assert claim.support == ("m0", "m2")
     assert len(set(claim.support)) == len(claim.support)
-    assert claim.independent == 3
+    assert claim.independent == 2
 
 
 @pytest.mark.cap3
@@ -513,8 +692,10 @@ def test_the_count_is_the_union_finds_answer_and_never_the_support_size():
     This is the only case where the two numbers differ, which is why the
     two-source rows above are not asked to carry it.
     """
-    run = candidates(("m0", "t1", "d0"), ("m1", "t1", "d1"),
-                     ("m2", "t2", "d2"))
+    reader, _, _, _ = a_reader()
+    run = observe(reader, [receipt(0, thread="t1"), receipt(1, thread="t1"),
+                           receipt(2, thread="t2")],
+                  texts=["a booking", "an itinerary", "a hotel"])
     claim = run.admitted()[0]
     assert len(claim.support) == 3
     assert claim.independent == 2, (
@@ -530,18 +711,24 @@ def test_mail_in_any_script_is_read_the_same_way(script, sources):
     the rendered request compared against the Latin one so that *"no English
     rubric and no locale on the path"* is a measurement rather than a sentence.
     """
-    reader, holder, _ = a_reader()
+    written = IN_SCRIPT[script]
+    reader, holder, _, writer = a_reader(writes=written)
     body = SCRIPTS[script]
     run = pull([mail(0, body, thread="t1"),
                 mail(1, body + "​", thread="t2", sender="b@y")],
                reader, sources)
     claims = run.admitted()
     assert len(claims) == 1 and claims[0].independent == 2
-    # The claim is Half's own word from the closed set, so it is the same in
-    # every script — which is the one place a closed vocabulary is *better*
-    # worldwide than the source's own words.
-    assert claims[0].claim == DOINGS[0].claim
+    # **The claim is in the script its sources were in**, which is what a closed
+    # vocabulary could not do: every mailbox in the world used to get the same
+    # English word. Nothing on the path chose the script — the writer did, and
+    # the instructions asked it to.
+    assert claims[0].claim == written
     assert holder.seen[0].prompt.system == INSTRUCTIONS
+    assert writer.seen[0].prompt.system == particular.INSTRUCTIONS
+    # And the request is the same in every script but for the bodies in it: no
+    # locale, no language name, no per-script rubric anywhere on the path.
+    assert writer.calls == 1
 
 
 @pytest.mark.cap3
@@ -549,7 +736,7 @@ def test_no_body_and_no_claim_text_reaches_any_log_line(sources, caplog):
     """Matrix row seventeen, AD-22. The sentinel goes to a provider and to
     nowhere else — not a log line, not the tally, not a counter."""
     sentinel = "sandalwood-nineteen-quicksilver"
-    reader, holder, _ = a_reader()
+    reader, holder, _, writer = a_reader()
     with caplog.at_level(logging.DEBUG):
         run = pull([mail(0, f"booking {sentinel}", thread="t1"),
                     mail(1, f"itinerary {sentinel}", thread="t2",
@@ -559,15 +746,22 @@ def test_no_body_and_no_claim_text_reaches_any_log_line(sources, caplog):
         reader.flush()
     assert len(claims) == 1
     assert all(sentinel in text for text in holder.texts)
+    assert sentinel in writer.texts[0], "the writer never saw the bodies"
     assert sentinel not in caplog.text
     assert sentinel not in repr(reader.tally)
+    # And the *generated* claim is not in a log line either, which is the half
+    # 15c added: a sentence Half wrote about somebody is as much AD-22's subject
+    # as the mail it came from.
+    assert A_CLAIM not in caplog.text
+    assert A_CLAIM not in repr(reader.tally)
+    assert A_CLAIM not in repr(run)
 
 
 @pytest.mark.cap3
 def test_a_log_of_receipts_and_revealed_claims_folds_identically(tmp_path):
     """Matrix row eighteen, AD-4 and AD-30. Derivation is not in the fold: what
     is in the log is a claim, and replaying it reproduces the same state."""
-    claim = candidates(("m0", "t1", "d0"), ("m1", "t2", "d1")).admitted()[0]
+    claim = a_written_claim()
     root = tmp_path / "mains" / MAIN
     with Store(root, prefix=build_prefix) as store:
         from half.store.ops import Op
@@ -591,11 +785,11 @@ def test_an_admitted_claim_enters_at_the_weakest_rung(tmp_path):
     where every belief enters. The rung comes from ``ladder.admitted`` and never
     from a literal, so there is no spelling of the append that mints an
     `assert`."""
-    claim = candidates(("m0", "t1", "d0"), ("m1", "t2", "d1")).admitted()[0]
+    claim = a_written_claim()
     fields = {**fields_of(claim),
               **ladder.admitted(support=list(claim.support))}
     assert fields["license"] == str(ladder.FLOOR)
-    assert fields[CLAIM] == DOINGS[0].claim
+    assert fields[CLAIM] == A_CLAIM
     assert fields[SUBJECT] == DOINGS[0].subject
 
 
@@ -610,7 +804,7 @@ def test_the_shipped_composition_admits_a_claim_from_a_seeded_mailbox(tmp_path):
     config = load({ROOT_ENV: str(tmp_path), MAINS_ENV: f"123:{MAIN}"})
     wiring = build(config, token="123:fake")
     try:
-        reader, _, _ = a_reader()
+        reader, _, _, writer = a_reader()
         wiring = type(wiring)(
             **{**{f: getattr(wiring, f) for f in wiring.__dataclass_fields__},
                "revealed": reader})
@@ -652,7 +846,7 @@ def test_a_later_pull_reaching_the_same_conclusion_writes_no_second_claim(
     config = load({ROOT_ENV: str(tmp_path), MAINS_ENV: f"123:{MAIN}"})
     wiring = build(config, token="123:fake")
     try:
-        reader, _, _ = a_reader()
+        reader, _, _, writer = a_reader()
         wiring = type(wiring)(
             **{**{f: getattr(wiring, f) for f in wiring.__dataclass_fields__},
                "revealed": reader})
@@ -687,7 +881,7 @@ def test_the_same_mailbox_pulled_twice_reads_no_body_twice(tmp_path):
     config = load({ROOT_ENV: str(tmp_path), MAINS_ENV: f"123:{MAIN}"})
     wiring = build(config, token="123:fake")
     try:
-        reader, _, _ = a_reader()
+        reader, _, _, writer = a_reader()
         wiring = type(wiring)(
             **{**{f: getattr(wiring, f) for f in wiring.__dataclass_fields__},
                "revealed": reader})
@@ -777,7 +971,7 @@ def test_a_reader_refuses_a_body_that_is_not_scrubber_output():
     scrubber on this path is a second place for the two to disagree, and the
     ordering is what is being kept true.
     """
-    reader, holder, gate_holder = a_reader()
+    reader, holder, gate_holder, writer = a_reader()
 
     async def drive(body):
         return await reader.observe(receipt(0), body, main_id=MAIN, into=Run())
@@ -801,7 +995,7 @@ def test_a_scrub_that_raises_reaches_no_provider(sources):
     nothing for the consumer to be called with — the guarantee is the absence of
     a value rather than the presence of a check.
     """
-    reader, holder, gate_holder = a_reader()
+    reader, holder, gate_holder, writer = a_reader()
     run = Run()
     pipeline = Pipeline(
         FakeMail([mail(0, "booking one", thread="t1")]), sources,
@@ -853,26 +1047,38 @@ def test_the_threshold_is_two_and_no_call_site_can_lower_it():
     ({"support": ("m0", "m0"), "independent": 2}, "names a source twice"),
     ({"support": ("m0", "m1"), "independent": 1}, "independence count of 1"),
     ({"support": ("m0", "m1"), "independent": 3}, "More groups than sources"),
+    ({"support": ("m0", "m1"), "independent": 2, "claim": "   "},
+     "says nothing"),
+    ({"support": ("m0", "m1"), "independent": 2, "claim": None},
+     "says nothing"),
 ])
 def test_a_claim_that_could_not_be_true_cannot_be_constructed(fields, names):
     """*"A claim whose support set is empty or whose count is one is a defect,
     not a state."*
 
     Refused on the type, because the log is append-only and every one of these
-    is permanent once written. Five shapes, because each is a different mistake.
+    is permanent once written. Seven shapes, because each is a different
+    mistake.
 
     **Each asserts the refusal's own message, not merely that something
     raised**, and that is the correction a mutation probe forced. The
     support-size check is redundant — a count below the floor and a count above
     the support size together already forbid every support set smaller than two
-    — so disabling it left every case here green: four guards, and three of them
-    covering the fourth, which is a guard that cannot fire because a rule below
-    it already forbids its case. Reading the message is what tells them apart,
-    and it is worth telling them apart because a refusal has to name the right
-    thing.
+    — so disabling it left every case here green: guards covering guards, which
+    is a guard that cannot fire because a rule below it already forbids its
+    case. Reading the message is what tells them apart, and it is worth telling
+    them apart because a refusal has to name the right thing.
+
+    **The last two are story 15c's and they are not redundant.** A claim's words
+    used to be a constant in ``half/derive/revealed.py``, so *"a claim says
+    something"* was true by construction; they now come from a model, and an
+    empty sentence is a reachable state that would enter the ledger as a belief
+    with no words — one the demonstration cannot offer and the main cannot
+    falsify.
     """
+    fields = {"claim": A_CLAIM, **fields}
     with pytest.raises(DeriveError, match=names):
-        Claim(label=TRAVELS, claim="travels", subject="travel", **fields)
+        Claim(label=TRAVELS, subject="travel", **fields)
 
 
 @pytest.mark.cap3_structure
@@ -883,17 +1089,16 @@ def test_a_claim_that_could_not_be_true_cannot_be_constructed(fields, names):
     ("ALARM_RATE", 0.0, "an alarm that never fires names nothing"),
     ("CLASSIFY_TIER", "  ", "a blank tier is refused at boot"),
     ("DOINGS", (), "an empty vocabulary derives nothing"),
-    ("DOINGS", (Doing(label="a", claim="x", subject="p"),
-                Doing(label="a", claim="y", subject="q")),
+    ("DOINGS", (Doing(label="a", subject="p"), Doing(label="a", subject="q")),
      "two members answer to one label"),
-    ("DOINGS", (Doing(label="a", claim="x", subject="p"),
-                Doing(label="b", claim="x", subject="q")),
-     "two labels write one claim"),
-    ("DOINGS", (Doing(label="a", claim="x", subject="p"),
-                Doing(label="b", claim="y", subject="p")),
-     "two claims share a subject"),
+    ("DOINGS", (Doing(label="a", subject="p"), Doing(label="b", subject="p")),
+     "two labels share a subject"),
+    ("DOINGS", (Doing(label="", subject="p"), Doing(label="b", subject="q")),
+     "a label must be non-empty text"),
     ("NOTHING_DOING", "travels", "the refusal label is also a claim"),
     ("DOING_UNSURE", "travels", "the unsure label is also a claim"),
+    ("LABELS", (*LABELS, CONFIRMS),
+     "a reading label and a confirmation label are the same word"),
 ])
 def test_each_import_time_guard_has_a_bypass(monkeypatch, attribute, value,
                                              because):
@@ -944,7 +1149,7 @@ def test_the_holder_cannot_author_a_claim():
 def test_a_bench_is_sealed_after_construction():
     """The check that every holder is narrow cannot be walked around by
     assigning a wider one afterwards."""
-    reader, _, _ = a_reader()
+    reader, _, _, writer = a_reader()
     with pytest.raises(DeriveError):
         reader._holders = {MAIN: object()}
 
@@ -1044,9 +1249,11 @@ def test_no_logging_call_in_this_module_can_carry_content():
     class, and a constant from a closed set.
     """
     allowed = {"main_id", "BREAK_AFTER", "BREAK_FOR", "PER_RUN", "reply",
-               "self", "exc", "type", "verdict"}
+               "self", "exc", "type", "verdict", "MIN_INDEPENDENT",
+               "refusal", "answered"}
     counts = set(Tally.__dataclass_fields__) | {
-        "fell_back", "answered", "failure_rate", "_tally",
+        "fell_back", "answered", "failure_rate", "_tally", "unwritable",
+        "gen_fell_back",
     }
     tree = ast.parse((ROOT / "half/derive/revealed.py").read_text("utf-8"))
     calls = [
@@ -1090,12 +1297,12 @@ def test_an_answered_cannot_say_and_a_provider_that_never_answered_differ():
     passes either way. They are counted apart, and the breaker only ever arms on
     the second kind — a provider that is up and honestly unsure must not stand a
     main down for having an ordinary mailbox."""
-    unsure, _, _ = a_reader(answers=DOING_UNSURE)
+    unsure, _, _, writer = a_reader(answers=DOING_UNSURE)
     observe(unsure, [receipt(0)])
     assert unsure.tally.answers == {DOING_UNSURE: 1}
     assert unsure.tally.fell_back == 0
 
-    down, _, _ = a_reader(
+    down, _, _, writer = a_reader(
         answers=Failure(kind=Kind.UNAVAILABLE,
                         because=Reason.TRANSPORT_FAILED))
     observe(down, [receipt(0)])
@@ -1133,7 +1340,7 @@ def test_one_message_read_twice_inside_a_run_is_one_support():
     run.add(Candidate(label=TRAVELS, source_id="m1", thread_id="t2",
                       digest="d1"))
     assert len(run.supports(TRAVELS)) == 2
-    assert run.admitted()[0].support == ("m0", "m1")
+    assert run.ready(TRAVELS) is True
 
 
 @pytest.mark.cap3_structure

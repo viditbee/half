@@ -632,12 +632,52 @@ def fragments(text: object) -> tuple[str, ...]:
     word. Concatenated without separators, because the comparison must hold for
     languages that do not space their words.
     """
+    return runs(text, length=2)
+
+
+def runs(text: object, *, length: int) -> tuple[str, ...]:
+    """``text`` as its runs of ``length`` consecutive words, concatenated.
+
+    **The generalisation of ``fragments``, and it is public because a second
+    consumer arrived with a different floor.** ``half.derive.particular`` needs
+    to ask whether a generated claim *quotes* one of the emails it was derived
+    from, and the adjacent-pair floor this module uses for AD-18 is the wrong
+    unit for that question: a revealed claim's whole job is to carry the
+    particulars — a place, a date, a service — and those are exactly the short
+    shared runs. At a floor of two, *"flies to Delhi most months"* is a
+    quotation of any email containing *"to Delhi"*, and no specific claim could
+    ever be admitted.
+
+    What must not move is the *unit*. ``_units`` keeps a Devanagari matra
+    attached to its letter, removes invisible characters rather than treating
+    them as boundaries, and folds with ``half.text.normalize``; that rule took
+    two stories and a script sweep to get right, and a copy of it beside a
+    generator would have been a Latin-only copy of whatever somebody
+    remembered. So the unit is shared and only the length is the caller's.
+
+    A text with fewer than ``length`` words yields its whole self as one run,
+    for the reason a one-word claim is its own fragment: the whole of it must
+    not appear even when the whole of it is short.
+    """
+    if not isinstance(length, int) or isinstance(length, bool) or length < 1:
+        # **Terse on purpose, and the reason is a guard rather than a style.**
+        # ``tests/test_bought.py`` refuses *any* phrase-shaped string constant
+        # in this file — two word characters with whitespace between them —
+        # because a hand-written question in one language on the question path
+        # would read like a feature. That rule does not distinguish a template
+        # from an exception message, so a module owning a shared text rule
+        # cannot spell out why it refused. The sentence lives in the docstring
+        # above instead, where the scan correctly does not look.
+        raise ValueError(f"runs:length={length!r}")
     units = _units(text)
     if not units:
         return ()
-    if len(units) == 1:
-        return (units[0],)
-    return tuple(first + second for first, second in zip(units, units[1:]))
+    if len(units) <= length:
+        return ("".join(units),)
+    return tuple(
+        "".join(units[offset:offset + length])
+        for offset in range(len(units) - length + 1)
+    )
 
 
 def _units(text: object) -> list[str]:

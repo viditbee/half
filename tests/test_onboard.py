@@ -79,7 +79,12 @@ import half.context as context_package  # noqa: E402 - the package, not
 # true of every function there has ever been — a probe that added the
 # re-export walked straight past it.
 from half.context.build import build as build_context
-from half.context.build import offered_claim, split, withheld as withheld_wordings
+from half.context.build import (
+    fragments,
+    offered_claim,
+    split,
+    withheld as withheld_wordings,
+)
 from half.correction.attribute import EXPIRED_AT, INVALID_AT
 from half.correction.signals import (
     ANSWERS,
@@ -108,11 +113,12 @@ from half.derive.revealed import (
     Revealed,
 )
 from half.derive.claim import Derivers
+from half.derive.particular import CONFIRMS, CONFIRM_LABELS
 from half.errors import LadderError, OnboardError
 from half.governance import ladder
 from half.governance.ladder import Ceiling, License
 from half.ingest.port import Message
-from half.model.port import Decision, Usage
+from half.model.port import Completion, Decision, Usage
 from half.onboard import consent as consenting
 from half.onboard.consent import (
     JOIN,
@@ -161,15 +167,26 @@ MAIN = "vidit"
 NOW = "2026-09-04T09:00:00Z"
 
 #: The label every mailbox double answers with unless a case says otherwise,
-#: and the claim and belief id 15b writes for it.
+#: and the belief id 15b writes for it.
 TRAVELS: Final[str] = DOINGS[0].label
-TRAVEL_CLAIM: Final[str] = DOINGS[0].claim
 TRAVEL_ID: Final[str] = f"r_{TRAVELS}"
+
+#: What a writer answers with for that label (story 15c).
+#:
+#: **A sentence, not a constant out of the tree.** Since 15c a group's claim is
+#: generated from its scrubbed texts, and what CAP-2 asks for is a statement the
+#: main had *not already made* — so a fixture claim that read like a label
+#: ("travels") would make every case in this file green for the closed
+#: vocabulary this story replaced, including the ones about what a main is
+#: shown and asked to confirm.
+TRAVEL_CLAIM: Final[str] = "makes long journeys about twice a month, usually alone"
 
 #: A second label, so *"exactly one is offered"* has something to be exactly one
 #: of, and so the choice can be shown to be a choice.
 BUYS: Final[str] = DOINGS[2].label
-BUYS_CLAIM: Final[str] = DOINGS[2].claim
+BUYS_CLAIM: Final[str] = (
+    "orders household things in small batches, several times a month"
+)
 BUYS_ID: Final[str] = f"r_{BUYS}"
 
 #: The deployment's own sentence, in the main's own language. **Half ships
@@ -313,13 +330,23 @@ class GateHolder:
 
 
 class ReadHolder:
-    """The narrow classifier that answers *what does this show they do*."""
+    """The narrow classifier, answering both questions asked through it.
+
+    ``answers`` is *what does this body show they do*; every confirmation — *does
+    this one source stand behind this sentence* — is answered yes, because this
+    file is about the demonstration rather than about how a claim earns its
+    support. ``tests/test_revealed.py`` is where a confirmation is refused.
+    """
 
     def __init__(self, answers=TRAVELS) -> None:
         self._answers = list(answers) if isinstance(answers, list) else [answers]
         self.seen: list = []
+        self.confirmations: list = []
 
     async def classify(self, work):
+        if tuple(work.labels) == CONFIRM_LABELS:
+            self.confirmations.append(work)
+            return Decision(label=CONFIRMS, usage=Usage(micro_usd=11))
         self.seen.append(work)
         answer = self._answers[min(len(self.seen) - 1, len(self._answers) - 1)]
         return Decision(label=answer, usage=Usage(micro_usd=11))
@@ -329,12 +356,31 @@ class ReadHolder:
         return len(self.seen)
 
 
-def a_reader(answers=TRAVELS, *, gates=None, main=MAIN):
-    """A ``Revealed``, and the two holders inside it."""
+class WriteHolder:
+    """The narrow generator that writes what a group's claim says (15c)."""
+
+    def __init__(self, answers=TRAVEL_CLAIM) -> None:
+        self._answers = list(answers) if isinstance(answers, list) else [answers]
+        self.seen: list = []
+
+    async def generate(self, work):
+        self.seen.append(work)
+        answer = self._answers[min(len(self.seen) - 1, len(self._answers) - 1)]
+        return Completion(text=answer, usage=Usage(micro_usd=90))
+
+    @property
+    def calls(self) -> int:
+        return len(self.seen)
+
+
+def a_reader(answers=TRAVELS, *, gates=None, main=MAIN, writes=TRAVEL_CLAIM):
+    """A ``Revealed``, and the three holders inside it."""
     gate_holder = GateHolder(gates)
     read_holder = ReadHolder(answers)
+    write_holder = WriteHolder(writes)
     reader = Revealed(
         {main: read_holder},
+        writers={main: write_holder},
         gates=Derivers({main: gate_holder}, bound_seconds=1.0),
         bound_seconds=1.0,
     )
@@ -1202,8 +1248,13 @@ def test_only_the_claim_that_was_handed_in_is_quoted(offered, quoted):
         now=NOW, ceiling=None, offered=offered,
     )
     assert (TRAVEL_CLAIM in context.quotable()) is quoted
-    assert (not any(TRAVEL_CLAIM.startswith(f.split()[0]) for f in hidden)
-            ) is quoted or not hidden
+    # **The wording, asked for by name rather than by prefix.** The earlier
+    # spelling — *does the claim start with the first word of any withheld
+    # fragment* — was true only because 15b's claims were a single word, and it
+    # inverted the moment 15c made a claim a generated sentence. What the rule
+    # actually says is that the offered claim's own wordings leave the withheld
+    # set, so that is what is compared, against ``build``'s own fragments.
+    assert (not (set(fragments(TRAVEL_CLAIM)) & set(hidden))) is quoted
     assert offered_claim(TRAVEL_ID, offered=offered) is quoted
 
 

@@ -48,6 +48,7 @@ from half.derive.claim import (
     PER_PASS_MICRO_USD as DERIVE_PER_PASS_MICRO_USD,
     Derivers,
 )
+from half.derive.particular import GENERATE_TIER as PARTICULAR_TIER
 from half.derive.revealed import (
     CLASSIFY_TIER as REVEALED_TIER,
     PER_CALL_MICRO_USD as REVEALED_PER_CALL_MICRO_USD,
@@ -448,13 +449,70 @@ def readers(
                 "their mail", main_id, type(exc).__name__,
             )
     try:
-        return Revealed(holders, gates=gates)
+        return Revealed(holders, writers=writers(config, secrets), gates=gates)
     except Exception as exc:  # noqa: BLE001 - nor here
         logger.error(
             "the revealed reader could not be assembled (%s); no claim is "
             "derived from any mailbox", type(exc).__name__,
         )
         return Revealed(gates=gates)
+
+
+def writers(config: Config, secrets: FileSecretStore) -> dict[str, Generator]:
+    """The claim writers, for the mains a deployment has equipped (15c).
+
+    Built beside ``readers`` and on exactly its terms — a per-main narrow
+    holder, its own budget, every failure leaving that main unequipped and the
+    process running — with three differences worth stating.
+
+    **The narrow holder is a ``Generator``, and it is deliberately a *different
+    object* from the classifier ``readers`` builds for the same main.** The
+    reading path decides and cannot author; the writing path authors and cannot
+    decide. Neither restriction means much alone; it is that no one holder can
+    do both that keeps a model out of the admission, and it is checked at the
+    bench rather than intended here (``particular.check_writer``).
+
+    **The tier is pinned for everybody**, as the reading tier is and for the
+    same sentence in SPEC.md:124 — the recurring spend runs on a cheaper tier
+    than conversation *because the free tier depends on that gap*. A mailbox
+    pull is the largest recurring spend there is; what makes this affordable at
+    all is that a generation happens once per crossed group rather than once per
+    body.
+
+    **Its own provider, and therefore its own ledger.** A provider's spend is
+    shared by everything it hands out, so reusing the reader's would let one
+    long generation draw down the budget every remaining body is read on.
+
+    **This is the seventh copy of this loop in this file**, recorded rather than
+    hidden for the reason ``readers`` records the sixth. The shape
+    ``voices`` named — ``equipped(config, secrets, *, tier_for, budget, take,
+    unequipped)`` — is still Ask-First, and this story's subject is what a claim
+    says rather than the composition root.
+    """
+    holders: dict[str, Generator] = {}
+    for main_id in config.mains.values():
+        try:
+            provider = AnthropicProvider(
+                SDKTransport.from_secrets(secrets, main_id),
+                tiers=Tiers.parse({main_id: PARTICULAR_TIER}),
+                budget=Budget(
+                    per_call_micro_usd=REVEALED_PER_CALL_MICRO_USD,
+                    per_pass_micro_usd=REVEALED_PER_PASS_MICRO_USD,
+                ),
+            )
+            holders[main_id] = provider.generator()
+        except Exception as exc:  # noqa: BLE001 - a boot must not die here
+            # No key, an unreadable credential file, an unknown tier, a missing
+            # SDK. Each is a deployment whose mail is read and whose candidates
+            # are gathered and which admits no claim — receipts still captured,
+            # which is story 3's shipped behaviour with one more reason. The
+            # class only (AD-22).
+            logger.warning(
+                "main=%s has no usable model for writing a claim (%s); their "
+                "mail is still read and no claim is written from it",
+                main_id, type(exc).__name__,
+            )
+    return holders
 
 
 async def ingest_mail(
@@ -498,14 +556,21 @@ async def ingest_mail(
     admits what it gathered and still returns a cursor. See
     ``half.__main__.bounded``.
     """
-    run = Run()
-    pipeline = Pipeline(
-        source, wiring.sources[main_id],
-        consumer=consumer_for(wiring.revealed, main_id=main_id, into=run),
-    )
-    result = await pipeline.ingest(since=since)
+    with Run() as run:
+        # **The scrubbed text's whole lifetime, as a scope** (story 15c). A
+        # ``Run`` holds a candidate's scrubbed body so that a claim can be
+        # generated over the group it belongs to, and leaving this block
+        # releases every one of them — on the exception path as well as this
+        # one. *"When the run ends, none of it is still held"* is therefore a
+        # property of the indentation rather than of somebody remembering a
+        # call, which is the same reason ``Store`` is a context manager.
+        pipeline = Pipeline(
+            source, wiring.sources[main_id],
+            consumer=consumer_for(wiring.revealed, main_id=main_id, into=run),
+        )
+        result = await pipeline.ingest(since=since)
+        claims = run.admitted()
 
-    claims = run.admitted()
     wiring.revealed.count_claims(claims)
     if not claims:
         return result
