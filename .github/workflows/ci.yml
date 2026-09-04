@@ -137,12 +137,30 @@ jobs:
         # are protected by `cap8_voice` at margin zero; the older single-case
         # rules are protected by this floor only in the weak sense that deleting
         # enough of them together drops the count.
+        #
+        # **Story 5d adds three and the floor moves with them, 64 -> 67**, so
+        # the margin stays at fifteen. AD-18's whole content is that enforcement
+        # happens at context construction and nowhere else, and story 5d builds
+        # the first thing that *knows what was withheld* — so the three are the
+        # ones that keep it from becoming a second way round the enforcement: no
+        # route of any length from the queue to a channel, a composer or a
+        # store; one name taken from the context package and no channel type
+        # anywhere in the module; and an item that carries no word of the claim
+        # it is about, which is why there would be nothing to put on a wire even
+        # if a route existed. They are themselves protected by
+        # `cap10_unsaid_structure`, at margin zero.
+        #
+        # The rest of story 5d — sixty behavioural cases about which belief is
+        # held and why — is deliberately **not** marked here. It would take this
+        # gate past 140 while adding no further AD-18 coverage, which is the
+        # same objection this comment already records against story 13a's
+        # language sample and story 11's truth table.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m ad18 -q --collect-only \
             | grep -c '::' || true)
           echo "AD-18 cases collected: $collected"
-          if [ "$collected" -lt 64 ]; then
+          if [ "$collected" -lt 67 ]; then
             echo "::error::the AD-18 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -209,12 +227,35 @@ jobs:
         # paragraphs above say it means: prune a redundant case, do not gut the
         # gate. The two cases themselves are protected by `cap10`, at margin
         # zero.
+        #
+        # **Story 5d adds eight and the floor moves with them, 55 -> 63.** The
+        # unsaid queue is a new surface that resolves a license, which is what
+        # this gate exists to catch — and it resolves one for *every belief a
+        # main holds*, so a cap forgotten there would report "nothing is being
+        # held back" for precisely the main a ceiling is holding everything back
+        # from. The eight: the ceiling named as the release condition; a sweep
+        # over all three rungs showing that a lower cap holds more unsaid; a
+        # belief refused by the ladder **and** by the cap naming both rather
+        # than the first; a real `release_ceiling` shrinking the queue one rung
+        # at a time; the `TypeError` a caller gets for omitting the cap; and the
+        # lifted-cap counterfactual being a *ceiling that caps nothing* rather
+        # than a `ceiling=None` exemption. The margin stays at six and means
+        # what the paragraphs above say — prune a redundant case, do not gut the
+        # gate. The eight are themselves protected by `cap10_unsaid` and
+        # `cap10_unsaid_structure`, both at margin zero.
+        #
+        # **Two of story 5d's cases are deliberately not marked here**: that
+        # reading the queue writes nothing, and that two folds of one log give
+        # one queue. Both lower a ceiling in order to *have* a queue to read,
+        # and neither asserts anything about the cap — marking them would be
+        # this gate acquiring cases that cannot fail for an AD-28 reason, which
+        # is how a floor comes to claim protection it does not have.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m ad28 -q --collect-only \
             | grep -c '::' || true)
           echo "AD-28 cases collected: $collected"
-          if [ "$collected" -lt 55 ]; then
+          if [ "$collected" -lt 63 ]; then
             echo "::error::the AD-28 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -1933,6 +1974,119 @@ jobs:
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap10_restraint
+
+      - name: 'CAP-10: the unsaid queue — what is held, and what would release it'
+        # *"Insights above the current license are queued **with release
+        # conditions**."* The withholding half has been enforced since story 4b;
+        # this gate is over the half that says what is being held. **Silently
+        # withheld is not queued**, and a queue that goes quiet is
+        # indistinguishable from a main with nothing held back — which is the
+        # ordinary case, so the failure is invisible by construction.
+        #
+        # What makes the queue worth gating rather than trusting: **its release
+        # conditions are read from the ladder rather than restated beside it.**
+        # The module holds no rule about what a rung requires. It holds three
+        # repairs — an acknowledgement, a citation, a lifted cap — and asks
+        # `half.context.build.resolve` which of them still matters, by leaving
+        # one repair out at a time. That is the only formulation that answers
+        # the conjunctive case: `assert` wants a receipt **and** an
+        # acknowledgement, so a belief missing both is raised by neither repair
+        # alone, and the obvious probe reports an empty queue for the belief
+        # held hardest. A case here writes out that naive probe against the same
+        # ladder and pins that it answers nothing, so the difference is a
+        # property of the rule rather than a claim in a docstring.
+        #
+        # What it covers: the three refusal shapes, each named and each shown to
+        # be released by the condition named and by no proper subset of it, over
+        # four belief shapes and all three ceilings; quarantine, over three
+        # record shapes and every rung, absent because **no repair the ladder
+        # accepts raises it** rather than because a branch says so; the beliefs
+        # that are level with themselves, malformed and missing licenses
+        # included, which is what stops the queue listing every belief a main
+        # holds; depth and its reasons, including that the reasons do not sum to
+        # the depth and that a reason nobody is waiting on reads as zero rather
+        # than as absent; ten malformed records travelling through without
+        # raising, with the permission-granting field resolving in the opposite
+        # direction from every other; six scripts queued identically, since no
+        # tokenizer and no locale is anywhere on this path; and the log itself —
+        # bytes unchanged across five reads with the derived file included, an
+        # expunged belief absent with no rule here about tombstones, a real
+        # `release_ceiling` shrinking the queue one rung at a time, and two
+        # folds of one log giving one queue.
+        #
+        # **62 selected, 62 required — the margin is zero, on purpose.** Every
+        # sweep here is a table rather than a set of neighbours: each parameter
+        # is a distinct belief shape, a distinct malformed value, a distinct
+        # rung or a distinct script, and the extraction manifest's own rule says
+        # a script is never the thing to prune. There is nothing redundant to
+        # remove yet, so a smaller count is a deliberate edit rather than a
+        # tidy-up. Marked case by case — there is no module `pytestmark` in that
+        # file, because a file-wide mark makes this gate's count the *file's*
+        # count, which is how the AD-28 step above once selected every rung and
+        # quarantine case in `tests/test_ladder.py`.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap10_unsaid -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-10 unsaid-queue cases collected: $collected"
+          if [ "$collected" -lt 62 ]; then
+            echo "::error::the CAP-10 unsaid gate collected $collected cases; what Half is holding back is unreported"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap10_unsaid
+
+      - name: 'CAP-10: the structural rules the unsaid queue rests on'
+        # A second gate over the single-case rules, for the reason
+        # `cap10_restraint`, `cap8_structure` and `cap6_structure` exist: a floor
+        # on the superset cannot protect a handful of cases inside it, and story
+        # 10's review demonstrated that rather than arguing it. The two gates are
+        # **disjoint** — every case in that file carries exactly one of the two
+        # markers — so neither of these floors is standing in front of the
+        # other's cases and claiming to protect them.
+        #
+        # What it covers, and none of it is behavioural: that **no route of any
+        # length** leads from the queue to a channel, a composer, a judge, a
+        # store, the actor, a model or the network — a transitive import walk
+        # from the module outward, over a forbidden set derived from
+        # `tests/conftest.py`'s own `CLOSED` and `UNREACHABLE` rather than
+        # restated, reporting the *route* and not the destination, with seven
+        # synthetic bypasses proving it bites and one legitimate reach proving it
+        # does not fire on everything; that the queue names exactly one thing in
+        # the context package and no channel type anywhere, which is the narrower
+        # claim the transitive one cannot make (`half.context.channels` is
+        # reachable because `resolve` lives beside `build`, and that is where
+        # story 4b put the door); that nothing under `half/` imports the queue
+        # but the registry's own read-only door; that the door reads the log and
+        # calls nothing that appends; that it hands back a **projection and not
+        # the fold**, so `if state.aftercare is not None: return ()` — which
+        # would report nothing held for exactly the main holding the most, since
+        # aftercare is what lowers the ceiling — is an `AttributeError` rather
+        # than a line a scan has to be clever enough to see; that the projection
+        # copies rather than references; that there is **nowhere to store a
+        # queue** — no field on `State`, no op in the vocabulary, and no record
+        # appended by a read over a main who actually has one; that an item
+        # carries no word of the claim it is about, asserted on the fields *and*
+        # on the rendering, and is slotted so a holder cannot bolt one on; that
+        # the condition vocabulary is closed and ordered; that omitting the cap
+        # is a `TypeError`; and that the lifted-cap counterfactual is a ceiling
+        # that caps nothing rather than a `ceiling=None` exemption, asserted over
+        # the module's AST so the comment explaining the rule does not fail it.
+        #
+        # **21 selected, 21 required.** Margin zero: every case here is the only
+        # one asserting its rule, and the one sweep — the seven synthetic
+        # bypasses — is a non-vacuity table where each entry is a different
+        # reach. Losing one is losing a rule or losing the proof that a guard
+        # bites.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap10_unsaid_structure -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-10 unsaid-structure cases collected: $collected"
+          if [ "$collected" -lt 21 ]; then
+            echo "::error::the CAP-10 unsaid structure gate collected $collected cases; a rule with one case has lost it"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap10_unsaid_structure
 
       - name: 'CAP-8: the structural rules the morning surface rests on'
         # A third gate, small and separate, for the reason

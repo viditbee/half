@@ -576,7 +576,6 @@ def test_a_claim_in_any_script_is_queued_identically(claim):
 
 
 @pytest.mark.cap10_unsaid
-@pytest.mark.ad28
 def test_reading_the_queue_any_number_of_times_leaves_the_log_unchanged(tmp_path):
     """Matrix: nothing promoted. **Never a silent write.**
 
@@ -680,7 +679,6 @@ def test_a_belief_the_main_erased_is_absent_from_the_queue(tmp_path):
 
 
 @pytest.mark.cap10_unsaid
-@pytest.mark.ad28
 def test_folding_the_same_log_twice_gives_the_same_queue(tmp_path):
     """Matrix: replay (AD-4). The queue is a pure function of the log, so two
     folds — and two processes, since the second registry hydrates from disk —
