@@ -70,7 +70,13 @@ from half.actor.runtime import Runtime
 from half.channel.port import Reachability, SendResult
 from half.channel.telegram import TelegramChannel
 from half.config import MAINS_ENV, ROOT_ENV, load
-from half.context import build as context_package
+import half.context as context_package  # noqa: E402 - the package, not
+# the function: ``half.context.__init__`` re-exports ``build``, which
+# shadows the submodule of the same name, so ``from half.context import
+# build`` binds a function. The first version of the case below did
+# exactly that and asserted `not hasattr(<function>, "split")`, which is
+# true of every function there has ever been — a probe that added the
+# re-export walked straight past it.
 from half.context.build import build as build_context
 from half.context.build import offered_claim, split, withheld as withheld_wordings
 from half.correction.attribute import EXPIRED_AT, INVALID_AT
@@ -648,16 +654,23 @@ def test_exactly_one_claim_is_offered_where_several_qualify(registry, tmp_path):
     choice in every script and on every replay.
     """
     root = tmp_path / "mains"
-    a_claim(root, ident=TRAVEL_ID, claim=TRAVEL_CLAIM, independent=2,
-            support=("m0", "m1"))
-    a_claim(root, ident=BUYS_ID, claim=BUYS_CLAIM, independent=3,
-            support=("m2", "m3", "m4"))
+    # **The two orderings are made to disagree.** ``r_buys_things`` sorts before
+    # ``r_travels``, so a build that took the first id it saw would choose the
+    # same claim as one that took the best-corroborated — and a mutation probe
+    # found exactly that: replacing the independence count with a constant left
+    # this case green. The better-supported claim is therefore the one the id
+    # order would *not* pick.
+    assert BUYS_ID < TRAVEL_ID, "the two orderings no longer disagree here"
+    a_claim(root, ident=TRAVEL_ID, claim=TRAVEL_CLAIM, independent=3,
+            support=("m0", "m1", "m2"))
+    a_claim(root, ident=BUYS_ID, claim=BUYS_CLAIM, independent=2,
+            support=("m3", "m4"))
 
     result, channel = a_demonstration(registry)
 
-    assert result.offer == Offer(belief_id=BUYS_ID, claim=BUYS_CLAIM), result
-    assert BUYS_CLAIM in channel.sent[1]
-    assert TRAVEL_CLAIM not in channel.sent[1], "two claims went out as a digest"
+    assert result.offer == Offer(belief_id=TRAVEL_ID, claim=TRAVEL_CLAIM), result
+    assert TRAVEL_CLAIM in channel.sent[1]
+    assert BUYS_CLAIM not in channel.sent[1], "two claims went out as a digest"
 
 
 @pytest.mark.cap2
@@ -1098,8 +1111,28 @@ def test_the_ordinary_door_has_no_parameter_an_offer_could_arrive_through():
     assert "offered" in inspect.signature(split).parameters
     assert "offered" not in inspect.signature(build_context).parameters
     assert "offered" not in inspect.signature(withheld_wordings).parameters
-    assert "build" in context_package.__all__ if hasattr(
-        context_package, "__all__") else True
+
+    # **And no other door into the package takes one**, swept rather than
+    # named: ``half.context`` re-exports what other packages import, and a
+    # later story adding a second entry point that forwarded an offer would be
+    # a second exception nobody voted for.
+    assert context_package.__all__, "the package exports nothing, so this "\
+        "sweep is vacuous"
+    for name in context_package.__all__:
+        member = getattr(context_package, name, None)
+        if not inspect.isfunction(member):
+            continue
+        assert "offered" not in inspect.signature(member).parameters, name
+    # **On the module namespace, not on ``__all__``.** ``from half.context
+    # import split`` works whether or not the name is in ``__all__``, so a
+    # check on the list is a check on documentation. A probe that added the
+    # re-export and left ``__all__`` alone walked straight past the first
+    # version of this line.
+    assert not hasattr(context_package, "split"), (
+        "the offered door is reachable from `half.context`, so a surface that "
+        "imports the package can quote a `behave` claim without meaning to. "
+        "The two callers that need it import `half.context.build` by name."
+    )
 
 
 @pytest.mark.cap2
@@ -1246,13 +1279,18 @@ def test_a_registry_that_cannot_answer_about_the_mode_demonstrates_nothing(
     mode is not symmetric with the cost of not demonstrating to somebody who is
     fine, so an unreadable answer is treated as the mode being open."""
 
-    class Broken:
+    class Raises:
         def crisis_open(self, main_id):
             raise RuntimeError("no")
 
-    result, channel = a_demonstration(Broken())
-    assert result.reason is Reason.IN_CRISIS
-    assert channel.sent == []
+    class Silent:
+        """A registry with no ``crisis_open`` at all — a shape a later refactor
+        can produce, and the branch a raising double never reaches."""
+
+    for broken in (Raises(), Silent()):
+        result, channel = a_demonstration(broken)
+        assert result.reason is Reason.IN_CRISIS, type(broken).__name__
+        assert channel.sent == []
 
 
 @pytest.mark.cap2
