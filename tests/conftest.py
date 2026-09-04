@@ -80,9 +80,17 @@ def seed_message(store, text=LAST_MESSAGE, *, ident="b_said", t="2026-08-31T00:0
     reachability from and what ``half.voice.compose.sample_from`` reads the
     language off, so a fixture that omits it is not a simplified main — it is a
     main who has never written, whom Half may not contact at all.
+
+    **Marked ``underived`` since story 15a, because the turn path marks it**
+    (CAP-5). A message is evidence and not a belief: it stays here, in the fold,
+    for the language sample and for responsiveness, and it is invisible to
+    retrieval, to the context builder, to the tension minter and to the ladder.
+    A fixture that left the mark off would be seeding the defect this story
+    removed — a main's own ``ok`` ranked as a claim about them — and every case
+    built on it would be asserting against a shape the product no longer writes.
     """
     return seed_belief(store, ident, t, subject="self", claim=text,
-                       **{"ledger": "stated"})
+                       **{"ledger": "stated", "derivation": "underived"})
 
 
 def block_of(assembled, label: str) -> str:

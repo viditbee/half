@@ -19,6 +19,7 @@ from typing import Any, Final
 
 from half.errors import QueryTooLargeError, StoreError, TokenGrowthLimitError
 from half.store.fold import State
+from half.store.records import underived
 from half.text import index_text, phrases
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,15 @@ SPOKE_KEY: Final[str] = "spoke"
 #: discarding it and replaying the log — never by an in-place migration, which
 #: would be a second way for derived state to exist that the log does not
 #: describe.
+#:
+#: v12 added the ``underived`` column, which is **the retrieval door's whole
+#: enforcement** (CAP-5, story 15a). A message is evidence and not a belief, and
+#: the two functions below that hand beliefs up to ``half.retrieval`` exclude it
+#: in SQL rather than leaving each consumer to filter — story 10's lesson, and
+#: the only version of a rule like this that has held here. A v11 view surviving
+#: the upgrade would have no column to exclude on, so every rebuild would raise
+#: on a missing column; discarding and replaying costs one rebuild and is what
+#: makes the derived view disposable (AD-3).
 #:
 #: v11 reshaped what story 10 added: the ``last_touch`` row became ``spoke``,
 #: which holds the newest **day marker** rather than the newest raise of any
@@ -78,7 +88,7 @@ SPOKE_KEY: Final[str] = "spoke"
 #: loop in the shared ``expunged`` set, where the new transition guard does not
 #: look — so a stale view surviving the upgrade would have a main's ranking
 #: function disagree with their own log about which wantings are still open.
-DERIVED_VERSION: Final[int] = 11
+DERIVED_VERSION: Final[int] = 12
 
 #: Every object this module owns, in an order safe to drop: the FTS table
 #: references ``beliefs`` as its external content.
@@ -106,6 +116,14 @@ CREATE TABLE IF NOT EXISTS beliefs (
     prefix_terms TEXT,
     ledger       TEXT,
     independent  INTEGER NOT NULL DEFAULT 0,
+    -- Whether this record is a message the main sent rather than a claim
+    -- (CAP-5, story 15a). A materialized column and not a read of ``data``,
+    -- because it is what the two retrieval doors below filter on and a filter
+    -- that has to parse JSON per row is one somebody moves back out of SQL.
+    -- Defaults to 0, which is *a claim*: the direction that never silently
+    -- excludes, and the same reading ``records.underived`` gives an absent
+    -- mark.
+    underived    INTEGER NOT NULL DEFAULT 0,
     data         TEXT NOT NULL
 ) STRICT;
 
@@ -237,7 +255,7 @@ def rebuild(
             conn.execute(
                 "INSERT INTO beliefs (id, t, subject, claim, prefix,"
                 " claim_terms, prefix_terms, ledger,"
-                " independent, data) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                " independent, underived, data) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     ident,
                     _require_str(data, "t", ident, default=""),
@@ -248,6 +266,10 @@ def rebuild(
                     _terms_of(belief_prefix, ident, "prefix"),
                     _text_or_none(data.get("ledger")),
                     _require_int(data, "independent", ident),
+                    # The mark, read through ``records.underived`` rather than
+                    # off the field, so the store and every other reader of it
+                    # give one answer to *is this a message?* rather than five.
+                    1 if underived(data) else 0,
                     json.dumps(data, sort_keys=True, separators=(",", ":"),
                                ensure_ascii=False),
                 ),
@@ -371,7 +393,12 @@ def all_beliefs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """
     try:
         rows = conn.execute(
-            "SELECT id, claim, prefix, data, NULL AS score FROM beliefs ORDER BY id"
+            "SELECT id, claim, prefix, data, NULL AS score FROM beliefs"
+            # The backstop is the *other* half of the door, and it is the half
+            # that matters more: a query matching no term ranks everything, so
+            # without this every message the main ever sent would arrive in the
+            # candidate set of every topic switch (CAP-5, story 15a).
+            " WHERE underived = 0 ORDER BY id"
         ).fetchall()
     except sqlite3.Error as exc:
         raise StoreError(f"belief scan failed: {exc}") from exc
@@ -457,10 +484,24 @@ def _search(
 def _run_search(
     conn: sqlite3.Connection, query: str, limit: int | None, columns: str
 ) -> list[dict[str, Any]]:
+    # ``b.underived = 0`` is **the door** (CAP-5, story 15a). A message the main
+    # sent is evidence and not a belief, so it never leaves the store as one:
+    # not to retrieval, not to the context builder that is fed from retrieval's
+    # result, and not to the ladder that resolves a rung over it. Enforced in the
+    # query rather than by a filter each of those applies — story 10's lesson,
+    # and the reason it sits on the shared search rather than only on
+    # ``search_beliefs``: a second read door that still returned messages is
+    # exactly the hole this project keeps finding.
+    #
+    # The **fold** is untouched, deliberately. ``read_state`` returns every
+    # record, because the three subsystems that read a message read it there:
+    # the language sample (``half.voice.compose.sample_from``), responsiveness
+    # (``half.questions.answered``) and the correction aim's exclusion. What a
+    # message stops being is something Half *ranks*, not something Half keeps.
     sql = (
         f"SELECT {columns}, bm25(belief_fts) AS score"
         " FROM belief_fts JOIN beliefs b ON b.rowid = belief_fts.rowid"
-        " WHERE belief_fts MATCH ? ORDER BY score, b.id"
+        " WHERE belief_fts MATCH ? AND b.underived = 0 ORDER BY score, b.id"
     )
     params: tuple[Any, ...] = (query,)
     if limit is not None:

@@ -62,6 +62,22 @@ Three orderings on this path are the rule rather than the arrangement:
   failed sends the fallback, the fallback asks nothing, and a favour spent on it
   would have paid for a question the main never saw.
 
+**A message is evidence; a claim is a belief** (CAP-5, story 15a). Until that
+story this module wrote every inbound message into the main's ledger as a stated
+belief, so ``ok``, ``thanks`` and ``hello?`` were beliefs — ranked by retrieval,
+quotable once promoted, eligible for a tension and aimed at by a correction. The
+record still goes exactly where it went and still carries the three subsystems
+that read it (the language sample, responsiveness, and the correction aim's
+exclusion); what it gains is the mark that says it is **not a claim**, and what
+it loses is every belief path. ``_derive`` then asks CAP-5's four admission
+gates whether there is a claim in it, and writes one — citing the message — when
+all four say yes.
+
+**And it happens after the reply.** A main waiting on a model call to find out
+whether their message was worth keeping is the latency failure story 13b spent a
+review round on, so ``_handle`` sends first and derives afterwards; every way
+derivation can fail costs a claim and never a word.
+
 And one that moved. **The words are composed outside the main's mutex.** The
 reply used to be built inside the acquire, which was free while it was a
 deterministic stub and is not now: a model call under the lock would hold
@@ -97,6 +113,7 @@ from half.crisis.classifier import SecondOpinion
 from half.crisis.gate import CrisisGate
 from half.crisis.handoff import Desk
 from half.crisis.safetyplan import Holder
+from half.derive.claim import Derivers
 from half.errors import (
     HalfError,
     NotReachable,
@@ -113,7 +130,7 @@ from half.retrieval.strands import Strands
 from half.retrieval.rank import Retriever
 from half.retrieval.strands import known_strands
 from half.store.ops import Op
-from half.store.records import LEDGER, STATED
+from half.store.records import DERIVATION, DERIVED, LEDGER, STATED, UNDERIVED
 from half.voice import turn as voice_turn
 from half.voice.compose import Sample
 from half.voice.gate import Voice
@@ -169,11 +186,36 @@ _DEADLINE: Final[ContextVar[float | None]] = ContextVar(
 _ERASED: Final[ContextVar[str]] = ContextVar("half_turn_erased", default="")
 
 
+#: The message record this turn wrote, or ``""``. **An id, never the text.**
+#:
+#: Read by ``_handle`` after the send, so that derivation happens **after the
+#: reply** and only for a turn that actually recorded a message (CAP-5, story
+#: 15a). A ``ContextVar`` and not a return value, for the reason ``_ERASED`` is
+#: one: what ``_pipeline`` returns has to cross the crisis gate, which owns its
+#: own signature and is Ask-First. Every turn runs inside one task
+#: (``_Turns._work`` awaits one before taking the next), so the value one turn
+#: sets is the value that turn reads and no other's.
+#:
+#: **Empty is the whole of the crisis rule and the redelivery rule**, arrived at
+#: without a branch for either. The crisis gate answers a disclosure itself and
+#: never reaches ``_pipeline``, so nothing sets this and nothing is derived
+#: (CAP-12). A redelivery returns at the idempotency check before the record is
+#: written, so nothing is set and one message is never derived twice.
+_DERIVABLE: Final[ContextVar[str]] = ContextVar("half_turn_message", default="")
+
+#: What a derived claim's id is built from. Two letters and the message's own
+#: external id, beside the message's ``b_`` — so the claim and the evidence it
+#: cites are one letter apart in the log and neither can land in the other's
+#: namespace.
+DERIVED_PREFIX: Final[str] = "d_"
+
+
 def _open_deadline() -> None:
-    """Start this turn's shared budget, and clear last turn's erasure. Never
-    raises."""
+    """Start this turn's shared budget, and clear last turn's erasure and its
+    message. Never raises."""
     _DEADLINE.set(asyncio.get_running_loop().time() + TURN_DEADLINE_SECONDS)
     _ERASED.set("")
+    _DERIVABLE.set("")
 
 
 def _left(most: float) -> float:
@@ -332,6 +374,15 @@ class Runtime:
     #: two of each is two renderings of one thing, which is how a guard that
     #: scans one string ends up admitting another.
     voice: Voice = field(default_factory=Voice)
+    #: Who decides whether a message was worth keeping (CAP-5, story 15a).
+    #: **Defaulted to a bench with no holders**, which derives nothing for
+    #: anybody — and that is a supported deployment rather than a degraded one:
+    #: the message is still recorded, still read by the language sample, still
+    #: read by responsiveness, still excluded from the correction aim. What an
+    #: unequipped deployment loses is *claims* from the turn path, never
+    #: messages, and it is exactly the state every build before this story
+    #: shipped, minus the defect that every message was also a belief.
+    derivers: Derivers = field(default_factory=Derivers)
     _gate: CrisisGate = field(init=False, repr=False)
     #: The widening, or an empty one. **A candidate store is not a model
     #: thing**: an erasure has to be confirmed whether or not a deployment has a
@@ -467,8 +518,16 @@ class Runtime:
             reply = await self._gate.handle(inbound)
         finally:
             self._expire_candidate(inbound)
-        if reply is None:
-            return  # silence is an outcome, not a failure (AD-27)
+        # Silence is an outcome, not a failure (AD-27) — and it is still a turn
+        # on which the main said something, so the derivation below happens
+        # either way. What must not happen is deriving *first*: see ``_derive``.
+        if reply is not None:
+            await self._deliver(inbound, reply)
+        await self._derive(inbound)
+
+    async def _deliver(self, inbound: Inbound, reply: str) -> None:
+        """Send the turn's reply, and alarm on the one failure that cannot be
+        shrugged off. Never raises."""
         delivered = await self._send_with_retry(inbound, reply)
         if not delivered and _ERASED.get():
             # **The one send failure that cannot be shrugged off.** Every other
@@ -482,6 +541,112 @@ class Runtime:
                 "the reply confirming an erasure could not be delivered to "
                 "main=%s; belief=%s is tombstoned and its words were never "
                 "shown", inbound.main_id, _ERASED.get(),
+            )
+
+    async def _derive(self, inbound: Inbound) -> None:
+        """Whether this turn's message was worth keeping (CAP-5, story 15a).
+
+        **After the reply, and that is the rule rather than the arrangement.** A
+        main waiting on a model call to find out whether what they wrote was
+        worth keeping is the latency failure story 13b spent a review round on.
+        The send has already been attempted by the time this is reached, so
+        every way this can fail — no deriver, a breaker standing this main down,
+        a gate past its bound, a provider refusing, a budget refusing, an
+        unreadable answer, a raise, a full disk on the append — costs a claim
+        and never a word of the main's answer.
+
+        **The cost it does have, stated rather than discovered.** This runs
+        inside that main's own turn worker, which takes one turn at a time
+        (``_Turns``), so a derivation that ran to its bound sits in front of that
+        main's *next* message. That is why ``half.derive.claim.BOUND_SECONDS`` is
+        the whole budget a main already waits for one turn rather than the
+        morning's twenty, and why the four gates run concurrently — a derivation
+        costs one bound and not four. It is not bounded by ``_left``: that is the
+        remainder of the budget of somebody who is waiting, and nobody is.
+
+        **Outside the mutex for the model call, inside it for the append**, which
+        is the ordering ``_pipeline`` already keeps for the same reason (AD-33):
+        a model call under a main's lock holds eviction and every other operation
+        on that main for the whole bound. ``ActorRegistry.acquire`` is not
+        reentrant and the mutex was released before ``_handle`` sent anything, so
+        this takes it again for the one append.
+
+        **The claim enters at the weakest rung and cites the message it came
+        from** (CAP-5, AD-28). The rung comes from ``ladder.admitted`` and never
+        from a literal here, so there is no spelling of this call that could mint
+        an `assert`; the support set names the evidence, so *every belief cites
+        its evidence* is true of the stated ledger and not only the revealed one.
+        Derivation decides *whether* there is a claim and never what Half may do
+        with it.
+
+        Never raises, and nothing here reads content into a log line (AD-22):
+        what is logged is a ``main_id``, a gate name from a closed set, and an
+        exception's class.
+        """
+        message_id = _DERIVABLE.get()
+        if not message_id:
+            # No message was recorded on this turn: a crisis turn, a redelivery,
+            # or a turn that failed before the append. Nothing to derive from.
+            return
+        _DERIVABLE.set("")
+        if not self.derivers.holds(inbound.main_id):
+            # No deriver for this main. Not a fallback and not a failure: their
+            # messages are recorded and read exactly as before, and no claim is
+            # derived — which is every build before this story, minus the defect.
+            return
+        try:
+            derived = await self.derivers.derive(
+                inbound.text, main_id=inbound.main_id
+            )
+        except Exception as exc:  # noqa: BLE001 - the claim, never the reply
+            # ``derive`` answers with a value rather than raising, so this is
+            # unreachable through it. Broad for the reason the question path's
+            # handler is broad: a bug here must cost the claim and nothing else.
+            # The class only, never the exception's own text (AD-22).
+            logger.warning(
+                "nothing could be derived from a message for main=%s (%s); the "
+                "message is recorded and the turn is unaffected",
+                inbound.main_id, type(exc).__name__,
+            )
+            return
+        if not derived.keeps:
+            if derived.refused_by:
+                # Gate names from a closed set — never the message, and never
+                # the claim that was not written (AD-22). **Every** gate that
+                # refused, because *"refused by decision-relevance and
+                # falsifiability"* is a different fact from *"refused by
+                # durability"* for anybody tuning this.
+                logger.debug(
+                    "main=%s: no claim was derived; refused by %s",
+                    inbound.main_id, ", ".join(derived.refused_by),
+                )
+            return
+        try:
+            async with self.registry.acquire(inbound.main_id) as actor:
+                claim_id = f"{DERIVED_PREFIX}{inbound.external_id}"
+                if claim_id in actor.store.state().beliefs:
+                    return  # already derived; a redelivery, not a second claim
+                actor.store.record(
+                    Op.ASSERT,
+                    claim_id,
+                    inbound.t,
+                    subject="self",
+                    # **The main's own words, from the message this turn
+                    # already holds.** The deriver answered whether there is a
+                    # claim and handed nothing back but four verdicts — see
+                    # ``half.derive.claim.Derived``, which has no field a main's
+                    # text could travel in. So this reads ``inbound`` and never
+                    # a candidate, which is also what keeps
+                    # ``tests/test_strands.py``'s scan of this file true.
+                    claim=inbound.text,
+                    **{LEDGER: STATED, DERIVATION: DERIVED},
+                    **ladder.admitted(support=[message_id]),
+                )
+        except Exception as exc:  # noqa: BLE001 - the claim, never the reply
+            logger.error(
+                "a derived claim could not be recorded for main=%s (%s); the "
+                "message is in the log and the turn is unaffected",
+                inbound.main_id, type(exc).__name__,
             )
 
     def _expire_candidate(self, inbound: Inbound) -> None:
@@ -699,7 +864,15 @@ class Runtime:
                 inbound.t,
                 subject="self",
                 claim=inbound.text,
-                **{LEDGER: STATED},
+                # **Evidence, and not a claim** (CAP-5, story 15a). The record
+                # stays exactly where it was and keeps every reader it had —
+                # the language sample, responsiveness, the correction aim's
+                # exclusion — and gains the one fact that was missing. What it
+                # stops being is a *belief*: retrieval, the context builder,
+                # the tension minter and the ladder are handed claims and never
+                # this, enforced by the doors they read through rather than by
+                # a filter each of them applies (story 10's lesson).
+                **{LEDGER: STATED, DERIVATION: UNDERIVED},
                 # The rung comes from the ladder, never from a literal here.
                 # A belief is admitted at the weakest rung and can reach any
                 # other only through a promotion, which is an event involving
@@ -707,6 +880,12 @@ class Runtime:
                 # mint an `assert`.
                 **ladder.admitted(),
             )
+            # **Recorded, therefore derivable** — set inside the acquire and
+            # after the append, so what ``_handle`` reads is a record that
+            # exists. A turn that raised before this line, a redelivery that
+            # returned above it, and a crisis turn that never reached this
+            # method all leave it empty.
+            _DERIVABLE.set(belief_id)
         # The mutex is released. Nothing below this line can cost the main their
         # message, their correction or their removal: all three are already
         # durable, and every step of composing and of attaching a question is

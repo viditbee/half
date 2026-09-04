@@ -99,7 +99,7 @@ from half.correction.signals import Meaning
 from half.errors import CorrectionError
 from half.retrieval.strands import STRAND_FLOOR
 from half.store.ops import Op
-from half.store.records import LEDGER, STATED, TARGET
+from half.store.records import TARGET, underived
 
 #: The field a belief's own words live in.
 CLAIM: Final[str] = "claim"
@@ -219,30 +219,45 @@ def aim(candidates: Iterable[Any], *, exclude: Iterable[str] = ()) -> str:
     inventing one is how a correction lands on a belief the main never
     questioned.
 
-    *Not the message that carried it.* Every inbound message is recorded as a
+    *Not the message that carried it.* Every inbound message was recorded as a
     belief on the stated ledger, so the second *"that's wrong"* in a
     conversation retracted the belief holding the text *"that's wrong"*. This
-    turn's own id is excluded by the caller, and the newest stated-ledger record
-    — the previous turn's message — is excluded here, because a correction is
-    never about the sentence that provoked it.
+    turn's own id is excluded by the caller, and a message is excluded here,
+    because a correction is never about the sentence that provoked it.
+
+    **What that exclusion keys on moved in story 15a, and leaving it alone would
+    have broken the correction path outright.** It used to exclude *the newest
+    ``stated``-ledger record*, which was the previous turn's message because
+    messages were the only stated records there were. Since 15a a message that
+    passes CAP-5's admission gates produces a derived claim — also on the stated
+    ledger, and newer than everything else, because it was written on the turn
+    that just happened. Unchanged, this would have excluded that claim from
+    every correction: *"I want to move to the farm"* followed by *"that's
+    wrong"* would aim at nothing and remove nothing, silently, on the belief
+    corrections are most often about. So the exclusion names what it was always
+    about — ``records.underived``, the mark that says *this is a message* — and
+    the ledger is no longer consulted for it.
+
+    **And it can no longer fire from the runtime**, which is stated rather than
+    left for a reader to discover. The retrieval door excludes messages
+    (``half.store.db``), so no candidate reaching here through
+    ``Runtime._retrieve`` carries the mark. It stays because ``aim`` is a public
+    function over whatever it is handed, because the exclusion is what a widened
+    retrieval door would meet first, and because it is directly testable — but
+    it is defence and not the enforcement, and the enforcement is that a message
+    is never a candidate at all.
 
     Never raises: it runs on the turn's own path over values ranking produced,
     and a candidate this build cannot read is one it does not aim at.
     """
     skip = set(exclude)
     kept: list[Any] = []
-    newest_stated: tuple[str, str] | None = None
     for candidate in candidates or ():
         ident = getattr(candidate, "id", "")
         if not isinstance(ident, str) or not ident or ident in skip:
             continue
-        record = getattr(candidate, "belief", None)
-        if isinstance(record, Mapping) and record.get(LEDGER) == STATED:
-            stamp = record.get("t")
-            if isinstance(stamp, str) and (
-                newest_stated is None or stamp > newest_stated[0]
-            ):
-                newest_stated = (stamp, ident)
+        if underived(getattr(candidate, "belief", None)):
+            continue
         weights = getattr(candidate, "weights", None)
         strand = weights.get("strand") if isinstance(weights, Mapping) else None
         if not isinstance(strand, (int, float)) or isinstance(strand, bool):
@@ -250,11 +265,7 @@ def aim(candidates: Iterable[Any], *, exclude: Iterable[str] = ()) -> str:
         if strand <= STRAND_FLOOR:
             continue
         kept.append(candidate)
-    latest = newest_stated[1] if newest_stated is not None else None
-    for candidate in kept:
-        if candidate.id != latest:
-            return str(candidate.id)
-    return ""
+    return str(kept[0].id) if kept else ""
 
 
 def plan(

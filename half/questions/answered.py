@@ -91,7 +91,7 @@ from half.civil import DAY
 from half.loops.timescale import moment
 from half.trust.stakes import INTERRUPTION_DAYS
 from half.store.ops import Op
-from half.store.records import LEDGER, QUESTION, STATED, Record
+from half.store.records import LEDGER, QUESTION, STATED, Record, derived_claim
 
 __all__ = [
     "ANSWERED", "ANSWERS_WITHIN_DAYS", "Answer", "NEVER_ASKED", "NO_PERIOD",
@@ -234,11 +234,27 @@ def responsive(record: Record | None) -> bool:
     main having spoken. That direction lets a question be put again after its
     wanting's own period rather than never, which is the bounded mistake; the
     opposite reading would silence a question for ever on an erasure.
+
+    **A claim Half derived is not the main speaking**, which is story 15a's one
+    change here and it is a correction rather than an addition. Since that story
+    a message that passes CAP-5's admission gates produces a *second* record on
+    the same turn — an ``assert`` on the same stated ledger, carrying the same
+    words — and without this line one reply would retire two questions: the
+    message, and then the claim derived from it. That is precisely the *"one
+    reply retires one question"* rule this module's docstring says the first
+    build got wrong, arriving back through a door nobody had opened yet.
+
+    Only a record that says in as many words that it is Half's own conclusion is
+    excluded (``records.derived_claim``). Every belief in every log written
+    before that story is unmarked and still reads as the main having spoken,
+    which is what those logs already meant.
     """
     if not isinstance(record, Record) or record.op is not Op.ASSERT:
         return False
     data = record.data
-    return isinstance(data, Mapping) and data.get(LEDGER) == STATED
+    if not isinstance(data, Mapping) or data.get(LEDGER) != STATED:
+        return False
+    return not derived_claim(data)
 
 
 def history(records: Iterable[Record] | None) -> dict[str, Answer]:

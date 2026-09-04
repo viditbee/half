@@ -60,6 +60,7 @@ from half.store.records import (
     PASS_RAN,
     QUESTION,
     TOUCH_FIELDS,
+    belief_record,
     handoff_projection,
     handoff_record,
     history_projection,
@@ -799,8 +800,19 @@ class ActorRegistry:
         ``if state.aftercare is not None`` can be written with no new import and
         no new door. What passes this line is:
 
-        * **beliefs**, through ``records.mint_projection`` — an id, a stamp, a
-          claim, a subject, a ledger and a loop. Not the license: whether a
+        * **beliefs**, through ``records.belief_record`` and then
+          ``records.mint_projection`` — the claims this main holds, narrowed to
+          an id, a stamp, a claim, a subject, a ledger and a loop.
+
+          **Claims, and never the messages they were derived from** (CAP-5,
+          story 15a). Until that story every inbound message was a stated
+          belief, so a first pass compared ``ok`` and ``thanks`` against every
+          wanting the main had and spent a judgement on each. Excluded at this
+          door rather than by a rule inside ``half.consolidate``, which is what
+          makes *"the minter never sees a message"* a property of what it is
+          handed.
+
+          Not the license: whether a
           tension may be *said* is the governance layer's question, asked at
           delivery. Not the support set: what an entry cites decides *widening*,
           which is story 9c's half and reads its own narrowing.
@@ -833,8 +845,15 @@ class ActorRegistry:
             state = actor.store.state()
             view = MintView(
                 beliefs={
+                    # **Claims, never messages** (CAP-5, story 15a). A message
+                    # the main sent is evidence and not a belief, and a minter
+                    # handed one would compare ``ok`` against a wanting and pay
+                    # a judgement for it. Narrowed here, at the door, rather
+                    # than by a filter inside ``half.consolidate`` — the same
+                    # reason ``mint_projection`` is applied here and not there.
                     ident: mint_projection(record)
                     for ident, record in state.beliefs.items()
+                    if belief_record(record)
                 },
                 tensions={
                     ident: dict(record)

@@ -84,5 +84,7 @@ markers = [
     "cap1_turn: the turn in words — prose on the wire, the claim alone where generation fails, silence only where there is no claim, the question composed in, and the removed claim shown verbatim",
     "cap11: correction — an explicit correction recognised offline and acted on, a candidate that never acts alone, three attributions and never a guess, and the removed claim shown as recorded",
     "cap11_structure: the single-case structural rules correction rests on — no store in the package, no op read for an attribution, no inference route to an append, and nothing composed",
+    "cap5_admission: a message is evidence and a claim is a belief — the four admission gates, each naming itself and reporting every refusal, the mark that keeps a message out of every belief path, and the three readers that still read it",
+    "cap5_structure: the single-case structural rules the separation rests on — the closed derivation vocabulary, the doors that hand out claims, the narrow holder that cannot author a claim, and a derivation that never costs a reply",
     "offline: the suite reaches no network, asserted at the socket rather than by convention",
 ]

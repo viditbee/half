@@ -30,15 +30,17 @@ once the send has been attempted, so no path here can cost a main their answer:
 absent, standing down, slow, refusing, over budget, unreadable or raising all
 produce the same thing, which is no claim.
 
-**The claim is the message's own words.** A derivation decides *whether* there
-is a claim; it does not reword one. That is not a shortcut — it is what keeps
-the reply's own rule true on this path: the holder is a ``Classifier``, the
-object with **no method that returns text**, so nothing on this path can author
-a sentence about a main and put it in their ledger for ever. A claim in words
-Half chose is a different object with a different risk, it needs the wider
-holder, and it is not this story. What is here instead is the separation CAP-5
-actually asks for: the message is evidence, the claim cites it, and a message
-that carries no claim leaves none.
+**The claim is the message's own words, and this module never touches them.** A
+derivation decides *whether* there is a claim; it does not reword one, and it
+does not hand one back — ``Derived`` has no field for text, so the caller writes
+the words it already holds. That is not a shortcut. It is what keeps the reply's
+own rule true on this path: the holder is a ``Classifier``, the object with **no
+method that returns text**, so nothing here can author a sentence about a main
+and put it in their ledger for ever. A claim in words Half chose is a different
+object with a different risk, it needs the wider holder, and it is not this
+story. What is here instead is the separation CAP-5 actually asks for: the
+message is evidence, the claim cites it, and a message that carries no claim
+leaves none.
 
 **The tier is pinned, and it is not the main's** (``CLASSIFY_TIER``). SPEC's
 constraint is that the recurring spend runs on a cheaper tier than conversation
@@ -179,7 +181,16 @@ class Derived:
     """One message's derivation. A value; it writes nothing and decides nothing
     about what Half may do with what it holds.
 
-    ``claim`` is empty on every path but one, and the four ways of getting there
+    **There is no claim text on this type, and that is deliberate.** A message
+    goes out to a provider and what comes back is four labels; the *words* of
+    the claim are the message's own, which the caller is already holding. So
+    nothing here carries a main's text back across the boundary — there is no
+    field on ``Derived`` for it and no parameter through which one could arrive,
+    which makes *"a derivation returns a decision and never content"* a property
+    of the type rather than a promise about its callers, on exactly the terms
+    ``Tally`` holds the same property for the counts.
+
+    ``keeps`` is false on every path but one, and the four ways of getting there
     are kept apart: refused by a gate, answered *cannot say* by one, never
     answered at all, or never consulted because this main has no deriver or
     their breaker is standing them down. Every one of them leaves no claim, so a
@@ -187,9 +198,6 @@ class Derived:
     each of them is reported separately and counted separately.
     """
 
-    #: The claim, or ``""``. **The message's own words**, never Half's — see
-    #: the module docstring.
-    claim: str = ""
     #: What the four gates said. Empty gates mean nothing was consulted.
     verdict: Admission = field(default_factory=Admission)
     #: Whether a deriver was reached at all. ``False`` for a main with no
@@ -199,8 +207,8 @@ class Derived:
 
     @property
     def keeps(self) -> bool:
-        """Whether there is a claim to record."""
-        return bool(self.claim)
+        """Whether there is a claim to record: **all four gates admitted**."""
+        return self.verdict.admitted
 
     @property
     def refused_by(self) -> tuple[str, ...]:
@@ -420,10 +428,9 @@ class Derivers:
         # started failing, which looks identical to a product with nothing worth
         # keeping.
         self._report()
-        if not verdict.admitted:
-            return Derived(verdict=verdict, consulted=True)
-        self._tally.derived += 1
-        return Derived(claim=text, verdict=verdict, consulted=True)
+        if verdict.admitted:
+            self._tally.derived += 1
+        return Derived(verdict=verdict, consulted=True)
 
     async def _ask(
         self, gate: Gate, text: str, *, main_id: str

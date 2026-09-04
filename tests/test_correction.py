@@ -656,8 +656,9 @@ def test_a_correction_with_no_antecedent_removes_nothing(registry, tmp_path):
     assert last(transport).strip() == SAYABLE
 
 
+@pytest.mark.cap5_admission
 def test_the_aim_ignores_the_message_that_carried_the_correction():
-    """Every inbound message is recorded as a belief on the stated ledger, so
+    """Every inbound message was recorded as a belief on the stated ledger, so
     the second *"that's wrong"* in a conversation retracted the belief holding
     the text *"that's wrong"*.
 
@@ -667,25 +668,45 @@ def test_the_aim_ignores_the_message_that_carried_the_correction():
     That is why this case exists at all — the exclusion is the filter that has
     to keep working when a later story gives an inbound record a topic, and a
     behavioural case would be asserting the floor twice.
+
+    **What it keys on moved in story 15a, and the second half of this case is
+    why it had to.** The exclusion used to drop *the newest stated-ledger
+    record*, which was the previous turn's message because messages were the
+    only stated records there were. Since 15a a message that passes CAP-5's
+    admission gates produces a **derived claim** on the same ledger, written on
+    the turn that just happened and therefore newest of all — so the old
+    exclusion would have dropped exactly the belief a correction is most often
+    about, silently. ``d_new`` below is that claim, and it is what the
+    correction aims at.
     """
     from half.retrieval.port import Candidate
 
-    def belief(ident, ledger=None, t="2026-09-01T00:00Z"):
+    def belief(ident, ledger=None, t="2026-09-01T00:00Z", derivation=None):
         record = {"t": t}
         if ledger:
             record["ledger"] = ledger
+        if derivation:
+            record["derivation"] = derivation
         return Candidate(id=ident, claim="", prefix="", bm25=-1.0,
                          belief=record, score=1.0,
                          weights={"strand": STRAND_FLOOR + 0.1})
 
-    live = [belief("b_said", "stated", "2026-09-01T00:02Z"),
+    live = [belief("b_said", "stated", "2026-09-01T00:02Z",
+                   derivation="underived"),
             belief("b_older", "stated", "2026-09-01T00:01Z"),
             belief("b_real")]
-    # The newest stated record is the previous turn's message. It is skipped
-    # even though it ranks first.
+    # The message is skipped even though it ranks first.
     assert correction.aim(live) == "b_older"
     # And this turn's own id is skipped by the caller, whatever it ranks.
     assert correction.aim(live, exclude=("b_older",)) == "b_real"
+
+    # The newest stated record is now a *claim Half derived*, and a correction
+    # must be able to aim at it. Keying the exclusion on the ledger and the
+    # stamp — which is what it did before story 15a — returns ``b_real`` here.
+    newest = [belief("d_new", "stated", "2026-09-01T00:03Z",
+                     derivation="derived"),
+              belief("b_real", t="2026-09-01T00:01Z")]
+    assert correction.aim(newest) == "d_new"
 
 
 def test_the_aim_needs_a_weight_it_can_read():

@@ -1040,11 +1040,14 @@ def test_a_derived_view_from_the_previous_shape_is_discarded_not_reused(tmp_path
     a bump that *nobody noticed*, and the stale view it plants is one version
     behind whatever the current one is. Story 10 bumped it to 10 for the
     ``touches`` table, and its review to 11 when the day marker stopped being
-    "the last raise of any loop".
+    "the last raise of any loop". Story 15a bumped it to 12 for the
+    ``underived`` column, which is the retrieval door's whole enforcement that a
+    message is not a belief: a v11 view has no column to exclude on, so every
+    rebuild after the upgrade would raise on a missing column.
     """
     from half.store import db
 
-    assert db.DERIVED_VERSION == 11
+    assert db.DERIVED_VERSION == 12
 
     reg = ActorRegistry(tmp_path)
     set_due(reg, "vidit", NOON + 500)
