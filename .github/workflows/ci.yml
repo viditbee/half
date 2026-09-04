@@ -198,12 +198,23 @@ jobs:
         # to 107 while adding one case of AD-28 coverage, so a later reader would
         # find a floor claiming twice the protection it has. It is gated by
         # `cap4_bought`, at margin zero.
+        #
+        # **Story 5c adds two and the floor moves with them, to 55.** The
+        # interruption is a new surface that resolves a license, which is
+        # exactly what this gate exists to catch: one case is that a main capped
+        # at `behave` is not interrupted, and one sweeps every rung on the
+        # ladder to show that the gate's *free* ceiling refusal — the one that
+        # runs before a model is paid — only ever refuses where the resolution
+        # below it would also refuse. The margin stays at six and means what the
+        # paragraphs above say it means: prune a redundant case, do not gut the
+        # gate. The two cases themselves are protected by `cap10`, at margin
+        # zero.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m ad28 -q --collect-only \
             | grep -c '::' || true)
           echo "AD-28 cases collected: $collected"
-          if [ "$collected" -lt 53 ]; then
+          if [ "$collected" -lt 55 ]; then
             echo "::error::the AD-28 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -268,12 +279,21 @@ jobs:
         # ever, because the scheduler wrote one indistinguishable `schedule`
         # record for the main whose pass ran and for the suspended one whose
         # did not. The case drives it end to end through a real tick.
+        #
+        # **Story 5c adds two and the floor moves with them, to 1245.** The
+        # interruption is the second surface in this product that can speak
+        # first, so the mode has to suspend it as completely as it suspends the
+        # morning: one case is that a main in the mode is not interrupted, and
+        # one is that the mode refuses **before the platform is even asked** —
+        # a main in crisis is not reasoned about, which is the half of CAP-12
+        # that an ordering can quietly invert. The floor moves so the margin
+        # does not grow; the protection is `cap10`, at margin zero.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap12 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-12 cases collected: $collected"
-          if [ "$collected" -lt 1243 ]; then
+          if [ "$collected" -lt 1245 ]; then
             echo "::error::the CAP-12 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -1818,6 +1838,101 @@ jobs:
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap8_nagging
+
+      - name: 'CAP-10: the interruption — five refusals, and a build that never interrupts'
+        # *"An unprompted interruption occurs only when waiting would destroy an
+        # option."* The valuable half of that sentence is the **only**, and this
+        # gate is over the only: the five refusals that run before anything is
+        # judged, in the order they run in, plus the interruption's own bound.
+        #
+        # It is the rule that decays most invisibly in this whole product,
+        # because **the shipped build never interrupts anybody**. There is no
+        # urgency judge in the tree and none wired into the composition root, so
+        # every case here ends in silence — and a suite over a feature whose
+        # correct answer is always *nothing* is one careless assertion away from
+        # passing with the module deleted. Two disciplines in
+        # `tests/test_interrupt.py` are what make it not that, and they are the
+        # reason this gate is worth having at all:
+        #
+        #   the urgency double is a **counter**, so *"the judge was never
+        #   called"* is asserted at zero rather than by a double that raises —
+        #   which the gate's own `except Exception` converts into a legal
+        #   silence two frames up, so the assertion would pass whether the
+        #   ordering held or was inverted (the failure story 13a shipped); and
+        #
+        #   the three verdicts each move a field the other two cannot, so
+        #   *closing*, *not closing* and *cannot say* cannot be satisfied by one
+        #   `nothing was sent`.
+        #
+        # What it covers: the mode refusing before the platform is even asked; a
+        # main the platform forbids a send to, swept over every refusal
+        # `Reachability` has; a ceiling at `behave`; each wanting held to its
+        # **own** period, one interval swept over all four timescales for four
+        # different answers and both sides of every boundary pinned; the
+        # interruption's own per-main bound, including the demonstration that it
+        # is stricter than the morning's; the per-pass judgement budget and the
+        # stop at the first *closing*; a judgement that raises, one past the
+        # bound, and one that cannot say; the wire text carrying no label, no
+        # belief id and no scaffolding; and every pair of the per-main refusals
+        # in both orders.
+        #
+        # **75 selected, 75 required — the margin is zero, on purpose.** Every
+        # refusal here has exactly one case, and the two sweeps that do have
+        # neighbours are the timescale table the extraction manifest's
+        # nudge-cooldown row exists to protect: a single shared cooldown nags a
+        # days-loop and never reaches a farmland loop, and the four-answer sweep
+        # is the only thing in this tree that fails when somebody reintroduces
+        # one. There is nothing redundant to prune yet, so a smaller count is a
+        # deliberate edit rather than a tidy-up.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap10 -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-10 interruption cases collected: $collected"
+          if [ "$collected" -lt 75 ]; then
+            echo "::error::the CAP-10 interruption gate collected $collected cases; the restraint is unguarded"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap10
+
+      - name: 'CAP-10: the structural rules restraint rests on'
+        # A second gate over the single-case rules, for the reason
+        # `cap8_structure`, `cap6_structure` and `cap12_aftercare_property`
+        # exist: a floor on the superset cannot protect a handful of cases
+        # inside it, and story 10's review demonstrated that rather than arguing
+        # it.
+        #
+        # What it covers, and none of it is behavioural: that the urgency port
+        # is **one method** and that the double in the suite actually satisfies
+        # it; that the value a judge is handed carries no horizon, no main and
+        # no belief id — *do not add a horizon to a record* is this story's
+        # Never, and the value a judge sees is where one would arrive first;
+        # that **no implementation of that method exists anywhere under
+        # `half/`**, asserted by AST over the whole tree so a judge added next
+        # year fails here rather than passing unnoticed; that nothing in the
+        # package names the model or the network; that nothing in it can write a
+        # record or read a clock; that it reuses the nagging bound and the rung
+        # an unprompted surface speaks from and reaches nothing else of the
+        # morning's; that the result has no plural door onto the send path, so
+        # *never a digest* is a property of the shape; that the two numbers the
+        # module costs are pinned by value; that forgetting the mode or the
+        # bound at the call site is a `TypeError`; and — by value, not by
+        # keyword — that **the composition root wires no urgency source**, with
+        # the gate `build` returned driven end to end to show it interrupts
+        # nobody.
+        #
+        # **15 selected, 15 required.** Margin zero: every case here is the only
+        # one asserting its rule, so losing even one is losing a rule.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap10_restraint -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-10 restraint cases collected: $collected"
+          if [ "$collected" -lt 15 ]; then
+            echo "::error::the CAP-10 restraint gate collected $collected cases; a rule with one case has lost it"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap10_restraint
 
       - name: 'CAP-8: the structural rules the morning surface rests on'
         # A third gate, small and separate, for the reason
