@@ -66,7 +66,8 @@ from typing import Final
 from half.context.build import leaks, runs
 from half.errors import DeriveError
 from half.ingest.scrub import scrub
-from half.model.port import Generate, Prompt, Role, Turn
+from half.model import consult
+from half.model.port import Generate, Generator, Prompt, Role, Turn
 
 #: Structured, and content-free. Never a body, never a generated claim, never a
 #: subject line, never a sender (AD-22).
@@ -513,9 +514,6 @@ def check_writer(main_id: str, holder: object) -> None:
     means much alone — it is that the *same object* can never do both that keeps
     the model out of the admission.
     """
-    from half.model import consult
-    from half.model.port import Generator
-
     if not isinstance(holder, Generator):
         raise DeriveError(
             f"the writer for main {main_id!r} cannot generate; a claim is "
@@ -546,8 +544,6 @@ def _check_constants() -> None:
     exactly the kind an optimisation flag would take away while the module still
     imported cleanly.
     """
-    from half.model import consult
-
     if not consult.a_bound(BOUND_SECONDS):
         raise DeriveError(
             f"a bound of {BOUND_SECONDS!r} is not a bound; a generation that "
