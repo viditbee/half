@@ -368,6 +368,34 @@ def test_a_second_minting_label_refuses_the_module(monkeypatch):
 
 @pytest.mark.cap7
 @pytest.mark.cap7_judgement
+def test_a_label_set_with_no_home_for_a_contradiction_refuses_the_module(
+    monkeypatch
+):
+    """Deleting the label is the other way to lose the distinction, and it is
+    the one that looks like tidying: three labels carry the three values, so a
+    reader who has not read this module's first paragraph will see a redundant
+    fourth.
+
+    It refuses by name rather than by ``KeyError``, which is what the check
+    beneath it used to do — and a ``KeyError`` out of an import-time guard says
+    *this build is broken* where what a reader needs is *why this label is
+    there*.
+    """
+    monkeypatch.setattr(
+        judging, "ANSWER_FOR_LABEL",
+        {label: answer for label, answer in ANSWER_FOR_LABEL.items()
+         if label != CANNOT_BOTH_BE_TRUE},
+    )
+    monkeypatch.setattr(
+        judging, "LABELS",
+        tuple(label for label in LABELS if label != CANNOT_BOTH_BE_TRUE),
+    )
+    with pytest.raises(JudgeError, match="no home for a contradiction"):
+        judging._check_constants()
+
+
+@pytest.mark.cap7
+@pytest.mark.cap7_judgement
 def test_a_label_set_with_nowhere_to_put_doubt_refuses_the_module(monkeypatch):
     """The third value's own bypass case, and it was missing until a mutation
     said so.
@@ -1657,6 +1685,7 @@ def test_every_judgement_guarantee_this_story_rests_on_still_exists():
         "test_a_label_set_that_minted_a_contradiction_refuses_the_module",
         "test_a_second_minting_label_refuses_the_module",
         "test_a_label_set_with_nowhere_to_put_doubt_refuses_the_module",
+        "test_a_label_set_with_no_home_for_a_contradiction_refuses_the_module",
         "test_a_model_that_cannot_say_answers_none_and_is_not_a_failure",
         "test_an_answered_cannot_say_never_arms_the_breaker",
         "test_a_degraded_or_declining_provider_answers_none_and_never_no",

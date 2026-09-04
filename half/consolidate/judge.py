@@ -984,6 +984,14 @@ def _check_constants() -> None:
     # below would fire first and an editor would read *"exactly one label may
     # mint"* — arithmetic — where what they need to read is *why this label may
     # not be the one*.
+    if CANNOT_BOTH_BE_TRUE not in ANSWER_FOR_LABEL:
+        raise JudgeError(
+            "there is no home for a contradiction. Without a label of its own, "
+            "a model reading two entries that cannot both be true has to answer "
+            "no about the pair that feels most like a disagreement — which is "
+            "the answer it is least likely to give, and the way this judge "
+            "starts minting story 12's object under CAP-7's name"
+        )
     if ANSWER_FOR_LABEL[CANNOT_BOTH_BE_TRUE] is not False:
         raise JudgeError(
             "two entries that cannot both be true are not a tension. One of "
@@ -1006,11 +1014,16 @@ def _check_constants() -> None:
             "answer no — and a suite asserting that nothing was minted would "
             "then pass whether the judge answered or was never reached at all"
         )
-    if not any(answer is False for answer in ANSWER_FOR_LABEL.values()):
-        raise JudgeError(
-            "no label says *no*, so this judge mints or abstains and is a "
-            "network call with a counter attached"
-        )
+    # **There is deliberately no *"some label must say no"* check here**, and
+    # its absence is a finding rather than an oversight. The two classification
+    # modules carry the mirror of it — *no label asks, so this classifier widens
+    # nothing and is a network call with a counter attached* — and the version
+    # written here first could not fire: the two rules above already require
+    # ``CANNOT_BOTH_BE_TRUE`` to be present and to answer ``False``, so a
+    # mapping reaching this line always has a label that says no. A mutation run
+    # deleting it left the whole suite green, which is what a guard that cannot
+    # fire looks like from the outside, and a guard nobody can test is a
+    # sentence rather than a check.
     if not INSTRUCTIONS or any(not block.strip() for block in INSTRUCTIONS):
         raise JudgeError("the instructions must not be empty")
     for label in LABELS:

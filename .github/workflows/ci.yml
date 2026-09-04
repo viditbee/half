@@ -638,7 +638,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m ad9 -q --collect-only \
             | grep -c '::' || true)
           echo "AD-9 cases collected: $collected"
-          if [ "$collected" -lt 95 ]; then
+          if [ "$collected" -lt 96 ]; then
             echo "::error::the AD-9 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -769,13 +769,13 @@ jobs:
         # `cap7_minting` and are gated below at margin zero, which is again
         # what actually protects them.
         #
-        # **Story 9e adds 95 and the floor moves again, from 409 to 504, so the
-        # margin stays 41.** 545 selected. They are the judgement itself: the
+        # **Story 9e adds 96 and the floor moves again, from 409 to 505, so the
+        # margin stays 41.** 546 selected. They are the judgement itself: the
         # gap that is never the truth and the contradiction that answers no,
         # the third value that cannot collapse into the second, the bound
         # asserted against the tick's own timeout, two claims in five scripts
         # and in two different ones, and the claim that reaches a provider and
-        # no other place at all. **All ninety-five carry `cap7_judgement` and are
+        # no other place at all. **All ninety-six carry `cap7_judgement` and are
         # gated below at margin zero**, which is what actually protects them —
         # this floor's margin of 41 could not protect any 41 named cases and
         # has never claimed to.
@@ -794,7 +794,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap7 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-7 cases collected: $collected"
-          if [ "$collected" -lt 504 ]; then
+          if [ "$collected" -lt 505 ]; then
             echo "::error::the CAP-7 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -1061,7 +1061,7 @@ jobs:
         #   at the boundary CAP-7 makes the promise at: a real `Scheduler.tick`
         #   reporting the main under `ran` rather than under `failed`.
         #
-        # **The margin is deliberately zero: 95 selected, 95 required.** Every
+        # **The margin is deliberately zero: 96 selected, 96 required.** Every
         # case in this gate is the only one asserting its rule, which is the
         # condition under which a zero margin is right — and it is why the
         # CAP-7 floor above was not inflated instead. It also means every case
@@ -1108,12 +1108,26 @@ jobs:
         # (`..._refuses_the_module`), which is red **by name** inside an
         # otherwise green tree. The `cannot_say` one was missing until the
         # mutation run said so.
+        #
+        # **A second round of five mutations, run after those cases were added,
+        # found a guard that could not fire.** `_check_constants` carried the
+        # mirror of the two classification modules' *no label asks, so this
+        # widens nothing* check — *no label says no* — and deleting it left the
+        # whole suite green, because the two rules above it already require the
+        # contradiction label to be present and to answer `False`. It is gone,
+        # and what replaced it is the reachable half: a label set with **no home
+        # for a contradiction** is refused by name rather than by the `KeyError`
+        # the line beneath it used to raise. The other four in that round —
+        # a failing judgement made to cost the pass (one case), the cannot-say
+        # guard deleted (one), the tally counting by verdict instead of by label
+        # (eight), and the holder allowlist turned back into a denylist (two) —
+        # are all red.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap7_judgement -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-7 judgement cases collected: $collected"
-          if [ "$collected" -lt 95 ]; then
+          if [ "$collected" -lt 96 ]; then
             echo "::error::the judgement gate collected $collected cases; the gap, the third value or the bound has stopped being asserted"
             exit 1
           fi
