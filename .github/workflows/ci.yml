@@ -58,6 +58,63 @@ jobs:
         # away from scan_for_secrets and stopped checking untracked files.
         run: uv run --locked --extra dev pytest tests/test_secret_gate.py -q
 
+      - name: 'AD-11 and AD-22: nothing leaves the mailbox transport'
+        # The step above is a **scan of the tree**: it finds secret material
+        # somebody committed. Story 16 added the first module that holds a live
+        # credential at runtime and sends it somewhere, and a tree scan says
+        # nothing at all about that — so this is the runtime half of AD-11,
+        # beside the durable half, rather than a second copy of it.
+        #
+        # What it protects, each rule with no second case:
+        #
+        #   that the credential travels in a **request header and never in a
+        #   URL**, asserted over every URL a real walk built — the failure
+        #   `half/ingest/gmail.py`'s own boundary translation was written to
+        #   survive, because a Gmail error quotes the request that caused it;
+        #   that it comes from a `SecretStore` **beside** the tree holding every
+        #   main and never inside it, asserted by hunting the token through
+        #   every byte written under that tree after a real walk;
+        #   that a main with no stored token is refused **before any request**,
+        #   asserted against a fake HTTP layer with no scripted answer, so a
+        #   build that asked anyway fails rather than passing quietly;
+        #   that a transport cannot exist without a credential, in three shapes;
+        #   and that **no provider text and no token crosses** on any failing
+        #   shape — six of them, each driven with both sentinels present and
+        #   checked against the exception, its args, its **cause and context**,
+        #   and every log record emitted during the attempt.
+        #
+        # The cause-and-context case is the sharp one. `raise ... from None`
+        # suppresses the *display* of a context and still attaches the object,
+        # so an `HTTPError` holding a provider's body rides out of the boundary
+        # inside an exception that prints perfectly clean. The transport raises
+        # its faults **after** the handler has finished for that reason, and
+        # this is the case that goes red if somebody moves the raise back
+        # inside the `except` — which is the natural way to write it.
+        #
+        # **13 selected, 13 required. The margin is deliberately zero**: every
+        # case is the only one asserting its rule, which is the condition under
+        # which a zero margin is right, and it means every case added here owes
+        # an edit to this number. `ad11` is applied **per case** rather than as
+        # a module-wide `pytestmark` for the same reason.
+        #
+        # The floor is not decoration: `--strict-markers` does not validate a
+        # name inside `-m`, so a typo here deselects all 5177 cases and exits
+        # 0. That was reproduced against this tree before this step was written.
+        #
+        # The whole matrix file runs after the floor, so a red build names the
+        # row that broke rather than pointing at the suite.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m ad11 -q --collect-only \
+            | grep -c '::' || true)
+          echo "AD-11 credential-containment cases collected: $collected"
+          if [ "$collected" -lt 13 ]; then
+            echo "::error::the AD-11 runtime gate collected $collected cases; the credential's home, the header it travels in, or the provider text that must not cross has stopped being asserted"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m ad11
+          uv run --locked --extra dev pytest -q tests/test_gmail_transport.py
+
       - name: 'AD-24: retrieval weights and never excludes'
         # A topic switch that can empty the candidate set, or a cap that drops
         # beliefs without saying so, is what produces "I don't have access to
@@ -3185,13 +3242,29 @@ jobs:
         # version of this file opened, and — since review round 1 — the case
         # that proves the implementation module is free of the SDK entirely,
         # which is why the transport is a module of its own.
-        # 14 selected, 11 required.
+        #
+        # **Story 16 extends it to `half/ingest`**, which acquired a networked
+        # module of its own. Four cases, each the only one asserting its rule:
+        # that `half/ingest/gmail_transport.py` is the only module in that
+        # package naming an HTTP client, asserted over the syntax trees and in
+        # both directions so the exempt file has to actually name one; the
+        # non-vacuity case beside it, which plants four spellings of a client
+        # arriving elsewhere; that the transport module holds no logger at all,
+        # which is how *never a token in a log line* becomes a property of a
+        # syntax tree rather than of every future format string; and that
+        # constructing one opens nothing.
+        #
+        # **20 selected, 15 required — the floor rises by exactly the four
+        # cases added, so the margin is the one this step already had.** The
+        # older `14 selected` above counted `tests/test_model_offline.py`
+        # alone; `tests/test_surface.py` had contributed two more since, which
+        # is why the number below moves by four and not by six.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m offline -q --collect-only \
             | grep -c '::' || true)
           echo "offline cases collected: $collected"
-          if [ "$collected" -lt 11 ]; then
+          if [ "$collected" -lt 15 ]; then
             echo "::error::the offline gate collected $collected cases; the suite may now reach the network"
             exit 1
           fi
