@@ -39,6 +39,16 @@ PURE_MODULES = (
     "half/store/ops.py",
     "half/store/records.py",
     "half/governance/ladder.py",
+    # The unsaid queue (CAP-10, story 5d). It is a *computed view over the
+    # fold* — no record, no counter, no field — so a clock, an environment
+    # variable or a store of its own reaching it would make *"what is Half
+    # holding back, and what would release it"* a question two builds reading
+    # one log disagree about. Named here rather than covered by the
+    # ``half/governance`` glob in ``tests/test_ladder.py`` for the reason that
+    # file's own comment gives: the glob is the fragile half, and this list
+    # names modules so moving one out of the package cannot move it out of the
+    # gate.
+    "half/governance/unsaid.py",
     # The aftercare schedule. It computes elapsed days from two stamps the
     # caller supplies, and the whole point of writing the civil-date
     # arithmetic out by hand was that it could not reach a clock — so the scan

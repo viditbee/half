@@ -40,6 +40,7 @@ from half.governance.ladder import (
     height,
     next_rung,
 )
+from half.governance.unsaid import UnsaidView, narrowed_for_unsaid
 from half.consolidate.candidates import MintView
 from half.retrieval.prefix import build_prefix
 from half.retrieval.rank import RetrievalSwitch
@@ -1115,6 +1116,47 @@ class ActorRegistry:
             return narrowed_for_trust(
                 state, Ceiling(state.ceiling), balance=trust_balance(records)
             )
+
+    # -- the unsaid queue's one door (CAP-10, story 5d) ----------------------
+    #
+    # One narrowed read and nothing else. There is no ``note_`` beside it and
+    # no serialized check-and-append, because the unsaid queue spends no
+    # currency, promotes nothing and acknowledges nothing — it reports what is
+    # being held and what would release it. A second method here would be the
+    # first step of the delivery path CAP-10 puts at context construction.
+
+    async def unsaid_view(self, main_id: str) -> UnsaidView:
+        """This main's state, **narrowed** to what the unsaid queue may see.
+
+        **Narrowed, not the fold** — story 10's lesson, applied for the fourth
+        time and for a reason specific to this reader. Handing back ``State``
+        would put the aftercare record inside reach of a queue, and ``if
+        state.aftercare is not None: return ()`` is one line, needs no new
+        import, and would report *nothing held* for the main who is holding the
+        most: aftercare is exactly what lowers a ceiling, and a lowered ceiling
+        is what fills this queue. ``half.governance.unsaid.VISIBLE`` is the
+        allowlist; what is not on it is unreachable rather than merely unread.
+
+        **The queue itself is not computed here**, and that is the same division
+        ``trust_view`` and ``surface_view`` keep: the registry answers *what
+        does the log say*, and the pure module answers *what does that mean*. A
+        queue folded inside the actor would be a second place the ladder is
+        asked, under a mutex, where nothing could sweep it.
+
+        **From the log rather than from SQLite**, for the reason ``trust_view``
+        reads the log: ``Store.append`` writes the line and *then* rebuilds, so
+        a crash between the two leaves the derived view behind — and a ceiling
+        read from a stale view is a capped main reading as uncapped, which is
+        the one window AD-28 exists to close and would here be a queue reporting
+        that nothing is held.
+
+        Held only for the read. **Nothing on this path writes**: there is no
+        append in this method, and reading the queue any number of times leaves
+        the log byte-identical (AD-3).
+        """
+        async with self.acquire(main_id) as actor:
+            state = fold_records(list(actor.store.log))
+            return narrowed_for_unsaid(state, Ceiling(state.ceiling))
 
     # -- the question engine's one further door (CAP-4, story 11) ------------
     #
