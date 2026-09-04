@@ -62,7 +62,7 @@ from half.derive.revealed import (
 from half.errors import HalfError, ModelError
 from half.governance import ladder
 from half.ingest.gmail import GmailSource
-from half.ingest.gmail_transport import HttpTransport
+from half.ingest.gmail_transport import HttpTransport, MailboxMisconfigured
 from half.ingest.pipeline import Ingested, Pipeline
 from half.ingest.port import MailSource
 from half.interrupt.gate import Interrupt
@@ -1240,6 +1240,15 @@ def onboard_command(config: Config, token: str, main_id: str) -> int:
                 t=SystemClock().read().stamp,
             )
         )
+    except MailboxMisconfigured as exc:
+        # Re-raised rather than handled, and with exactly one fact added. The
+        # transport cannot know where a ``SecretStore`` keeps its files —
+        # ``SecretStore`` is a Protocol and a hosted deployment's is not a
+        # directory at all — and this is the layer that can. A refusal that
+        # names the credential but not the place to put it leaves a
+        # self-hoster's first command a dead end, and *says so plainly* is a
+        # row of this story's matrix. The token itself is never in ``exc``.
+        raise HalfError(f"{exc}, which lives in {wiring.secrets.root}") from None
     finally:
         wiring.registry.close()
     over = "" if done.fitted else " (over CAP-2's ninety seconds)"

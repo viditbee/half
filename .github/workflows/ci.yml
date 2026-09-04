@@ -104,10 +104,10 @@ jobs:
         # The whole matrix file runs after the floor, so a red build names the
         # row that broke rather than pointing at the suite.
         #
-        # **Nineteen mutations were run against these before this step was
+        # **Twenty mutations were run against these before this step was
         # written**, each with a purged bytecode cache on both sides, a green
         # baseline asserted either side of it, and the anchor asserted to exist
-        # before the edit was accepted. Eighteen are red. The ones worth naming:
+        # before the edit was accepted. Nineteen are red. The ones worth naming:
         #
         #   the credential added to the query string — one; the fault raised
         #   back inside the `except`, which reattaches the provider's body as a
@@ -125,7 +125,9 @@ jobs:
         #   client arriving one module up in `pipeline.py` — one;
         #   the page token never carried forward — one; the cursor's query
         #   dropped — one; a message id reaching the URL path unquoted — one;
-        #   and the command reporting success for a refusal — one.
+        #   the command reporting success for a refusal — one; and the
+        #   refusal losing the one fact that makes it actionable, the place
+        #   the credential goes — one.
         #
         # **One came back green and it was a defect in the case rather than in
         # the code.** The order case scripted three message responses in a

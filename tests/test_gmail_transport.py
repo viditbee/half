@@ -878,6 +878,10 @@ def test_the_command_with_no_stored_token_says_so_and_exits_non_zero(
     assert main(["onboard", MAIN]) == 2
     captured = capsys.readouterr()
     assert GMAIL_TOKEN in captured.err
+    assert str(FileSecretStore.beside(deployment).root) in captured.err, (
+        "the refusal names the credential and not the place to put it, which "
+        "leaves a self-hoster's first command a dead end"
+    )
     assert "Traceback" not in captured.err and "Traceback" not in captured.out
     assert captured.err.count("\n") == 1, "a refusal is one line"
     assert fake.urls == []
