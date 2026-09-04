@@ -769,13 +769,13 @@ jobs:
         # `cap7_minting` and are gated below at margin zero, which is again
         # what actually protects them.
         #
-        # **Story 9e adds 91 and the floor moves again, from 409 to 500, so the
-        # margin stays 41.** 541 selected. They are the judgement itself: the
+        # **Story 9e adds 95 and the floor moves again, from 409 to 504, so the
+        # margin stays 41.** 545 selected. They are the judgement itself: the
         # gap that is never the truth and the contradiction that answers no,
         # the third value that cannot collapse into the second, the bound
         # asserted against the tick's own timeout, two claims in five scripts
         # and in two different ones, and the claim that reaches a provider and
-        # no other place at all. **All ninety-one carry `cap7_judgement` and are
+        # no other place at all. **All ninety-five carry `cap7_judgement` and are
         # gated below at margin zero**, which is what actually protects them —
         # this floor's margin of 41 could not protect any 41 named cases and
         # has never claimed to.
@@ -794,7 +794,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap7 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-7 cases collected: $collected"
-          if [ "$collected" -lt 500 ]; then
+          if [ "$collected" -lt 504 ]; then
             echo "::error::the CAP-7 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -1057,9 +1057,11 @@ jobs:
         #   folded table, the tally, the result and every captured line, and
         #   scanned over the arguments of every logging call in the module;
         #   and that a judgement **never costs the pass** — absent, standing
-        #   down, slow, refusing, over budget, unreadable or raising.
+        #   down, slow, refusing, over budget, unreadable or raising, asserted
+        #   at the boundary CAP-7 makes the promise at: a real `Scheduler.tick`
+        #   reporting the main under `ran` rather than under `failed`.
         #
-        # **The margin is deliberately zero: 91 selected, 91 required.** Every
+        # **The margin is deliberately zero: 95 selected, 95 required.** Every
         # case in this gate is the only one asserting its rule, which is the
         # condition under which a zero margin is right — and it is why the
         # CAP-7 floor above was not inflated instead. It also means every case
@@ -1111,7 +1113,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap7_judgement -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-7 judgement cases collected: $collected"
-          if [ "$collected" -lt 91 ]; then
+          if [ "$collected" -lt 95 ]; then
             echo "::error::the judgement gate collected $collected cases; the gap, the third value or the bound has stopped being asserted"
             exit 1
           fi

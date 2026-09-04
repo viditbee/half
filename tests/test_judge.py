@@ -1103,6 +1103,58 @@ def test_a_provider_that_raises_never_costs_the_pass(registry, tmp_path):
 
 @pytest.mark.cap7
 @pytest.mark.cap7_judgement
+@pytest.mark.parametrize(
+    "answer",
+    [
+        RuntimeError("a build mistake"),
+        Failure(Kind.UNAVAILABLE, Reason.TRANSPORT_FAILED),
+        Failure(Kind.OVER_BUDGET, Reason.PER_CALL_BUDGET),
+        Decision(label="something else entirely"),
+    ],
+    ids=["raises", "unreachable", "over-budget", "unreadable"],
+)
+def test_a_failing_judge_leaves_the_tick_reporting_the_main_as_run(
+    answer, registry, tmp_path
+):
+    """Matrix, at the level the sentence is actually about: *the pass completes
+    and the tick reports the main as run.*
+
+    Every case above this one asserts the promise at the ``evaluate`` boundary,
+    which is one rung below where CAP-7 makes it. This drives a real
+    ``Scheduler.tick`` — the file lock, the due-time read, the bounded
+    concurrency, the per-main timeout and the per-main exception handler — so
+    that *"a judgement never costs the pass"* is measured where an operator
+    would read it: in ``TickResult.ran`` rather than in ``TickResult.failed`` or
+    ``timed_out``.
+
+    Parametrised over four of the five ways a judgement fails, because a build
+    that special-cased one of them would pass on that row and fail on the rest.
+    """
+    from half.schedule.clock import FrozenClock
+    from half.schedule.tick import Scheduler
+
+    seeded(registry, tmp_path)
+    asyncio.run(registry.note_pass(
+        MAIN, t=stamp(LAST_PASS + 1),
+        fields={NEXT_PASS_AT: stamp(NOON - 60), ZONE: "UTC", TOLD_ZONE: False,
+                PASS_RAN: True},
+    ))
+    seat, holder = bench(answer)
+    scheduler = Scheduler(
+        registry=registry, mains=(MAIN,), root=Path(tmp_path),
+        clock=FrozenClock(at=NOON),
+        work=TensionPass(ledger=registry, bench=seat),
+    )
+    result = asyncio.run(scheduler.tick())
+
+    assert result.ran == (MAIN,), result
+    assert result.failed == () and result.timed_out == ()
+    assert holder.calls == 1, "the judge was never reached, so nothing was proved"
+    assert registry.tension_table(MAIN) == {}
+
+
+@pytest.mark.cap7
+@pytest.mark.cap7_judgement
 def test_a_deployment_that_equipped_nobody_completes_the_pass_and_mints_nothing(
     registry, tmp_path
 ):
@@ -1626,6 +1678,7 @@ def test_every_judgement_guarantee_this_story_rests_on_still_exists():
         "test_no_log_line_in_the_judgement_can_carry_content",
         "test_an_exception_reaches_the_log_as_a_class_and_never_as_its_own_text",
         "test_a_provider_that_raises_never_costs_the_pass",
+        "test_a_failing_judge_leaves_the_tick_reporting_the_main_as_run",
         "test_a_couple_with_nothing_to_judge_is_counted_and_never_consulted",
         "test_the_order_of_the_two_entries_is_never_used_for_anything",
         "test_the_prompt_carries_two_claims_the_instructions_and_no_third_thing",
