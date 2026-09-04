@@ -161,15 +161,22 @@ class Pipeline:
             skipped_unreadable=unreadable, cursor=newest,
         )
 
-    def _receipt(self, message: Message, body: Scrubbed) -> Receipt:
+    def _receipt(self, message: Message, redacted: Scrubbed) -> Receipt:
         """Build the receipt. Every free-text field goes through the scrubber.
 
         The subject is scrubbed because it is where an OTP most often lives —
         the single most common secret arriving by email — and an earlier
         version wrote it verbatim while reporting the message clean.
+
+        **The parameter is not called ``body``**, and that is not fussiness.
+        ``ingest`` above binds ``body`` to the *unscrubbed* normalised text and
+        this method bound the same name to the *scrubbed* text, so one module
+        used one word for the two things the whole safety property is about —
+        and the guard that says the unscrubbed body is read exactly once could
+        not tell them apart.
         """
         fields = {"subject": scrub(message.subject), "sender": scrub(message.sender)}
-        redactions = dict(body.labels)
+        redactions = dict(redacted.labels)
         for scrubbed in fields.values():
             for label, count in scrubbed.labels.items():
                 redactions[label] = redactions.get(label, 0) + count
@@ -179,7 +186,7 @@ class Pipeline:
                         sorted(redactions), message.external_id)
 
         return Receipt(
-            digest=digest(body.text.encode("utf-8")),
+            digest=digest(redacted.text.encode("utf-8")),
             external_id=message.external_id,
             thread_id=message.thread_id,
             sender=fields["sender"].text,

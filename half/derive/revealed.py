@@ -862,10 +862,14 @@ class Revealed:
         if not verdict.keeps:
             self._tally.refused_by_gates += 1
             if verdict.refused_by:
-                # Gate names from a closed set, never the body (AD-22).
+                # Gate names from a closed set, never the body (AD-22). The
+                # tuple travels whole rather than through ``", ".join(...)``,
+                # because the guard that proves no log line here can carry
+                # content reads the *arguments* of a logging call, and a call
+                # whose argument is a method call is one it cannot see through.
                 logger.debug(
                     "main=%s: a body was refused by %s",
-                    main_id, ", ".join(verdict.refused_by),
+                    main_id, verdict.refused_by,
                 )
             return None
 
