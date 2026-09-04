@@ -61,6 +61,7 @@ from half.errors import HalfError, ModelError
 from half.governance import ladder
 from half.ingest.pipeline import Ingested, Pipeline
 from half.ingest.port import MailSource
+from half.interrupt.gate import Interrupt
 from half.store.ops import Op
 from half.model.anthropic import AnthropicProvider
 from half.model.anthropic_transport import SDKTransport
@@ -160,6 +161,26 @@ class Wiring:
     #: *what makes a claim worth keeping* has one definition in this process as
     #: well as one in the tree.
     revealed: Revealed
+    #: The rule that governs speaking out of turn (CAP-10, story 5c). Built
+    #: with **no urgency source**, and that is the whole of what this story
+    #: ships: the mode, the platform, the ceiling, the interruption's own bound
+    #: and each wanting's own clock are all exercised on every pass, nobody is
+    #: asked whether an option is closing, and **this build never interrupts
+    #: anybody**.
+    #:
+    #: That is deliberate rather than unfinished. Half cannot currently know
+    #: that an option is closing — nothing in any record carries a horizon —
+    #: and a product that can interrupt before it has a rule for interrupting
+    #: is worse than one that cannot interrupt yet. Story 5b shipped a module
+    #: with no production caller and waited a story to become real; this does
+    #: the same on purpose, because the restraint is the valuable half.
+    #:
+    #: Held here rather than inside the scheduler for the reason ``voice`` and
+    #: ``judges`` are: *"the shipped build wires no urgency source"* has to be
+    #: assertable **by value** rather than by finding a keyword in the source,
+    #: which is how story 6d's identical claim passed with the value set to
+    #: ``None`` for entirely the wrong reason.
+    interrupt: Interrupt
 
 
 def build(config: Config, token: str) -> Wiring:
@@ -269,13 +290,27 @@ def build(config: Config, token: str) -> Wiring:
     # one bench in this process and not two.
     gates = derivers(config, secrets)
 
+    # The rule that governs speaking out of turn (CAP-10, story 5c), wired with
+    # **no urgency source**. Nothing runs it: it is handed to no scheduler and
+    # to no runtime, because an interruption needs a judge and this build has
+    # none — so the honest composition is one that holds the rule and never
+    # applies it. What is not honest, and what this replaces, is a product with
+    # no rule at all, in which the first surface that wants to interrupt
+    # invents its own.
+    #
+    # Built from this wiring's own channel and this wiring's own composer, so
+    # an interruption that ever does happen goes out on the same platform door
+    # and through the same voice — the gate, the tripwire and the fallback
+    # ladder — as the morning and the turn.
     return Wiring(channel=channel, registry=registry, secrets=secrets,
                   sources=sources, scheduler=scheduler, mornings=mornings,
                   second=second_opinion(config, secrets),
                   questions=QuestionEngine(ledger=registry),
                   corrections=widening(config, secrets), voice=voice,
                   judges=bench, derivers=gates,
-                  revealed=readers(config, secrets, gates))
+                  revealed=readers(config, secrets, gates),
+                  interrupt=Interrupt(channel=channel, urgency=None,
+                                      voice=voice))
 
 
 def readers(

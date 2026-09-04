@@ -70,7 +70,9 @@ from half.loops.ledger import read as read_loops
 from half.loops.timescale import PERIOD_DAYS, Silence, Timescale, moment
 from half.retrieval.port import Candidate as RankedBelief
 from half.schedule.clock import Now
-from half.surface.choose import NAGGING, touchable
+from half.surface.choose import NAGGING
+from half.surface.choose import REASONS as BOUND_REASONS
+from half.surface.choose import touchable
 from half.surface.morning import (
     CRISIS,
     NOTHING_MAY_BE_SAID,
@@ -219,10 +221,19 @@ CANNOT_SAY: Final[str] = "cannot-say"
 #: ``half.surface.morning.REASONS`` gives — and read from ``voice.gate.SILENCES``
 #: rather than spelled again, so a reason added there cannot become one this
 #: module silently fails to count.
+#:
+#: **And the per-loop bound's own set joins them whole** (``choose.REASONS``),
+#: which is a correction: this module reports the bound's *first* refusal, and
+#: that refusal is ``nagging`` only on the day a wanting was recently raised.
+#: A finished wanting answers ``not-live``, one with no timescale answers
+#: ``no-timescale``, and a set that named only ``NAGGING`` would have let three
+#: of the four out through a closed vocabulary — which is a caller logging a
+#: value this build has no name for.
 REASONS: Final[frozenset[str]] = frozenset(
     {
-        CRISIS, CAPPED, JUST_INTERRUPTED, NOTHING_TO_WEIGH, NAGGING,
-        NOTHING_CLOSING, NO_JUDGE, NOTHING_MAY_BE_SAID, UNSENT, UNREADABLE,
+        CRISIS, CAPPED, JUST_INTERRUPTED, NOTHING_TO_WEIGH, NOTHING_CLOSING,
+        NO_JUDGE, NOTHING_MAY_BE_SAID, UNSENT, UNREADABLE,
+        *BOUND_REASONS,
         *SILENCES,
         *(str(answer) for answer in Reachability if not answer.may_send_freeform),
     }
