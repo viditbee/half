@@ -1288,6 +1288,154 @@ jobs:
           fi
           uv run --locked --extra dev pytest -q -m cap5_structure
 
+      - name: 'CAP-3: no claim from a single cluster of mentions'
+        # The gate for the capability's leading sentence. CAP-3 says Half
+        # *"derives claims about what the main actually does"* and that
+        # *"no claim [is] admitted from a single non-independent cluster of
+        # mentions"* — and until story 15b ingestion captured receipts and
+        # derived nothing, so the revealed ledger was empty and story 3's
+        # union-find, built precisely to make that second sentence true, had
+        # never once decided anything outside its own unit tests.
+        #
+        # What it protects, each rule with no second case:
+        #
+        #   that admission counts **independent groups and never supports**.
+        #   Ten messages sharing a thread are one group and admit nothing; two
+        #   bodies with the same content are one group and admit nothing; a
+        #   single message admits nothing. A build that counted supports would
+        #   admit all three, which is the failure story 3 predicted — the belief
+        #   set inflates with echoes and *bounded* fails in the first noisy
+        #   month;
+        #   that the **count on a written claim is the union-find's answer**,
+        #   which is a separate rule and has a separate case. Three sources in
+        #   two groups is the only shape where the two numbers differ, so every
+        #   two-source row above is green either way and none of them is asked
+        #   to carry this;
+        #   that the two union-find identities are both **load-bearing**. The
+        #   thread identity is what collapses a reply chain and the content
+        #   identity is what collapses a forward, and they are separable only
+        #   because the source id is the message id rather than the digest —
+        #   were it the digest, dropping the content identity would be green;
+        #   that a **body reaches no provider before `scrub`, under any
+        #   ordering including a raise**. Asserted three ways, none of them a
+        #   code review: the seam carries the scrubber's own output type and the
+        #   reader refuses anything else; the one read of the unscrubbed body in
+        #   `half/ingest/pipeline.py` is found in that file's syntax tree and
+        #   required to be an argument of `scrub`; and a `scrub` that raises
+        #   produces no value to hand on, driven rather than argued;
+        #   that the **body persists nowhere** — not on disk, not in a log line,
+        #   not in the tally, not in a candidate and not in an admitted claim,
+        #   hunted as a sentinel and as a real secret through every byte written
+        #   and every request the provider saw;
+        #   that the four gates are **15a's**, asserted by identity on the bench
+        #   and by this module defining none of their labels;
+        #   that ingestion stays **idempotent at both ends** — the pipeline
+        #   reads no body twice, and a later pull reaching the same conclusion
+        #   writes no second claim;
+        #   and that it is **worldwide**: five scripts, each admitting a claim,
+        #   with the rendered request compared between them, and a claim that is
+        #   the same constant in all five because it is Half's own word rather
+        #   than the mail's.
+        #
+        # **The margin is deliberately zero: 28 selected, 28 required.** Every
+        # case in this gate is the only one asserting its rule, which is the
+        # condition under which a zero margin is right — and it is why no
+        # existing floor was inflated instead. It also means every case added
+        # here owes an edit to this number, which is why `cap3` is applied **per
+        # case** rather than as a module-wide `pytestmark`.
+        #
+        # **Twenty-four mutations were run against these before this gate was
+        # written**, each with a purged bytecode cache on both sides, a green
+        # baseline asserted either side of it, every anchor asserted unique, and
+        # the failing case *names* recorded rather than an exit code. Every one
+        # is red. The ones worth naming, with how many cases caught each:
+        #
+        #   admission on a count of supports rather than independent groups —
+        #   two, and they are the thread and the forward;
+        #   `independent` written as `len(support)` — one, and it is the only
+        #   case in the file where those two numbers differ;
+        #   the threshold lowered to one — **caught at import**: the module
+        #   refuses itself, so four files fail to collect. The probe parses
+        #   `ERROR` lines as well as `FAILED` ones, which is 15a's lesson: a
+        #   module that refuses itself produces collection errors, and a harness
+        #   reading only `FAILED` reports it green;
+        #   the content identity dropped from a source — one; the thread
+        #   identity dropped — two;
+        #   the unscrubbed body handed to the consumer inside a forged
+        #   `Scrubbed` — three, including the syntax-tree guard, which is the
+        #   one that catches a forgery rather than a reordering;
+        #   the same body handed over as a bare `str` — eighteen; derivation
+        #   moved in front of the scrub entirely — nineteen;
+        #   the reader no longer refusing a body that is not scrubber output —
+        #   one; the body written into a log line — two;
+        #   15a's gates no longer consulted — one; the reader no longer holding
+        #   15a's bench in the shipped composition — one;
+        #   the claim id built from its support set rather than its label —
+        #   three, which is the near-duplicate a deferred accumulation rule
+        #   would have shipped.
+        #
+        # **Two came back green and both were the same defect**, recorded here
+        # because a probe that finds nothing is indistinguishable from a rule
+        # nobody asserted. Both were a guard that cannot fire because another
+        # rule already forbids its case: `Claim`'s support-size check, which the
+        # count checks already cover — the cases now assert the refusal's own
+        # message rather than that something raised — and the append's cross-run
+        # guard, which the re-ingest case never reached because the pipeline had
+        # already skipped every message. A second case reaches it.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap3 -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-3 admission cases collected: $collected"
+          if [ "$collected" -lt 28 ]; then
+            echo "::error::the CAP-3 gate collected $collected cases; the independence threshold, the honest count, the scrub ordering or the body scan has stopped being asserted"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap3
+
+      - name: 'CAP-3: the structural rules the revealed ledger rests on'
+        # A second gate over a subset, for the reason the CAP-5, CAP-12 and
+        # CAP-4 subset gates exist: a floor on the superset cannot stop this
+        # half being hollowed out, because the whole of it could be deleted with
+        # the step above still green and still above its own floor.
+        #
+        # What it covers, each rule with no second case: that the unscrubbed
+        # body is read **exactly once** in the pipeline and that read is an
+        # argument of `scrub`, counted rather than `all`-ed so a renamed
+        # attribute is a dead anchor that fails rather than a guard that watches
+        # nothing; that the consumer is handed the name `scrub` bound; that the
+        # reader **refuses** anything that is not scrubber output, and accepts
+        # what is, so the case is not red either way; that a `scrub` which
+        # raises reaches no provider; that the threshold is two and **no call
+        # site can lower it**, asserted as the absence of a parameter rather
+        # than as a value; that a claim which could not be true cannot be
+        # constructed, in five shapes, each asserting the refusal that named it;
+        # that every import-time guard has a **bypass case**, so a mutation of
+        # the data those guards protect is red *by name* somewhere rather than
+        # only red everywhere at once — and that those same guards pass on the
+        # shipped constants, which is the other half a bypass case needs; that
+        # the holder **cannot author a claim**, checked as an allowlist; that
+        # the bench is sealed; that the four gates are 15a's by identity and are
+        # not respelled here; that the tier is pinned **and** read from
+        # `half/derive/revealed.py` by the composition root, because a case can
+        # assert that a constant is bound without asserting that it is used;
+        # that no logging call in the module can carry content, scanned over the
+        # *arguments* of every logging call; and that nothing here reads a
+        # clock, opens a store or writes a record.
+        #
+        # **The margin is zero here too, and for the same reason**: every case
+        # is the only one asserting its rule.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap3_structure -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-3 structural cases collected: $collected"
+          if [ "$collected" -lt 33 ]; then
+            echo "::error::the CAP-3 structural gate collected $collected cases; the scrub ordering, the threshold that nothing can lower, the closed vocabulary or the narrow holder has stopped being asserted"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap3_structure
+
       - name: 'CAP-11: a correction removes the belief, and never on inference alone'
         # The gate for the capability that lets a main disagree with Half. The
         # ops have been in the closed vocabulary since story 1 and the fold has
