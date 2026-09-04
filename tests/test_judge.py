@@ -368,6 +368,25 @@ def test_a_second_minting_label_refuses_the_module(monkeypatch):
 
 @pytest.mark.cap7
 @pytest.mark.cap7_judgement
+def test_a_label_set_with_nowhere_to_put_doubt_refuses_the_module(monkeypatch):
+    """The third value's own bypass case, and it was missing until a mutation
+    said so.
+
+    Collapsing ``cannot_say`` into ``no`` refuses this module at import — which
+    is red, and is red everywhere at once, and therefore names nothing. This is
+    the case that says *what* was wrong: a judge with nowhere to put doubt makes
+    a model that is unsure answer *no*, and then a suite asserting *"nothing was
+    minted"* passes whether the judge answered or was never reached at all.
+    """
+    monkeypatch.setattr(
+        judging, "ANSWER_FOR_LABEL", {**ANSWER_FOR_LABEL, CANNOT_SAY: False},
+    )
+    with pytest.raises(JudgeError, match="cannot say"):
+        judging._check_constants()
+
+
+@pytest.mark.cap7
+@pytest.mark.cap7_judgement
 @pytest.mark.parametrize("label", [NO_TENSION, CANNOT_BOTH_BE_TRUE])
 def test_agreement_and_the_unrelated_pair_answer_no(label, registry, tmp_path):
     """Matrix: *agreement* and *unrelated*. Both are ``no_tension`` to the
@@ -1585,6 +1604,7 @@ def test_every_judgement_guarantee_this_story_rests_on_still_exists():
         "test_the_contradiction_has_a_home_that_is_not_the_minting_label",
         "test_a_label_set_that_minted_a_contradiction_refuses_the_module",
         "test_a_second_minting_label_refuses_the_module",
+        "test_a_label_set_with_nowhere_to_put_doubt_refuses_the_module",
         "test_a_model_that_cannot_say_answers_none_and_is_not_a_failure",
         "test_an_answered_cannot_say_never_arms_the_breaker",
         "test_a_degraded_or_declining_provider_answers_none_and_never_no",

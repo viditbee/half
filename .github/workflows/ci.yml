@@ -769,13 +769,13 @@ jobs:
         # `cap7_minting` and are gated below at margin zero, which is again
         # what actually protects them.
         #
-        # **Story 9e adds 90 and the floor moves again, from 409 to 499, so the
-        # margin stays 41.** 540 selected. They are the judgement itself: the
+        # **Story 9e adds 91 and the floor moves again, from 409 to 500, so the
+        # margin stays 41.** 541 selected. They are the judgement itself: the
         # gap that is never the truth and the contradiction that answers no,
         # the third value that cannot collapse into the second, the bound
         # asserted against the tick's own timeout, two claims in five scripts
         # and in two different ones, and the claim that reaches a provider and
-        # no other place at all. **All ninety carry `cap7_judgement` and are
+        # no other place at all. **All ninety-one carry `cap7_judgement` and are
         # gated below at margin zero**, which is what actually protects them —
         # this floor's margin of 41 could not protect any 41 named cases and
         # has never claimed to.
@@ -794,7 +794,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap7 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-7 cases collected: $collected"
-          if [ "$collected" -lt 499 ]; then
+          if [ "$collected" -lt 500 ]; then
             echo "::error::the CAP-7 gate collected $collected cases; it has stopped asserting"
             exit 1
           fi
@@ -1059,7 +1059,7 @@ jobs:
         #   and that a judgement **never costs the pass** — absent, standing
         #   down, slow, refusing, over budget, unreadable or raising.
         #
-        # **The margin is deliberately zero: 90 selected, 90 required.** Every
+        # **The margin is deliberately zero: 91 selected, 91 required.** Every
         # case in this gate is the only one asserting its rule, which is the
         # condition under which a zero margin is right — and it is why the
         # CAP-7 floor above was not inflated instead. It also means every case
@@ -1069,24 +1069,49 @@ jobs:
         # the other shape, where every case added to a file silently owes a
         # workflow edit nobody remembers.
         #
-        # Eleven mutations were run against these before this gate was written,
-        # each with a purged bytecode cache, a green baseline asserted either
-        # side of it, and the failing case names recorded rather than an exit
-        # code: the contradiction label mapped to `True`; the contradiction
-        # label deleted from the set; `cannot_say` mapped to `False`; an
-        # answered `cannot_say` armed the breaker; the label mapping consulted
-        # with `.get(label, False)` instead of a membership test; the bound
-        # raised to the morning composer's twenty seconds; the cross-constant
-        # check deleted; the breaker's skip counted as a consultation; the
-        # separator dropped so the two claims ran together; `claims_of`
-        # lower-casing both claims; and the exception logged with its own text.
-        # Every one is red, and none of them is red only here.
+        # **Thirteen mutations were run against these before this gate was
+        # written**, each with a purged bytecode cache on both sides, a green
+        # baseline asserted either side of it, every anchor asserted unique, and
+        # the failing case *names* recorded rather than an exit code. Every one
+        # is red. In order, with what caught it:
+        #
+        #   the contradiction label mapped to `True` — **caught at import**: the
+        #   module refuses itself, so the whole suite fails to collect;
+        #   `cannot_say` mapped to `False` — **caught at import**, same way;
+        #   the contradiction label deleted from the set entirely — four cases;
+        #   an answered `cannot_say` arming the breaker — one;
+        #   an unknown label coerced with `.get(label, False)` instead of a
+        #   membership test — one;
+        #   the bound raised to the morning composer's twenty seconds — three;
+        #   the cross-constant check replaced by `if False` — one;
+        #   `SHARE_OF_TICK` widened to the whole slot — three;
+        #   the breaker's skip counted as a consultation — one;
+        #   the separator dropped so the two claims ran together — one;
+        #   `claims_of` lower-casing both claims — four;
+        #   the exception logged with its own text instead of its class — two;
+        #   and the bench bypassed in `half/consolidate/pass_.py`, so no judge is
+        #   ever resolved for anybody — nine.
+        #
+        # None is red only in one place by accident, and none is red anywhere
+        # outside this file — which is the second half of what a subset gate has
+        # to be true for.
+        #
+        # **The two import-time refusals are the interesting rows**, and they
+        # are the reason this gate has three cases it would not otherwise have.
+        # A module that refuses itself is red everywhere at once and therefore
+        # *names* nothing: a reviewer reading that build learns the tree is
+        # broken, not that a contradiction was about to be minted. So each of
+        # those guards also has a bypass case that mutates the mapping under
+        # `monkeypatch` and asks the module to accept itself
+        # (`..._refuses_the_module`), which is red **by name** inside an
+        # otherwise green tree. The `cannot_say` one was missing until the
+        # mutation run said so.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap7_judgement -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-7 judgement cases collected: $collected"
-          if [ "$collected" -lt 90 ]; then
+          if [ "$collected" -lt 91 ]; then
             echo "::error::the judgement gate collected $collected cases; the gap, the third value or the bound has stopped being asserted"
             exit 1
           fi
