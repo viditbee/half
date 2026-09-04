@@ -48,7 +48,20 @@ from half.derive.claim import (
     PER_PASS_MICRO_USD as DERIVE_PER_PASS_MICRO_USD,
     Derivers,
 )
+from half.derive.revealed import (
+    CLASSIFY_TIER as REVEALED_TIER,
+    PER_CALL_MICRO_USD as REVEALED_PER_CALL_MICRO_USD,
+    PER_PASS_MICRO_USD as REVEALED_PER_PASS_MICRO_USD,
+    Revealed,
+    Run,
+    consumer_for,
+    fields_of,
+)
 from half.errors import HalfError, ModelError
+from half.governance import ladder
+from half.ingest.pipeline import Ingested, Pipeline
+from half.ingest.port import MailSource
+from half.store.ops import Op
 from half.model.anthropic import AnthropicProvider
 from half.model.anthropic_transport import SDKTransport
 from half.model.budget import Budget
@@ -138,6 +151,15 @@ class Wiring:
     #: gate failed would otherwise end with nothing anywhere saying so, which
     #: looks exactly like a week in which nobody said anything worth keeping.
     derivers: Derivers
+    #: Who decides what a main's *mail* is worth keeping (CAP-3, story 15b).
+    #: Always constructed and possibly empty, and an empty one is exactly the
+    #: state story 3 shipped: receipts are captured, no body is persisted, and
+    #: the revealed ledger stays empty.
+    #:
+    #: Holds ``derivers`` above rather than a second copy of 15a's gates, so
+    #: *what makes a claim worth keeping* has one definition in this process as
+    #: well as one in the tree.
+    revealed: Revealed
 
 
 def build(config: Config, token: str) -> Wiring:
@@ -241,12 +263,158 @@ def build(config: Config, token: str) -> Wiring:
         ),
     )
 
+    # Who decides whether a message was worth keeping (CAP-5, 15a), built here
+    # because the reader below holds it: the gates that decide whether a *body*
+    # is worth a claim are the same four, imported and not restated, so there is
+    # one bench in this process and not two.
+    gates = derivers(config, secrets)
+
     return Wiring(channel=channel, registry=registry, secrets=secrets,
                   sources=sources, scheduler=scheduler, mornings=mornings,
                   second=second_opinion(config, secrets),
                   questions=QuestionEngine(ledger=registry),
                   corrections=widening(config, secrets), voice=voice,
-                  judges=bench, derivers=derivers(config, secrets))
+                  judges=bench, derivers=gates,
+                  revealed=readers(config, secrets, gates))
+
+
+def readers(
+    config: Config, secrets: FileSecretStore, gates: Derivers
+) -> Revealed:
+    """The revealed-ledger readers, for the mains a deployment has equipped
+    (CAP-3, story 15b).
+
+    Built beside ``derivers``, ``judges``, ``second_opinion``, ``widening`` and
+    ``voices`` and on exactly their terms — a per-main narrow holder, its own
+    budget, every failure leaving that main unequipped and the process running —
+    with two differences worth stating.
+
+    **It is handed 15a's bench rather than building a second one.** What makes a
+    claim worth keeping has one definition in this tree
+    (``half.derive.gates``); this path supplies the ledger and the evidence.
+    Passing the object rather than constructing another is what makes *"the four
+    gates are 15a's"* true by identity in the shipped process, which is a thing
+    a test can assert without reading either file.
+
+    **The tier is pinned for everybody**, as it is on the crisis, correction,
+    judgement and turn-derivation paths. A mailbox pull is the largest recurring
+    spend of the five — it is one reading per body of somebody's archive — so
+    SPEC's constraint that the recurring spend runs on a cheaper tier than
+    conversation *because the free tier depends on that gap* binds hardest here.
+    And there is nothing for a better tier to buy: what comes back is one label
+    from a closed set.
+
+    **Its own provider, and therefore its own ledger.** A provider's spend is
+    shared by everything it hands out, so reusing the turn deriver's would let a
+    mailbox pull draw down the budget a main's own messages are judged on.
+
+    **This is the sixth copy of this loop in this file**, recorded rather than
+    hidden for the reason ``judges`` records the fourth and ``derivers`` the
+    fifth. The shape ``voices`` named — ``equipped(config, secrets, *,
+    tier_for, budget, take, unequipped)`` — is still Ask-First, and this story's
+    subject is the independence gate rather than the composition root.
+    """
+    holders: dict[str, Classifier] = {}
+    for main_id in config.mains.values():
+        try:
+            provider = AnthropicProvider(
+                SDKTransport.from_secrets(secrets, main_id),
+                tiers=Tiers.parse({main_id: REVEALED_TIER}),
+                budget=Budget(
+                    per_call_micro_usd=REVEALED_PER_CALL_MICRO_USD,
+                    per_pass_micro_usd=REVEALED_PER_PASS_MICRO_USD,
+                ),
+            )
+            holders[main_id] = provider.classifier()
+        except Exception as exc:  # noqa: BLE001 - a boot must not die here
+            # No key, an unreadable credential file, an unknown tier, a missing
+            # SDK. Each is a deployment whose mail is captured as receipts and
+            # never read, which is story 3's shipped behaviour exactly. The
+            # class only — a provider's own message can quote what it was sent
+            # (AD-22).
+            logger.warning(
+                "main=%s has no usable model (%s); nothing is derived from "
+                "their mail", main_id, type(exc).__name__,
+            )
+    try:
+        return Revealed(holders, gates=gates)
+    except Exception as exc:  # noqa: BLE001 - nor here
+        logger.error(
+            "the revealed reader could not be assembled (%s); no claim is "
+            "derived from any mailbox", type(exc).__name__,
+        )
+        return Revealed(gates=gates)
+
+
+async def ingest_mail(
+    wiring: Wiring, *, main_id: str, source: MailSource, since: str | None = None
+) -> Ingested:
+    """Pull one mailbox, and admit what independent sources support (CAP-3).
+
+    **The whole of the story's shipped path, in one function**, and it is here
+    because it is composition: the pipeline, the reader, the run and the append
+    are four pieces that each belong to a different package, and the only place
+    that may hold all four is this one.
+
+    The order is the safety property and it is the pipeline's, not this
+    function's: normalise, scrub, hand the ``Scrubbed`` on, write the receipt.
+    What this adds is the two ends — a ``Run`` to gather one pull's candidates,
+    and the append of whatever ``Run.admitted`` returns.
+
+    **Admission happens after the pull and needs no body**, which is why it can:
+    by then every body is out of scope, and what is left is a label from a
+    closed set, a message id, a thread id and a content digest. Derivation
+    cannot be a later pass; *admission* is not derivation.
+
+    **The claim enters at the weakest rung and cites its sources** (CAP-5,
+    AD-28). The rung comes from ``ladder.admitted`` and never from a literal
+    here, so there is no spelling of this call that could mint an `assert`; the
+    support set names the messages and ``independent`` is what the union-find
+    returned.
+
+    **Idempotent on both ends.** The pipeline skips a message whose digest it
+    already holds, so a second pull of the same mailbox reads no body twice; and
+    a claim already in the ledger is left exactly as it is, which is how
+    cross-run accumulation is deferred without a matching rule.
+
+    Never raises for a claim: a failure to append costs the claims and never the
+    receipts, which are already durable.
+    """
+    run = Run()
+    pipeline = Pipeline(
+        source, wiring.sources[main_id],
+        consumer=consumer_for(wiring.revealed, main_id=main_id, into=run),
+    )
+    result = await pipeline.ingest(since=since)
+
+    claims = run.admitted()
+    wiring.revealed.count_claims(claims)
+    if not claims:
+        return result
+    try:
+        async with wiring.registry.acquire(main_id) as actor:
+            held = actor.store.state().beliefs
+            for claim in claims:
+                if claim.belief_id in held:
+                    # Already admitted by an earlier run. Left alone rather than
+                    # restated: adding this run's support to it is cross-run
+                    # accumulation, which needs a rule for deciding two derived
+                    # claims are the same claim and is deferred.
+                    continue
+                actor.store.record(
+                    Op.ASSERT, claim.belief_id, result.cursor or "",
+                    **fields_of(claim),
+                    **ladder.admitted(support=list(claim.support)),
+                )
+    except Exception as exc:  # noqa: BLE001 - the claims, never the receipts
+        # The class only, never the exception's own text (AD-22): a store error
+        # can quote the record it refused, and a record here names messages.
+        logger.error(
+            "a revealed claim could not be recorded for main=%s (%s); the "
+            "receipts are captured and the run is complete",
+            main_id, type(exc).__name__,
+        )
+    return result
 
 
 def derivers(config: Config, secrets: FileSecretStore) -> Derivers:
@@ -689,6 +857,12 @@ async def serve(config: Config, token: str) -> None:
         # saying so, which looks exactly like a week in which nobody wrote
         # anything worth keeping.
         wiring.derivers.flush()
+        # And what the mailbox reader did — counts only (AD-22). A process that
+        # pulled an archive and admitted nothing from it would otherwise end
+        # with nothing anywhere saying so, which looks exactly like a mailbox
+        # with nothing in it — and is far more likely to be a hundred candidates
+        # that never found a second independent group.
+        wiring.revealed.flush()
         wiring.registry.close()
 
 

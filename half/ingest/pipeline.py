@@ -15,6 +15,22 @@ Ordering is the safety property: normalise, scrub, *then* persist. Anything
 that reaches the store has passed the gate — enforced by
 ``test_every_receipt_field_is_scrubber_output`` rather than by the current
 shape of one function.
+
+**Since story 15b the same ordering guards a second exit, and a wider one.** A
+consumer may now hand the text to a model provider, so *normalise, scrub, then
+hand on* is what stands between a main's unredacted mail and somebody else's
+machine — and a reordering would send it there with nothing failing. Three
+things hold it, none of them a code review:
+
+* the consumer is handed the **``Scrubbed`` object ``scrub`` returned**, not a
+  bare ``str``, so the seam through which a body leaves ingestion carries the
+  scrubber's own output type and a reader can refuse anything else
+  (``half.derive.revealed.Revealed.observe`` does);
+* ``body.text`` — the unscrubbed text — is read **exactly once in this module**,
+  as the argument of ``scrub``, which ``tests/test_revealed.py`` asserts over
+  this file's syntax tree rather than by reading it;
+* and a ``scrub`` that *raises* produces no ``Scrubbed`` to hand on, so no
+  exception path reaches a consumer with a body either.
 """
 
 from __future__ import annotations
@@ -31,10 +47,19 @@ from half.store.sources import SourceStore, digest
 
 logger = logging.getLogger(__name__)
 
-#: A consumer receives the scrubbed text exactly once, in memory, and returns
+#: A consumer receives the scrubbed body exactly once, in memory, and returns
 #: whatever should be kept. Claim derivation registers one; with none
 #: registered nothing beyond the receipt is retained.
-Consumer = Callable[["Receipt", str], Awaitable[None]]
+#:
+#: **It receives the ``Scrubbed`` and not its text**, which is the story 15b
+#: change and is a safety property rather than a convenience. A consumer may
+#: send what it is given to a model provider; typing the seam with the
+#: scrubber's own output type is what lets the consumer refuse a body that has
+#: not been through it, so a reordering of scrub and derive fails at the seam
+#: instead of arriving at a provider. It also hands the consumer
+#: ``empty_after_redaction`` — a body that was nothing but secrets, which must
+#: derive nothing at all.
+Consumer = Callable[["Receipt", "Scrubbed"], Awaitable[None]]
 
 #: Every receipt field that carries free text and must therefore be scrubbed.
 SCRUBBED_FIELDS = ("subject", "sender")
@@ -119,9 +144,17 @@ class Pipeline:
             receipts.append(receipt)
 
             if self.consumer is not None:
-                # The one place the text is handed on. It is not stored, and
-                # goes out of scope when this iteration ends.
-                await self.consumer(receipt, scrubbed.text)
+                # **The one place the body is handed on**, and the only moment
+                # it exists at all: it is not stored, and it goes out of scope
+                # when this iteration ends. What travels is ``scrubbed`` — the
+                # object ``scrub`` returned above — and never ``body.text``,
+                # which is read exactly once in this module and only there.
+                #
+                # After the receipt is durable rather than before it, so a
+                # provider that is slow, failing or absent cannot cost this
+                # message the receipt story 3 promised. A crash between the two
+                # loses a claim and never evidence.
+                await self.consumer(receipt, scrubbed)
 
         return Ingested(
             receipts=receipts, already_seen=seen,

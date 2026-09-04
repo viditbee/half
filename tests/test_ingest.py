@@ -13,6 +13,7 @@ from half.errors import ChannelError
 from half.ingest.gmail import GmailSource, normalize
 from half.ingest.pipeline import Pipeline, Receipt
 from half.ingest.port import MailSource, Message
+from half.ingest.scrub import Scrubbed
 from half.store.sources import LocalSourceStore, digest
 
 SECRET = "".join(("AKIA", "IOSFODNN7EXAMPLE"))
@@ -76,10 +77,15 @@ def test_no_body_text_ever_reaches_disk(store, tmp_path):
 
 
 def test_the_consumer_receives_the_scrubbed_body_in_memory(store):
+    """Story 15b types this seam with the scrubber's own output rather than
+    with ``str``: a consumer may hand what it is given to a model provider, and
+    the type is what lets it refuse a body that never went through ``scrub``.
+    So the assertion is over ``Scrubbed`` and the text inside it."""
     seen: list[tuple[str, str]] = []
 
-    async def consume(receipt, text):
-        seen.append((receipt.external_id, text))
+    async def consume(receipt, body):
+        assert isinstance(body, Scrubbed)
+        seen.append((receipt.external_id, body.text))
 
     run(FakeMail([message(0, "lunch at 1pm?")]), store, consumer=consume)
     assert seen == [("m0", "lunch at 1pm?")]
