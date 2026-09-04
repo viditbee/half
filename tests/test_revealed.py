@@ -2259,19 +2259,56 @@ def test_the_writers_tier_is_pinned_and_is_read_from_its_own_module():
 
 @pytest.mark.cap3_particular
 def test_the_shipped_composition_equips_a_writer_beside_every_reader():
-    """A surface reachable only from a test is a surface nobody has run.
-    ``build`` is driven, and the reader it produces is asked whether it can
-    write for the main the deployment named."""
+    """A surface reachable only from a test is a surface nobody has run, and
+    this project has shipped three of them.
+
+    **The obvious version of this case is unfailable and was found to be**: a
+    boot with no credentials equips neither holder, so *the reader cannot write
+    either* is green for a build whose composition root passes no writers at
+    all — probed, and green. So the wiring is asserted over
+    ``half/__main__.py``'s syntax tree, where it is visible without a key, and
+    the runtime half is kept only for what it can actually say: that the
+    function exists, is reachable, and survives a boot with nothing to equip.
+    """
     import tempfile
+
+    tree = ast.parse((ROOT / "half/__main__.py").read_text("utf-8"))
+    equipping = [node for node in ast.walk(tree)
+                 if isinstance(node, ast.FunctionDef) and node.name == "readers"]
+    assert len(equipping) == 1, "the anchor is dead: readers() was renamed"
+    benches = [node for node in ast.walk(equipping[0])
+               if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+               and node.func.id == "Revealed"]
+    assert benches, "the composition root builds no reader bench at all"
+    equipped = [node for node in benches
+                if any(kw.arg == "writers" and isinstance(kw.value, ast.Call)
+                       and isinstance(kw.value.func, ast.Name)
+                       and kw.value.func.id == "writers"
+                       for kw in node.keywords)]
+    assert equipped, (
+        "the shipped reader bench is built with no writers, so no deployment "
+        "can ever write a claim and every test of one is a test of a double"
+    )
+
+    building = [node for node in ast.walk(tree)
+                if isinstance(node, ast.FunctionDef) and node.name == "writers"]
+    assert len(building) == 1
+    taken = ast.unparse(building[0])
+    assert "provider.generator()" in taken, (
+        "the writer bench is not handed the port's narrow generator"
+    )
+    assert "provider.classifier()" not in taken, (
+        "the writer bench is handed something that can also classify"
+    )
 
     with tempfile.TemporaryDirectory() as root:
         config = load({ROOT_ENV: root, MAINS_ENV: f"123:{MAIN}"})
         wiring = build(config, token="123:fake")
         try:
-            # No key is present, so neither holder is equipped — what is being
-            # asserted is that the *path* exists and answers, in the same shape
-            # for both, rather than that this environment has credentials.
-            assert wiring.revealed.holds(MAIN) is wiring.revealed.writes(MAIN)
+            # No key is present, so nobody is equipped. What this half says is
+            # that a boot with nothing to equip answers rather than raising —
+            # the fail-open direction every other bench in this file has.
+            assert wiring.revealed.writes(MAIN) in (True, False)
         finally:
             wiring.registry.close()
 

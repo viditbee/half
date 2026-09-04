@@ -1630,7 +1630,12 @@ jobs:
         #   because a confirmation shown the whole group answers a question
         #   whose answer is already yes;
         #   that the writing tier is pinned **and** read from
-        #   `half/derive/particular.py` by the composition root;
+        #   `half/derive/particular.py` by the composition root, and that the
+        #   root actually **hands the bench its writers** — asserted over the
+        #   syntax tree, because the obvious runtime version of that case is
+        #   unfailable and was probed green: a boot with no credentials equips
+        #   neither holder, so *the reader cannot write either* is true of a
+        #   build whose composition root passes no writers at all;
         #   that every import-time guard in that module has a **bypass case**
         #   and that the shipped constants pass them;
         #   and that nothing in it logs, reads a clock, opens a store or writes
