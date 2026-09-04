@@ -1037,8 +1037,24 @@ def test_the_holder_cannot_author_a_claim():
     class Callable_(Holder):
         async def __call__(self, work): ...
 
+    class Reaching(Holder):
+        """The one a **denylist** walks straight past.
+
+        Story 6d's review found this shape and it is the reason the check is an
+        allowlist: a denylist names the methods somebody thought to forbid, and
+        an object that can ``classify`` and also do *anything else* is not the
+        narrow holder — whatever that something else happens to be called. A
+        mutation run against this case with the allowlist replaced by a denylist
+        of ``generate``/``submit``/``collect`` left the three assertions above
+        green.
+        """
+
+        async def chat(self, work): ...
+
     with pytest.raises(DeriveError, match="can also generate"):
         Derivers({MAIN: Wider()})
+    with pytest.raises(DeriveError, match="can also chat"):
+        Derivers({MAIN: Reaching()})
     with pytest.raises(DeriveError, match="itself callable"):
         Derivers({MAIN: Callable_()})
     with pytest.raises(DeriveError, match="cannot classify"):
