@@ -2,9 +2,9 @@
 title: 'Story 20 — The order that was promised'
 type: 'fix'
 created: '2026-09-05'
-status: 'done'
+status: 'in-progress'
 baseline_commit: 'e218117'
-review_loop_iteration: 0
+review_loop_iteration: 1
 context:
   - '{project-root}/_bmad-output/specs/spec-half/SPEC.md'
   - '{project-root}/_bmad-output/planning-artifacts/architecture/architecture-Brains-2026-08-31/ARCHITECTURE-SPINE.md'
