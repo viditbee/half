@@ -32,13 +32,14 @@ import email.message
 import io
 import time
 import urllib.error
+import urllib.parse
 from pathlib import Path
 
 import pytest
 
 from half.errors import ChannelError, HalfError
 from half.ingest import gmail_transport as transport_module
-from half.ingest.gmail import MAX_PAGES, GmailSource
+from half.ingest.gmail import MAX_PAGES, MAX_PROBES, GmailSource
 from half.ingest.gmail_transport import (
     BACKOFF_SECONDS,
     GMAIL_TOKEN,
@@ -171,6 +172,78 @@ def _json(obj: object) -> bytes:
     return json.dumps(obj).encode("utf-8")
 
 
+def _epoch_ms(day: str) -> str:
+    """A day as Gmail's own ``internalDate``: epoch milliseconds, as a string."""
+    import datetime
+
+    at = datetime.datetime.fromisoformat(f"{day}T08:00:00+00:00")
+    return str(int(at.timestamp() * 1000))
+
+
+class Mailbox:
+    """A mailbox at the HTTP door, answering the query it was actually asked.
+
+    ``FakeHttp`` answers a scripted queue **by position**, which is the right
+    shape for a fault case and the wrong one for a walk. Story 20's walk asks
+    real questions — a window is a query bounded at both ends, and a mailbox
+    has to respect both bounds for the answer to mean anything — and a queue
+    cannot fail when the question is wrong: whatever the walk asked, the third
+    response is still the third one handed back.
+
+    Newest-first, because that is what Gmail does and what the walk exists to
+    reverse. A double that answered oldest-first would let every ordering case
+    below pass against a build that reorders nothing at all.
+    """
+
+    def __init__(self, days: dict[str, str], *, page_size: int = 100,
+                 breaks_on: str | None = None) -> None:
+        self.days = dict(days)
+        self.page_size = page_size
+        #: The message whose read fails, every time it is asked for. Named
+        #: rather than counted: the walk reads a few of the newest messages
+        #: first to find its horizon, and a count would land somewhere
+        #: different each time that number changed.
+        self.breaks_on = breaks_on
+        self.urls: list[str] = []
+        self.headers: list[dict[str, str]] = []
+
+    def matching(self, query: str) -> list[str]:
+        after = before = None
+        for term in query.split():
+            if term.startswith("after:"):
+                after = term[len("after:"):].replace("/", "-")
+            elif term.startswith("before:"):
+                before = term[len("before:"):].replace("/", "-")
+        chosen = [
+            mid for mid, day in self.days.items()
+            if (after is None or day >= after) and (before is None or day < before)
+        ]
+        return sorted(chosen, key=lambda mid: (self.days[mid], mid), reverse=True)
+
+    def __call__(self, request: object, *, timeout: float) -> Response:
+        url = request.full_url
+        self.urls.append(url)
+        self.headers.append(dict(request.header_items()))
+        parts = urllib.parse.urlparse(url)
+        params = urllib.parse.parse_qs(parts.query)
+        if parts.path.endswith("/messages"):
+            ids = self.matching(params.get("q", [""])[0])
+            start = int(params.get("pageToken", ["0"])[0])
+            payload = {
+                "messages": [
+                    {"id": i} for i in ids[start:start + self.page_size]
+                ]
+            }
+            if start + self.page_size < len(ids):
+                payload["nextPageToken"] = str(start + self.page_size)
+            return Response(_json(payload))
+
+        mid = urllib.parse.unquote(parts.path.rsplit("/", 1)[-1])
+        if mid == self.breaks_on:
+            raise a_provider_error(500)
+        return message(mid, body=f"{BODY} — {mid}", at=_epoch_ms(self.days[mid]))
+
+
 @pytest.fixture
 def http(monkeypatch):
     """Install a fake HTTP layer and hand the case its recorder."""
@@ -280,31 +353,64 @@ class Echoing:
 
 
 def test_the_transport_hands_over_the_provider_s_own_order_untouched(monkeypatch):
-    """The order is Gmail's and this module does not touch it.
+    """The order is Gmail's and **this module** does not touch it.
 
-    **The story's matrix asks for oldest-first and the transport cannot give
-    it** — Gmail's list route offers no sort control, returns most-recent-first,
-    and a paged walk cannot be made oldest-first without buffering the whole
-    mailbox. So what is asserted is the honest property: the transport reorders
-    nothing. A build that quietly reversed a page would look like the port's
-    contract without being it, because page one still holds the newest block —
-    and this case is what goes red if somebody writes that.
+    Two claims that used to be one, and story 20 is why they had to part. The
+    transport still reorders nothing — a page comes back exactly as the
+    provider sent it, newest-first, and a build that quietly reversed one here
+    would be lying about what a page is. What changed is the layer above:
+    ``GmailSource`` now owns the port's oldest-first promise and keeps it by
+    walking that order backwards inside a bounded window.
+
+    Before this story the two were the same claim and the honest reading was
+    *the transport cannot give the matrix what it asks for*. It still cannot.
+    The source can.
+    """
+    fake = Echoing("newest", "middle", "oldest")
+    monkeypatch.setattr(transport_module, "_open", fake)
+
+    page_one = asyncio.run(
+        HttpTransport(TOKEN).list_messages(query="", page_token=None)
+    )
+    assert [stub["id"] for stub in page_one["messages"]] == [
+        "newest", "middle", "oldest"
+    ], "the transport reordered a page"
+
+
+def test_the_source_yields_the_promise_out_of_that_order(monkeypatch):
+    """Matrix: *a full walk*. The port's promise, over the real transport.
+
+    ``Echoing`` answers **by route** rather than by position, which is the only
+    shape in which this assertion is about the code. The first version of the
+    order case scripted three message responses in a queue, so whatever order
+    the transport asked in the third response was still the third one handed
+    back — and a build that reversed every page produced an identical list of
+    ids. The reversal probe came back green against it.
     """
     fake = Echoing("newest", "middle", "oldest")
     monkeypatch.setattr(transport_module, "_open", fake)
     got = walked(GmailSource(HttpTransport(TOKEN)))
-    assert fake.asked_for == ["newest", "middle", "oldest"]
-    assert [m.external_id for m in got] == ["newest", "middle", "oldest"]
+
+    assert fake.asked_for == ["oldest", "middle", "newest"], (
+        "the walk read the mailbox newest-first"
+    )
+    assert [m.external_id for m in got] == ["oldest", "middle", "newest"]
 
 
-def test_every_page_is_walked_and_the_page_token_is_carried_forward(http):
-    """Matrix: *paging*. Every page visited, and the token actually sent."""
-    fake = http(page("m1", next_token="second"), message("m1"),
-                page("m2"), message("m2"))
+def test_every_page_is_walked_and_the_page_token_is_carried_forward(monkeypatch):
+    """Matrix: *paging*. Every page visited, and the token actually sent.
+
+    A window wide enough to hold both messages and a page too small to carry
+    them, so the second page is reached from inside one window — which is where
+    ``MAX_PAGES`` lives now.
+    """
+    fake = Mailbox({"m1": "2026-03-02", "m2": "2026-03-03"}, page_size=1)
+    monkeypatch.setattr(transport_module, "_open", fake)
     got = walked(GmailSource(HttpTransport(TOKEN)))
+
     assert [m.external_id for m in got] == ["m1", "m2"]
-    assert "pageToken" not in fake.urls[0]
-    assert "pageToken=second" in fake.urls[2]
+    assert not any("pageToken" in u for u in fake.urls[:1])
+    assert any("pageToken=1" in u for u in fake.urls), "the token was never sent"
 
 
 def test_the_cursor_reaches_the_provider_as_the_query_the_rules_built(http):
@@ -312,6 +418,27 @@ def test_the_cursor_reaches_the_provider_as_the_query_the_rules_built(http):
     fake = http(page())
     walked(GmailSource(HttpTransport(TOKEN)), since="2026-03-04T05:06:07Z")
     assert "q=after%3A2026%2F03%2F04" in fake.urls[0]
+
+
+def test_a_window_reaches_the_provider_bounded_at_both_ends(monkeypatch):
+    """Story 20's window, on the wire.
+
+    ``before:`` needed nothing of this module — the transport has always
+    carried whatever query the rules built — which is what let the walk become
+    bounded without touching the Protocol or the HTTP layer. That claim is
+    worth an assertion rather than a sentence.
+    """
+    fake = Mailbox({f"m{i}": f"2026-03-{i:02d}" for i in range(1, 20)},
+                   page_size=4)
+    monkeypatch.setattr(transport_module, "_open", fake)
+    walked(GmailSource(HttpTransport(TOKEN)))
+
+    both = [u for u in fake.urls if "before%3A" in u and "after%3A" in u]
+    probes = [u for u in fake.urls if "before%3A" in u and "after%3A" not in u]
+    assert both, "no bounded window was ever asked for"
+    # The one-ended queries are the halving search for the mailbox's oldest
+    # day, and there is a ceiling on how many of them there may be.
+    assert len(probes) <= MAX_PROBES, "the oldest-day search ran unbounded"
 
 
 def test_a_message_id_cannot_address_something_other_than_the_message():
@@ -530,14 +657,14 @@ def test_a_raised_fault_has_no_cause_and_no_context_at_all(http):
 
 
 @pytest.mark.ad11
-def test_the_credential_travels_in_a_header_and_never_in_a_url(http):
+def test_the_credential_travels_in_a_header_and_never_in_a_url(monkeypatch):
     """The failure ``gmail.py``'s boundary translation was written to survive,
     and one this avoids having to survive: a Gmail error quotes the request that
     caused it, so a token on a query string is a token in somebody's log."""
-    fake = http(page("m1", next_token="p2"), message("m1"), page("m2"),
-                message("m2"))
+    fake = Mailbox({"m1": "2026-03-02", "m2": "2026-03-03"}, page_size=1)
+    monkeypatch.setattr(transport_module, "_open", fake)
     walked(GmailSource(HttpTransport(TOKEN)))
-    assert len(fake.urls) == 4
+    assert len(fake.urls) > 2
     for url in fake.urls:
         assert TOKEN not in url
         assert "token=" not in url.lower().replace("pagetoken=", "")
@@ -656,7 +783,7 @@ def test_the_socket_bound_is_handed_to_the_client_as_well(http):
 
 
 def test_pages_already_captured_stay_valid_when_a_later_page_fails(
-    tmp_path, http, slept
+    tmp_path, monkeypatch, slept
 ):
     """Matrix: *a transient fault*, at the end it actually matters.
 
@@ -666,8 +793,11 @@ def test_pages_already_captured_stay_valid_when_a_later_page_fails(
     never partial-and-silent — the failure is raised.
     """
     store = LocalSourceStore(tmp_path / MAIN / "sources")
-    http(page("m1", next_token="p2"), message("m1"),
-         *[a_provider_error(500) for _ in range(MAX_ATTEMPTS)])
+    fake = Mailbox(
+        {f"m{i}": f"2026-03-0{i}" for i in range(1, 6)},
+        page_size=1, breaks_on="m2",
+    )
+    monkeypatch.setattr(transport_module, "_open", fake)
 
     async def pull():
         return await Pipeline(GmailSource(HttpTransport(TOKEN)), store).ingest()
@@ -946,7 +1076,12 @@ def test_the_shipped_composition_reaches_a_mailbox_and_writes_a_receipt(
 
     monkeypatch.setenv(CONSENT_ENV, "your messages leave this machine")
     FileSecretStore.beside(deployment).put(MAIN, GMAIL_TOKEN, TOKEN)
-    fake = http(page("m1"), message("m1"))
+    # The shipped demonstration is a **bounded recent read** (story 20): it
+    # asks what is there, reads the newest stamp to place a window, asks for
+    # that window, and reads it. Four requests, and the third one carries both
+    # bounds — which is the difference between reading this main's last week
+    # and reading the oldest mail they own inside a ninety-second budget.
+    fake = http(page("m1"), message("m1"), page("m1"), message("m1"))
 
     wiring = build(load(), token="123:fake-bot-token")
     wire = Wire()
@@ -963,7 +1098,10 @@ def test_the_shipped_composition_reaches_a_mailbox_and_writes_a_receipt(
         wiring.registry.close()
 
     assert wire.sent, "the main was never told"
-    assert len(fake.urls) == 2 and TOKEN not in "".join(fake.urls)
+    assert len(fake.urls) == 4 and TOKEN not in "".join(fake.urls)
+    assert any("before%3A" in u and "after%3A" in u for u in fake.urls), (
+        "the demonstration read without bounding a window"
+    )
     assert done.reason is Reason.NO_CLAIM, (
         "the demonstration ended for a reason other than an empty ledger; "
         "this case is about the mailbox reaching a receipt, and a different "

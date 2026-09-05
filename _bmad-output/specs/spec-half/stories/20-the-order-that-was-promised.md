@@ -2,7 +2,7 @@
 title: 'Story 20 — The order that was promised'
 type: 'fix'
 created: '2026-09-05'
-status: 'in-progress'
+status: 'done'
 baseline_commit: 'e218117'
 review_loop_iteration: 0
 context:
@@ -125,12 +125,12 @@ takes an arbitrary query, so `before:` is already expressible.
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] a bounded forward window walk in `GmailSource.fetch` -- the promise made true
-- [ ] `_query_for` extended to bound a window at both ends
-- [ ] the cursor advances only over a drained window -- `half/ingest/pipeline.py`
-- [ ] the demonstration's bounded read stops moving the history cursor -- CAP-2
-- [ ] `half/ingest/gmail.py:47`'s docstring made true
-- [ ] every matrix row tested, offline
+- [x] a bounded forward window walk in `GmailSource.fetch` -- the promise made true
+- [x] `_query_for` extended to bound a window at both ends
+- [x] the cursor advances only over a drained window -- `half/ingest/pipeline.py`
+- [x] the demonstration's bounded read stops moving the history cursor -- CAP-2
+- [x] `half/ingest/gmail.py:47`'s docstring made true
+- [x] every matrix row tested, offline
 
 **Acceptance Criteria:**
 - Given a mailbox and a pull cut part-way, when the run repeats until it stops
@@ -168,3 +168,52 @@ matrix rather than in deferred work.
 - `cd half && uv run --extra dev pytest tests/test_onboard.py -q` -- CAP-2 unmoved
 - `cd half && uv run --extra dev python tools/mailbox_sim.py` -- 0 of 5 miscounted
 - `cd half && git status --porcelain` -- clean after commit
+
+## Spec Change Log
+
+**2026-09-05 — implemented.** The walk, the split watermark, the recent read
+and eleven matrix cases are in; the whole suite passes under the socket guard.
+Nothing in the frozen block was renegotiated. Three decisions the Intent left
+open, with what decided them:
+
+- **The window is seven days**, measured rather than guessed as the Design
+  Notes require. `tools/window_sim.py` walks five years of synthetic mailbox at
+  four densities and reports requests per message ingested against the size of
+  the window that has to drain: a month is marginally cheaper per message and
+  asks a firehose to drain 6,543 messages before the cursor may move once; a
+  single day drains in a handful and charges a dormant mailbox 6.05 requests
+  for every message it holds. The table is recorded beside the constant.
+- **Where a walk stops is not where its cursor stops.** The walk goes to the
+  newest stamp there is; the cursor is clamped to the third-newest, so one
+  message dated in 2099 widens nothing and strands nothing. Collapsing the two
+  — which the first implementation did — stalls a mailbox whose three newest
+  messages are years apart: the walk stops short of the newest, the cursor
+  stops in the same place, and the next run repeats both, for ever. That is
+  the clock-skew row's defence rebuilding the clock-skew row's defect, and it
+  is now a case.
+- **An empty window is jumped, not stepped past.** The Design Notes accept a
+  sparse mailbox spending requests on empty weeks; a halving search over the
+  same `before:` bound crosses a gap of any width for about fifteen, and the
+  same search is what finds where a first walk begins. Stepping up from the
+  floor would have cost a first pull thousands of requests before reading
+  anything, which under a deadline is a first pull that reads nothing at all.
+
+Two costs, accepted and recorded rather than hidden:
+
+- **A window that will not drain inside a caller's bound never advances the
+  cursor.** That is the frozen rule working — a repeat costs an `already_seen`
+  and a loss costs history — and the Design Notes name it. Nothing in the
+  shipped tree bounds the history walk; the only bounded pull is the
+  demonstration, which moves no cursor at all.
+- **The cursor lags the newest mail by two messages**, because the horizon is
+  corroborated rather than taken from one stamp. Each run re-reads those two
+  and the digest deduplicates them.
+
+KEEP, and do not re-derive: the two watermarks (`Ingested.cursor` over drained
+ground, `Ingested.read_through` for a bounded read's own position); the
+watermark read off the source rather than declared on the Protocol;
+`GmailRecent` publishing `None` as a class attribute; the horizon taken from
+three stamps; the floor at the Unix epoch rather than Gmail's launch year, so
+imported mail older than the service is still walked; the watermark set
+*before* the last message of a window rather than after it, because a walk cut
+on a boundary is never resumed.

@@ -61,7 +61,7 @@ from half.derive.revealed import (
 )
 from half.errors import HalfError, ModelError
 from half.governance import ladder
-from half.ingest.gmail import GmailSource
+from half.ingest.gmail import GmailRecent
 from half.ingest.gmail_transport import HttpTransport, MailboxMisconfigured
 from half.ingest.pipeline import Ingested, Pipeline
 from half.ingest.port import MailSource
@@ -589,7 +589,13 @@ async def ingest_mail(
                     # claims are the same claim and is deferred.
                     continue
                 actor.store.record(
-                    Op.ASSERT, claim.belief_id, result.cursor or "",
+                    # **The pull's own position, not the history cursor.** The
+                    # two parted company in story 20: the cursor now moves only
+                    # over ground the source finished draining, and a bounded
+                    # recent read moves it not at all — while what stamps a
+                    # claim is *when the mail it came from was written*, which
+                    # is exactly what ``read_through`` reports.
+                    Op.ASSERT, claim.belief_id, result.read_through or "",
                     **fields_of(claim),
                     **ladder.admitted(support=list(claim.support)),
                 )
@@ -631,6 +637,21 @@ class Bounded:
         self.name = getattr(source, "name", "bounded")
         self._seconds = float(seconds)
         self.stopped_early = False
+
+    def __getattr__(self, name: str):
+        """Pass ``drained_through`` through, and nothing else.
+
+        The watermark belongs to the source being bounded — it is that source's
+        statement about how far it *finished* — and a wrapper that swallowed it
+        would leave the pipeline with no watermark at all and send it back to
+        the ``max()`` this story removed. Written as a lookup that can fail
+        rather than as a property that answers ``None``, because a source with
+        no watermark and a source whose watermark is ``None`` mean different
+        things and the pipeline distinguishes them.
+        """
+        if name == "drained_through":
+            return getattr(self.source, name)
+        raise AttributeError(name)
 
     async def fetch(self, *, since: str | None = None):
         deadline = asyncio.get_running_loop().time() + self._seconds
@@ -725,8 +746,18 @@ async def onboarded(
     A main with no stored token raises ``MailboxMisconfigured`` — a
     ``ChannelError`` and so a ``HalfError`` — **before any request is made**,
     which the command turns into one plain line rather than a traceback.
+
+    **The read is ``GmailRecent`` and not ``GmailSource``, and that is story
+    20's second half.** CAP-2 asks what this person has been doing *lately* and
+    is cut at ninety seconds; CAP-3 walks the whole of history forward and is
+    cut by nothing. Answering the first question with the second one's walk
+    reads the oldest mail in the mailbox, and — before this story — moved the
+    history cursor to the newest thing the cut happened to reach, which is how
+    a bounded demonstration became a permanent loss. ``GmailRecent`` reads the
+    newest window and publishes no watermark at all, so the demonstration
+    cannot move a cursor it has not earned.
     """
-    source = GmailSource(HttpTransport.from_secrets(wiring.secrets, main_id))
+    source = GmailRecent(HttpTransport.from_secrets(wiring.secrets, main_id))
     return await onboard(wiring, main_id=main_id, source=source, t=t)
 
 

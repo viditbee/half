@@ -38,7 +38,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Final
 
 from half.ingest.normalize import normalize
 from half.ingest.port import MailSource, Message
@@ -98,9 +98,18 @@ class Ingested:
     receipts: list[Receipt]
     already_seen: int = 0
     skipped_unreadable: int = 0
-    #: Advances even when nothing was captured, so a window of skipped
-    #: messages cannot be re-fetched forever.
+    #: **The history cursor, and it moves only over drained ground** (story
+    #: 20). Advances even when nothing was captured, so a window of skipped
+    #: messages cannot be re-fetched forever — but never past ground the
+    #: source has not finished handing over, because ``after:`` will not name
+    #: that ground again and a message missed there is missed for good.
     cursor: str | None = None
+    #: How far this pull itself read: the newest stamp it saw, or ``since``
+    #: when it saw nothing. **Its own position, not the history cursor.** A
+    #: bounded recent read (CAP-2's demonstration) reports here and leaves
+    #: ``cursor`` alone; a caller that wants to know what a pull touched wants
+    #: this, and a caller that wants to know where to resume wants ``cursor``.
+    read_through: str | None = None
 
 
 class Pipeline:
@@ -158,7 +167,9 @@ class Pipeline:
 
         return Ingested(
             receipts=receipts, already_seen=seen,
-            skipped_unreadable=unreadable, cursor=newest,
+            skipped_unreadable=unreadable,
+            cursor=_drained(self.source, since=since, newest=newest),
+            read_through=newest,
         )
 
     def _receipt(self, message: Message, redacted: Scrubbed) -> Receipt:
@@ -194,6 +205,47 @@ class Pipeline:
             t=message.t,
             redactions=redactions,
         )
+
+
+#: What ``getattr`` hands back for a source that publishes no watermark. A
+#: sentinel rather than ``None``, because a source that publishes ``None``
+#: deliberately — a bounded read that drained nothing — is saying something
+#: different from a source that was never asked to say anything.
+_UNREPORTED: Final = object()
+
+
+def _drained(source: MailSource, *, since: str | None, newest: str | None) -> str | None:
+    """How far the cursor may move: the ground the source finished handing over.
+
+    **The defect story 20 removes lives in this one line.** The cursor used to
+    be a ``max()`` over every stamp seen, which is order-independent and so
+    could not tell a walk that finished from a walk that was cut — and with a
+    provider answering newest-first, a pull cut after five messages left the
+    cursor at the newest of them and ``after:`` never named the other fifteen
+    again. Measured: twenty of twenty ingested oldest-first, five of twenty
+    newest-first, both runs ending at the same cursor.
+
+    So a source may publish ``drained_through`` — how far it has *finished*,
+    which is not how far it got — and where one does, that is the only thing
+    the cursor follows. It is read off the source rather than declared on the
+    ``MailSource`` Protocol on purpose: the promise a source makes about order
+    is the Protocol's business, and how a particular provider proves it drained
+    a stretch of mailbox is that adapter's.
+
+    A source that publishes nothing is taken at the port's word — it yields
+    oldest first, so the last stamp it handed over *is* drained ground, with
+    nothing older left behind it. Every in-memory source in this tree is of
+    that kind, and so is a walk over a mailbox small enough to arrive whole.
+    """
+    drained = getattr(source, "drained_through", _UNREPORTED)
+    if drained is _UNREPORTED:
+        return newest
+    if drained is None or (since is not None and drained <= since):
+        # Nothing drained, or nothing drained beyond where we began. A cursor
+        # that moves on the strength of a read that did not finish is the
+        # whole of the loss; a repeat costs one already-seen digest.
+        return since
+    return drained
 
 
 def _charset_of(content_type: str | None) -> str | None:
