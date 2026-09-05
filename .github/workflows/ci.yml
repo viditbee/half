@@ -1518,12 +1518,20 @@ jobs:
         #   main* unreachable, and the `cap3_particular` gate below is the rest
         #   of that story.
         #
-        # **The margin is deliberately zero: 28 selected, 28 required.** Every
+        # **The margin is deliberately zero: 30 selected, 30 required.** Every
         # case in this gate is the only one asserting its rule, which is the
         # condition under which a zero margin is right — and it is why no
         # existing floor was inflated instead. It also means every case added
         # here owes an edit to this number, which is why `cap3` is applied **per
         # case** rather than as a module-wide `pytestmark`.
+        #
+        # **Story 17 adds two and the floor moves with them, 28 to 30**, so the
+        # margin does not grow. Both are the origin axis at the layer it went
+        # missing: eight mailings from one shop admit no claim, and two
+        # businesses mailing four times each are two supports rather than eight
+        # — the defect and its anti-outage half. They are here rather than in
+        # `cap3_axes` because they are admission decisions through the real
+        # reader; `cap3_axes` below is the union-find's own unit.
         #
         # **Twenty-four mutations were run against these before this gate was
         # written**, each with a purged bytecode cache on both sides, a green
@@ -1568,7 +1576,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap3 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-3 admission cases collected: $collected"
-          if [ "$collected" -lt 28 ]; then
+          if [ "$collected" -lt 30 ]; then
             echo "::error::the CAP-3 gate collected $collected cases; the independence threshold, the honest count, the scrub ordering or the body scan has stopped being asserted"
             exit 1
           fi
@@ -1613,16 +1621,103 @@ jobs:
         #
         # **The margin is zero here too, and for the same reason**: every case
         # is the only one asserting its rule.
+        #
+        # **Story 17 adds one and the floor moves with it, 36 to 37.** The
+        # sender travels from the receipt to the candidate, verbatim and under
+        # the key `IDENTITY_FIELDS` reads — the seam story 17 found the origin
+        # axis lost at. A probe that dropped it from `Candidate.identity` came
+        # back green against the whole suite before that case existed, which is
+        # what a structural rule with no case looks like.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap3_structure -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-3 structural cases collected: $collected"
-          if [ "$collected" -lt 36 ]; then
+          if [ "$collected" -lt 37 ]; then
             echo "::error::the CAP-3 structural gate collected $collected cases; the scrub ordering, the threshold that nothing can lower, the closed vocabulary or the narrow holder has stopped being asserted"
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap3_structure
+
+      - name: 'CAP-3: the identity axes corroboration collapses on'
+        # A fourth gate on this capability, over the union-find's own unit, and
+        # it exists because for eleven stories the three gates above were green
+        # while the machinery was missing an axis.
+        #
+        # `IDENTITY_FIELDS` was thread, content, declared. The extraction
+        # manifest records the machinery as collapsing *"sources sharing
+        # origin, content hash, or publisher"* and story 3's frozen block says
+        # *"union-find over origin, content hash, and declared key"* — the
+        # implementation substituted the thread for the origin. So two messages
+        # from one sender in two threads were two independent supports, CAP-3
+        # admits at two, and a shop's newsletter corroborated itself. Measured
+        # by `tools/mailbox_sim.py` and `tools/admits_sim.py`, not argued.
+        #
+        # **Why no gate would have caught it, and why this one is shaped as it
+        # is.** `tests/test_independence.py` had no marker at all, so nothing
+        # here selected it; and it would not have helped, because its `source()`
+        # helper took a `sender`, stored it in the fixture dict, and
+        # `identity_set` never read it. Every case in the file *read* as though
+        # it exercised an origin axis and not one of them could have failed if
+        # the axis were removed. **A fixture supplying a field the
+        # implementation ignores is the eleventh way a check has passed for the
+        # wrong reason on this project, and the only one that survived eleven
+        # stories.**
+        #
+        # What this gate protects, each rule with no second case:
+        #
+        #   that **one sender is one source** — a newsletter across eight
+        #   threads, and thirty messages across ten, which is the shape that
+        #   used to assert *ten*;
+        #   that the axis collapses what **shares** an origin and not
+        #   everything — ten senders across ten threads stay ten, at the same
+        #   size, because the failure mode of a collapsing fix is that Half
+        #   finds one support everywhere, admits nothing and goes quiet, which
+        #   looks like restraint and is a bug;
+        #   that **a blank origin is never an identity**, parametrised over
+        #   every shape a missing sender arrives in — absent, empty, spaces,
+        #   tabs — plus the mixed mailbox, where the subtler failure is blank
+        #   sources unioning and dragging a real one in with them;
+        #   that matching is `_normalize`'s and **nothing is parsed** — no
+        #   domain, no plus-address, no display name;
+        #   that the namespaces hold, now that an address shares a table with a
+        #   thread id and a digest;
+        #   that every case names **the one axis it rests on**: each asserts
+        #   what the same sources would count to with the origin gone, so a case
+        #   whose two numbers are equal says out loud that it is evidence for
+        #   the thread, the content or the declared key instead;
+        #   and that the import-time guard **runs** — found in the module's own
+        #   syntax tree, counted rather than `all`-ed so a rename is a dead
+        #   anchor that fails, with a bypass case for the scan and one for the
+        #   predicate, because a guard that is only ever red everywhere at once
+        #   names nothing.
+        #
+        # **The margin is zero: 34 selected, 34 required**, on the condition
+        # that makes a zero margin right — every case is the only one asserting
+        # its rule. Applied per case rather than as a module-wide `pytestmark`,
+        # so a case added here owes an edit to this number.
+        #
+        # **Eleven mutations were run against these before this gate was
+        # written**, each with a purged bytecode cache on both sides, a green
+        # baseline asserted either side of it, every anchor asserted unique,
+        # `-rfE` so collection errors are parsed as well as failures, and the
+        # failing case *names* recorded rather than an exit code. All eleven are
+        # red and every one is red **by name** somewhere. Three came back green
+        # first time and all three were real: `Candidate.identity` no longer
+        # supplying the sender, the sender blanked between the receipt and the
+        # candidate, and the guard's call deleted from the bottom of the module
+        # — the first two being story 17's own defect reintroduced one layer
+        # below the union-find, where nothing in 5,178 cases could see it.
+        run: |
+          set -euo pipefail
+          collected=$(uv run --locked --extra dev pytest -m cap3_axes -q --collect-only \
+            | grep -c '::' || true)
+          echo "CAP-3 identity-axis cases collected: $collected"
+          if [ "$collected" -lt 34 ]; then
+            echo "::error::the CAP-3 identity-axis gate collected $collected cases; the origin axis, the blank origin that is never an identity, the namespacing or the import-time guard has stopped being asserted"
+            exit 1
+          fi
+          uv run --locked --extra dev pytest -q -m cap3_axes
 
       - name: 'CAP-3: a claim worth hearing, on the support it actually has'
         # The third gate on this capability, and it exists because the first two
