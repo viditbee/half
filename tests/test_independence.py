@@ -49,7 +49,7 @@ from half.ingest.independence import (
     ORIGIN_KIND,
     SAME_MOMENT_FIELDS,
     _check_axes,
-    _normalize,
+    normalized,
     adds_a_voice,
     an_identity,
     independent_groups,
@@ -204,7 +204,7 @@ def flat_union_find(sources):
         values = set(same_moment_set(source_id, src))
         raw = src.get(ORIGIN_FIELD)
         if an_identity(raw):
-            values.add(f"{ORIGIN_KIND}:{_normalize(str(raw))}")
+            values.add(f"{ORIGIN_KIND}:{normalized(str(raw))}")
         for value in values:
             first = seen.setdefault(value, index)
             if first != index:
@@ -291,7 +291,7 @@ def test_ten_senders_across_ten_threads_stay_ten_supports():
 def test_two_spellings_of_one_address_are_one_origin():
     """Matrix: *address spelling*. Two threads, two digests, one address in two
     spellings — so the origin is the only axis that can collapse these, and it
-    does it with ``_normalize`` and nothing else.
+    does it with ``normalized`` and nothing else.
 
     No parsing: nothing splits at ``@``, reads a domain, strips a display name
     or drops a plus-address. NFC and casefold are the whole matching rule, and

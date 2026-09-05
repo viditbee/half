@@ -36,11 +36,17 @@ SEPARATOR = ("\n\n---------- Forwarded message ----------\n"
 #:
 #: **Since story 19 it is also the furniture fixture**, and the two roles are the
 #: same text on purpose. What decides which it is is not in this string at all:
-#: a footer carried only by senders at one domain is that company's furniture,
-#: and the same footer carried across domains is a block being passed on. So the
-#: senders a case gives its messages are as much the fixture as the body is, and
-#: a case that leaves them at one domain is asserting *one origin* whether or not
-#: it meant to.
+#: a footer carried only by senders at one *organisation* is that company's
+#: furniture, and the same footer carried across organisations is a block being
+#: passed on. So the senders a case gives its messages are as much the fixture as
+#: the body is, and a case that leaves them at one domain is asserting *one
+#: origin* whether or not it meant to.
+#:
+#: **And a domain is not automatically an organisation**, which review measured
+#: the hard way: `gmail.com`, an ISP and a university host many unrelated people,
+#: so a fixture that puts two senders there is asserting *strangers* rather than
+#: *one company*. A sender with no dot in it — `p0@x`, which every fixture in
+#: this tree used before story 19 — is not an address at all and declines.
 DISCLAIMER = (
     "This electronic mail message and any attachments transmitted with it are "
     "confidential and privileged information intended solely for the use of "

@@ -111,15 +111,50 @@ collapsing when the sender became a fourth union-find axis, and this module does
 not touch ``SAME_MOMENT_FIELDS``, ``ORIGIN_AXIS`` or the two-level structure —
 it reads an origin to classify *a block*, and what it returns is still a key.
 ``half.ingest.independence`` remains the only place an origin is compared for
-identity, and ``organisation`` reuses its ``_normalize`` rather than inventing a
-second idea of what two spellings of one address are.
+identity, and ``domain`` reuses its ``normalized`` rather than inventing a
+second idea of what two spellings of one address are. The two agree on
+casefolding under NFC and on nothing else: that module compares whole addresses,
+this one compares the tail.
 
-**The limit this leaves, stated up front rather than buried.** A forward that
+**A domain is not an organisation, and the first build of this rule proved it.**
+Two people at ``gmail.com`` are not one company. Read as one, an ordinary
+forward between them was that "organisation's" furniture, refused to collapse,
+and became **two supports from one message** — story 18's over-claiming defect
+handed back for what is plausibly the commonest sender population in a personal
+mailbox. Measured through ``Run.declares``, truth one in every row:
+``gmail.com`` **2** voices, ``outlook.com`` **2**, two students at one
+university **2**.
+
+So a domain that hosts many unrelated people — a webmail provider, an ISP, a
+university — is not an organisation. ``shared`` names them, ``organisation``
+answers ``None`` for them, and a block carried only there tells us nothing and
+declines. A domain *not* on that list is an organisation, which is what keeps
+the footer attractor fixed.
+
+**That list names origins and never text, which is why it is not the pattern
+list this approach exists to avoid.** A disclaimer, a separator and a signature
+exist in every language and matching them is a rule about how mail *reads*;
+``gmail.com`` is a fact about the world and is spelled the same in every
+language. The list is also **incomplete by nature** and leans deliberately
+permissive, because its two error directions are not symmetric: a domain
+wrongly on it declines, which merges and under-claims, while a provider missing
+from it splits an ordinary forward, which over-claims. So a family with country
+variants — ``hotmail.*``, ``yahoo.*`` — is matched on its first label rather
+than enumerated, and the academic pattern (``.edu``, ``.ac.<cc>``,
+``.edu.<cc>``) is matched by shape rather than by listing universities.
+
+**The limits this leaves, stated up front rather than buried.** A forward that
 never leaves one organisation looks exactly like that organisation's furniture,
 because on the only signal that works it *is* the same shape. Half counts it as
 two supports. That is the **over-claiming** direction — the one story 18 closed
 — so it is the more serious residue of the two, and it is pinned by
 ``test_a_forward_inside_one_company_is_not_caught`` with its direction named.
+A forward on a provider **absent** from ``SHARED_DOMAINS`` is the same defect
+reached through the list's incompleteness, and is pinned beside it. In the other
+direction — merging, so the conservative one — a footer stapled by a shared-
+domain sender, a university mailing its own students, still collapses the
+messages carrying it, because the exclusion cannot tell that block from a
+forward between two people at that university.
 
 **Which is why every branch that cannot decide falls back to story 18's answer
 rather than to "independent".** Story 18 could say its failures should merge,
@@ -185,7 +220,7 @@ from collections.abc import Callable, Iterable, Sequence
 from typing import Final
 
 from half.errors import TokenGrowthLimitError
-from half.ingest.independence import _normalize, an_identity
+from half.ingest.independence import an_identity, normalized
 from half.text import terms
 
 #: The shortest body this rule will look at, counted in **distinct** terms.
@@ -210,9 +245,87 @@ PREFIX: Final[str] = "echo:"
 #: whole terms: without it, ``rat`` would be found inside ``gratis``.
 JOIN: Final[str] = "\x00"
 
-#: What separates a local part from the organisation that carries it. The whole
-#: of the parsing this module does to an origin, and it is one character.
+#: What separates a local part from the domain that carries it.
 AT: Final[str] = "@"
+
+#: What separates the labels of a domain.
+DOT: Final[str] = "."
+
+#: Domains that host **many unrelated people**, so that two addresses at one of
+#: them are not one organisation and a block carried only there says nothing.
+#:
+#: **Origins, never text.** The Never list forbids a pattern list for
+#: disclaimers, separators, quote markers and signatures — rules about how mail
+#: *reads*, which differ in every language and are the failure this whole
+#: approach is chosen to avoid. This is data about the world: ``gmail.com`` is
+#: spelled ``gmail.com`` in every language on earth.
+#:
+#: **Worldwide, and incomplete by nature.** A list of Western providers alone
+#: would be its own defect, so the large regional providers are here. It can
+#: never be complete, and the two ways of being wrong are not symmetric: a
+#: domain wrongly listed declines, which merges and under-claims, and a provider
+#: missing from it splits an ordinary forward, which over-claims and is the
+#: serious direction. So it leans permissive on purpose, and what it misses is a
+#: recorded limit rather than a surprise.
+SHARED_DOMAINS: Final[frozenset[str]] = frozenset({
+    # Global webmail.
+    "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com",
+    "msn.com", "yahoo.com", "ymail.com", "rocketmail.com", "aol.com",
+    "icloud.com", "me.com", "mac.com", "mail.com", "gmx.com", "gmx.net",
+    "zoho.com", "proton.me", "protonmail.com", "protonmail.ch",
+    "tutanota.com", "tuta.com", "fastmail.com", "hushmail.com",
+    # China, Korea, Japan.
+    "qq.com", "163.com", "126.com", "yeah.net", "sina.com", "sohu.com",
+    "naver.com", "daum.net", "hanmail.net", "nate.com",
+    "docomo.ne.jp", "ezweb.ne.jp", "softbank.ne.jp", "nifty.com",
+    # Russia and the CIS.
+    "mail.ru", "inbox.ru", "list.ru", "bk.ru", "internet.ru",
+    "yandex.ru", "yandex.com", "rambler.ru", "ukr.net", "i.ua",
+    # Western Europe.
+    "gmx.de", "web.de", "t-online.de", "freenet.de", "arcor.de",
+    "orange.fr", "wanadoo.fr", "free.fr", "laposte.net", "sfr.fr",
+    "libero.it", "virgilio.it", "alice.it", "tin.it", "tiscali.it",
+    "terra.es", "telefonica.net", "sapo.pt", "ziggo.nl", "kpnmail.nl",
+    "telenet.be", "skynet.be", "bluewin.ch", "gmx.at", "aon.at",
+    "btinternet.com", "sky.com", "virginmedia.com", "talktalk.net",
+    "eircom.net", "telia.com", "online.no", "bredband.net", "elisanet.fi",
+    # Central and Eastern Europe.
+    "seznam.cz", "centrum.cz", "atlas.cz", "azet.sk", "zoznam.sk",
+    "wp.pl", "o2.pl", "interia.pl", "onet.pl", "gazeta.pl",
+    "freemail.hu", "citromail.hu", "abv.bg", "mail.bg",
+    # Latin America.
+    "uol.com.br", "bol.com.br", "terra.com.br", "ig.com.br", "globo.com",
+    "prodigy.net.mx", "hotmail.com.ar",
+    # South Asia, the Middle East and Africa.
+    "rediffmail.com", "sify.com", "indiatimes.com", "in.com",
+    "emirates.net.ae", "walla.co.il", "webmail.co.za", "vodamail.co.za",
+    # Oceania.
+    "bigpond.com", "optusnet.com.au", "iinet.net.au", "xtra.co.nz",
+})
+
+#: The **first label** of a family that ships a domain per country. Enumerating
+#: ``hotmail.co.uk``, ``hotmail.fr``, ``yahoo.co.jp``, ``yahoo.com.br`` and the
+#: hundred others is a list nobody will keep current, and a missing entry is the
+#: over-claiming direction. So the family is matched by name and the country
+#: part is not read at all.
+#:
+#: The cost is stated rather than hidden: a company whose domain *starts* with
+#: one of these labels — ``live.example.com`` — is read as shared and declines.
+#: That is the merging direction, which is the side to be wrong on.
+SHARED_HOSTS: Final[frozenset[str]] = frozenset({
+    "hotmail", "yahoo", "ymail", "rocketmail", "outlook", "live", "msn",
+    "gmail", "googlemail", "aol", "gmx", "yandex", "zoho", "protonmail",
+})
+
+#: The label that makes a domain academic, in the two shapes it takes: a
+#: ``.edu`` top level, and ``ac`` or ``edu`` as the label before a two-letter
+#: country code — ``cam.ac.uk``, ``u-tokyo.ac.jp``, ``usp.edu.br``.
+#:
+#: A university is the same shape as a webmail provider for this rule's purpose:
+#: thousands of unrelated people at one domain, so two of them forwarding mail
+#: to each other is not one organisation talking to itself. Matched by shape
+#: because listing the world's universities is not a list anyone can hold.
+ACADEMIC_LABELS: Final[frozenset[str]] = frozenset({"ac", "edu"})
 
 #: How a body is cut into the units that are compared. ``half.text.terms`` in
 #: production and never anything else; a parameter only so a case can run the
@@ -220,8 +333,8 @@ AT: Final[str] = "@"
 #: go to zero.
 Split = Callable[[str], Sequence[str]]
 
-#: One held body, as ``declaring`` is handed it: what that body declared, the
-#: body itself, and **the origin that carried it**. The third field is story
+#: **One** held body, as ``declaring`` is handed it: what that body declared,
+#: the body itself, and **the origin that carried it**. The third field is story
 #: 19's whole addition to the window's shape — the classification asks who
 #: carries a block, and a window of texts alone cannot answer it.
 #:
@@ -229,17 +342,29 @@ Split = Callable[[str], Sequence[str]]
 #: forgets the origin is a ``ValueError`` at unpacking, where an optional third
 #: field would silently classify every block as one organisation's furniture and
 #: quietly hand story 18's defect back as a split.
-Window = tuple[str, object, object]
+#:
+#: Singular, and the plural is a ``list[Held]``. The first spelling of these two
+#: names had ``Window`` for one body and ``Cut`` for one cut body, which inverts
+#: the relationship a reader expects between a window and the things in it.
+Held = tuple[str, object, object]
 
-#: A held body after ``declaring`` has cut it: its declaration, its units and
-#: its origin. Built once per arrival and handed to ``carrying``, so a window of
-#: eight costs eight tokenizations however many blocks are classified against it.
-Cut = tuple[str, tuple[str, ...], object]
+#: **One** held body after ``declaring`` has cut it: its declaration, its units,
+#: those units already joined for searching, and its **organisation** — the
+#: three derivations that would otherwise be redone on every match.
+#:
+#: All three are here for measured reasons. Tokenizing per match made the cost
+#: quadratic in the window. Rebuilding the joined form per match cost up to
+#: sixty-four string joins on a window of eight that every body matched.
+#: Re-deriving the organisation per call did the same for the classifier. A
+#: window of eight now costs eight tokenizations, eight joins and eight domain
+#: reads per arriving message, whatever the shape of what arrives.
+Cut = tuple[str, tuple[str, ...], str, str | None]
 
-#: How a block's carriers are classified. ``travelled`` in production; a
-#: parameter for one reason, which is the same reason ``Split`` is one: a case
-#: can run the whole story-19 suite with the classifier switched off and watch
-#: the footer rows collapse back to story 18's answer.
+#: How a block's carriers are classified — over **resolved organisations**, not
+#: over raw origins. ``travelled`` in production; a parameter for one reason,
+#: which is the same reason ``Split`` is one: a case can run the whole story-19
+#: suite with the classifier switched off and watch the footer rows collapse
+#: back to story 18's answer.
 Classify = Callable[[Sequence[object]], bool]
 
 
@@ -360,48 +485,154 @@ def _handle(written: Sequence[str]) -> str:
     return f"{PREFIX}{digest}"
 
 
-def organisation(origin: object) -> str | None:
-    """Which organisation an origin belongs to, or ``None`` where it cannot be read.
+def domain(origin: object) -> str | None:
+    """The domain of an origin, or ``None`` where it cannot be read.
 
-    **The one derivation this module makes from an origin, and it is one
-    character.** ``half.ingest.independence`` compares origins verbatim under
-    ``_normalize`` and derives nothing — no domain, no plus-address, no display
-    name — because there it is deciding *identity*, and a derived identity is a
-    new axis. Here the question is different: *is this block confined to one
-    organisation*, and three people at one company are one organisation with
-    three addresses. So the part after the last ``@`` is taken, and nothing else
-    is: no public-suffix list, no subdomain folding, no known-provider table.
+    **The whole of the derivation, and it is one field of an address.** No
+    public-suffix list, no subdomain folding, no known-provider table, no
+    plus-address stripping, and no locale. ``normalized`` is
+    ``half.ingest.independence``'s own, so two spellings of one address agree
+    here exactly as they agree there — on casefolding under NFC, and on nothing
+    else, since that module compares whole addresses and this one compares the
+    tail.
 
-    ``_normalize`` is imported rather than re-spelled. Two spellings of one
-    address match because it casefolds under NFC, and for no other reason — a
-    second normalisation here would be a second idea of what one organisation is,
-    and the two would disagree the first time a header arrived in a different
-    case.
+    **A display name is parsed, and calling that "one character" was wrong.**
+    Every real ``From:`` header is ``Billing <billing@svc.example>``, so a
+    version that declined on the angle-bracket form would turn this rule off for
+    most of a real mailbox — which is the over-claiming direction. So the
+    brackets are handled: exactly one ``@``, the tail taken, one trailing ``>``
+    removed, and one trailing root dot removed so ``corp.example.`` and
+    ``corp.example`` are one organisation rather than two.
 
-    ``None`` is the correct absence, and it is the answer for **every** origin
-    this cannot read: absent, blank, whitespace, or carrying no ``@`` at all.
-    ``travelled`` treats it as *cannot decide* rather than as agreement, which is
-    story 17's blank-origin rule arriving at a second level — were blankness
-    agreement, a mailbox whose ``from`` headers could not be read would classify
-    every block as one organisation's furniture and hand story 18's defect back
-    as a split.
+    **Everything it cannot read declines, which merges.** A non-string; an
+    absent, blank or whitespace origin; no ``@`` at all (a bare display name is
+    not an address); *more than one* ``@``, which is two addresses in one header
+    and picking either would be a guess; an empty local part; and anything left
+    that is not shaped like a domain — no dot, an empty label, or a character
+    that is neither alphanumeric nor a hyphen, which is what catches
+    ``corp.example (Legal)``.
 
-    A display name is tolerated rather than parsed: ``Billing <b@svc.example>``
-    ends at the address because the last ``@`` is inside the angle brackets, and
-    the brackets are stripped off the end. That is not an address parser and does
-    not pretend to be one; a shape it cannot read answers ``None``, which
-    declines.
+    The type check is not decoration. ``str(b"a@corp.example")`` is
+    ``"b'a@corp.example'"``, whose tail reads as a plausible domain, so coercing
+    would have answered confidently on a value that is not an address at all —
+    the same refusal ``Run.declares`` makes when it is handed something that is
+    not a ``Scrubbed``.
     """
-    if not an_identity(origin):
+    if not isinstance(origin, str) or not an_identity(origin):
         return None
-    local, at, home = _normalize(str(origin)).rpartition(AT)
-    if not at or not local.strip():
+    value = normalized(origin)
+    if value.count(AT) != 1:
         return None
-    return home.strip().strip("<>").strip() or None
+    local, _, home = value.partition(AT)
+    if not local.strip():
+        return None
+    home = home.strip()
+    if home.endswith(">"):
+        home = home[:-1].strip()
+    home = home.rstrip(DOT)
+    return home if _a_domain(home) else None
 
 
-def travelled(origins: Sequence[object]) -> bool:
-    """Whether the block these origins carry is being passed on, or is furniture.
+def _a_domain(home: str) -> bool:
+    """Whether what is left after the ``@`` is shaped like a domain at all.
+
+    Deliberately a shape check and not a grammar: at least two labels, none of
+    them empty, no whitespace anywhere, and every **ASCII** character
+    alphanumeric or a hyphen.
+
+    **Non-ASCII is allowed through, and that is a worldwide requirement rather
+    than laxity.** An internationalised domain is non-ASCII by definition, and
+    the obvious spelling — ``character.isalnum() or character == "-"`` — rejects
+    it, because a Devanagari matra and an Arabic harakat are *marks* rather than
+    alphanumerics. That version answered ``None`` for
+    ``संपर्क@उदाहरण.भारत``, which is this rule declining for a large share of the
+    world with nothing saying so. Excluding the marks would need
+    ``unicodedata``, which this module may not import (see the purity case), and
+    the whitespace test is Unicode-aware on its own — so what a non-ASCII
+    character could smuggle past this is a non-ASCII *punctuation* mark inside a
+    domain, which is neither a shape real headers produce nor one that changes
+    the answer for any block.
+    """
+    if not home or DOT not in home:
+        return False
+    labels = home.split(DOT)
+    if not all(labels):
+        return False
+    return all(
+        not character.isspace()
+        and (not character.isascii() or character.isalnum() or character == "-")
+        for label in labels for character in label
+    )
+
+
+def shared(home: object) -> bool:
+    """Whether a domain hosts **many unrelated people** rather than one company.
+
+    Two addresses at ``gmail.com`` are two strangers who happen to use one
+    provider, so a block carried only there has been shown to stay nowhere. The
+    first build of this rule missed that and read any domain as an organisation,
+    which made an ordinary forward between two ``gmail.com`` addresses two
+    supports from one message — story 18's over-claiming defect, handed back for
+    the commonest sender population in a personal mailbox.
+
+    Three ways to match, and each is chosen so the answer does not depend on a
+    list somebody has to keep current:
+
+    * the domain, **or any suffix of it**, is in ``SHARED_DOMAINS`` — so
+      ``mail.yahoo.com`` is matched by ``yahoo.com``;
+    * any such suffix begins with a label in ``SHARED_HOSTS``, which is how the
+      country variants of one family are covered without enumerating them;
+    * the domain is academic by shape — a ``.edu`` top level, or ``ac``/``edu``
+      before a two-letter country code. A university is thousands of unrelated
+      people at one domain, which is this rule's own definition of shared.
+
+    Single-label suffixes are never tested, so a top level alone can never make
+    a domain shared and ``corp.example`` is not matched by ``example``.
+    """
+    if not isinstance(home, str) or not home:
+        return False
+    labels = home.split(DOT)
+    if _academic(labels):
+        return True
+    for start in range(len(labels) - 1):
+        suffix = labels[start:]
+        if DOT.join(suffix) in SHARED_DOMAINS or suffix[0] in SHARED_HOSTS:
+            return True
+    return False
+
+
+def _academic(labels: Sequence[str]) -> bool:
+    """Whether these domain labels are a university's, by shape.
+
+    ``mit.edu``; ``cam.ac.uk``, ``u-tokyo.ac.jp``, ``usp.edu.br``. The
+    two-letter test on the last label is what keeps ``edu.example`` and
+    ``ac.example`` out, and the three-label minimum keeps a bare ``ac.uk`` — not
+    an address anybody has — from matching.
+    """
+    if labels and labels[-1] == "edu":
+        return True
+    return (len(labels) >= 3 and labels[-2] in ACADEMIC_LABELS
+            and len(labels[-1]) == 2)
+
+
+def organisation(origin: object) -> str | None:
+    """The organisation an origin belongs to, or ``None`` where there is none.
+
+    ``domain`` unless that domain is ``shared``, in which case there is no
+    organisation to read: a webmail provider, an ISP and a university are places
+    many unrelated people send mail from, and a block carried only there has not
+    been shown to stay anywhere.
+
+    ``None`` therefore means the same thing for both causes — *this tells us
+    nothing* — and ``travelled`` treats it the same way for both, which is
+    story 18's answer and the merging direction.
+    """
+    home = domain(origin)
+    return None if home is None or shared(home) else home
+
+
+def travelled(homes: Sequence[object]) -> bool:
+    """Whether a block carried by these **organisations** is being passed on.
 
     **Story 19's whole discriminator, and the reason it is the only one that
     works.** A legal footer is stapled by one organisation to its own outgoing
@@ -411,6 +642,13 @@ def travelled(origins: Sequence[object]) -> bool:
     block whose carriers cross organisations is the thing being passed on and
     must.
 
+    **It takes resolved organisations, not raw origins**, because ``declaring``
+    resolves each held body's once per arrival rather than once per match.
+    ``organisation`` is the only thing that produces one; a value with an ``@``
+    still in it is a caller that forgot, and is read as unresolved rather than
+    compared — which declines and merges instead of answering confidently on a
+    string this function was never given.
+
     ``True`` means **story 18's answer stands** — adopt the held body's key, the
     two are one voice. ``False`` is the only branch that changes anything, and it
     changes it in the direction that *admits* claims, which is why every
@@ -418,9 +656,9 @@ def travelled(origins: Sequence[object]) -> bool:
 
     * fewer than two carriers — there is nothing to classify from, and a block
       seen once has not been shown to stay anywhere;
-    * an origin that cannot be read — blankness is not agreement (story 17), so
-      one unreadable carrier declines for the whole block rather than letting
-      the readable ones vote;
+    * an organisation that cannot be read — a blank origin (story 17's rule:
+      blankness is not agreement), an unparseable one, or a shared domain, where
+      two addresses are two strangers;
     * more than one organisation — it travelled.
 
     Story 18 could say its failures should merge, because Half saying less is
@@ -428,44 +666,53 @@ def travelled(origins: Sequence[object]) -> bool:
     also *split*, and a split admits claims. So the fallback is story 18's
     answer and never "independent".
     """
-    homes = [organisation(origin) for origin in origins]
-    if len(homes) < 2 or any(home is None for home in homes):
+    resolved = list(homes)
+    if len(resolved) < 2:
         return True
-    return len(set(homes)) > 1
+    if any(not isinstance(home, str) or AT in home for home in resolved):
+        return True
+    return len(set(resolved)) > 1
 
 
 def carrying(
     block: Sequence[str],
     window: Iterable[Cut],
 ) -> tuple[object, ...]:
-    """The origin of every body in ``window`` that carries ``block``.
+    """The organisation of every body in ``window`` that carries ``block``.
 
     **Bounded by exactly what it is handed and never wider** — ``window`` is
     ``declaring``'s cut of the caller's held window, which ``Run.hold`` caps at
     ``MAX_SOURCES``. There is no pass over a mailbox, no second store and no
-    state (story 9d, AD-13, AD-22): what comes back is a tuple of origins, and
-    the bodies stay where they were.
+    state (story 9d, AD-13, AD-22): what comes back is a tuple of organisations,
+    and the bodies stay where they were.
 
-    ``contains`` rather than ``inside``, and the direction is the point: a
-    carrier is a body the block is **in**. A held body shorter than the block is
-    not a carrier of it however much they share.
+    **Directional, and the direction is the point**: a carrier is a body the
+    block is **in**. A held body shorter than the block is not a carrier of it
+    however much they share, which is why this searches ``needle in joined`` and
+    never the other way round.
+
+    The block is joined **once**, at the top, and every held body's joined form
+    was built when the window was cut. So a window of eight costs one join and
+    eight searches, where the first version of this function rebuilt both sides
+    for every held body it looked at.
 
     A body that declared nothing is skipped, for the reason ``declaring`` skips
     it — it is one the rule could not read, either too short to compare or past
     the tokenizer's ceilings. The second of those is residue: an oversized body
     that genuinely carries the block is a carrier this cannot see, which makes
-    the origin set smaller and so makes *furniture* — the splitting answer —
-    marginally likelier. Recorded rather than guessed at.
+    the organisation set smaller and so makes *furniture* — the splitting
+    answer — marginally likelier. Pinned by a case rather than guessed at.
     """
-    return tuple(
-        whose for key, theirs, whose in window
-        if key and contains(theirs, block)
-    )
+    if not block:
+        return ()
+    needle = _joined(block)
+    return tuple(home for key, _written, joined, home in window
+                 if key and needle in joined)
 
 
 def declaring(
     body: object,
-    held: Iterable[Window],
+    held: Iterable[Held],
     *,
     origin: object,
     split: Split = terms,
@@ -489,14 +736,35 @@ def declaring(
     and ``Run.hold`` caps that window at ``MAX_SOURCES``. There is no pass over
     every candidate and nothing quadratic in a mailbox (story 9d).
 
-    **The cost, stated honestly, because the first version of this line was
-    wrong twice.** It once claimed one tokenization; it then admitted that a
-    window of eight costs nine, because the window carried texts rather than
-    units and every held body was cut again on every arrival. Story 19 would
-    have made that quadratic — a classification per match, each re-reading the
-    window — so the window is now cut **once**, before the loop, and ``carrying``
-    is handed the units. A window of eight still costs nine tokenizations per
-    arriving message, whatever the shape of what arrives.
+    **The cost, stated honestly, because this line has been wrong three times.**
+    It once claimed one tokenization. It then admitted a window of eight costs
+    nine, because the window carried texts rather than units. It then counted
+    only tokenizations and said nothing about the joins and searches story 19
+    added. What the code does now, per arriving message against a window of
+    ``w``:
+
+    * ``w`` tokenizations and ``w`` string joins — the window is cut once,
+      before the loop — plus one of each for the arriving body;
+    * ``w`` substring searches to find the matches, and no join at all in the
+      loop, because both sides were joined before it;
+    * one join and ``w`` searches per **match**, inside ``carrying``, so at
+      worst ``w`` joins and ``w²`` searches when every held body matches *and
+      every one of them is furniture* — a travelling match returns, so it costs
+      one. The worst case is therefore ``2w + 1`` joins in all: measured at
+      ``MAX_SOURCES``, **17** where every match is furniture and **10** where
+      the first one travels, against sixty-four joins before this was fixed. A
+      constant, and not anything that grows with a mailbox;
+    * ``w + 1`` domain reads, one per cut entry and one for the arriving origin.
+
+    **Cutting the window is unconditional, and that is a trade rather than free.**
+    A held body with no key, or one too short to compare, is now tokenized before
+    it is skipped, where the first version skipped it first. That is at most ``w``
+    tokenizations of bodies the rule will not use. It is paid because the moment
+    *any* match happens ``carrying`` needs the whole window cut anyway, and
+    cutting lazily would mean either cutting twice or carrying a half-built
+    window into the classifier. The bound a case asserts — one reading per held
+    body plus one — is therefore exact rather than an upper limit, and it
+    forbids an early-exit shape that would have saved nothing.
 
     **The first *travelling* match wins, in the caller's arrival order, and that
     is a limit.** Every held body in one containment chain already carries the
@@ -509,31 +777,50 @@ def declaring(
     others exactly as independent as they were before this rule existed.
 
     Story 19 narrows *first match* to *first travelling match*: a held body whose
-    shared block is furniture is stepped over rather than ending the search, so a
-    genuine forward further down the window is still found. Strictly more of
-    story 18's rule reaches its answer than before, never less.
+    shared block is furniture is **stepped over** rather than ending the search,
+    so a genuine forward further down the window is still found. That matters on
+    an ordinary shape — a forward carrying its forwarder's legal footer, arriving
+    after the footer itself — where returning on the first match would hand the
+    forward the footer's key and leave the original standing as a second support.
+    Strictly more of story 18's rule reaches its answer than before, never less.
     """
     mine = units(body, split=split)
     if not long_enough(mine):
         return ""
+    mine_joined = _joined(mine)
     # Cut once. The comprehension is the only place ``held`` is read, so the
-    # bound the caller set is the bound both loops below run under.
-    window: list[Cut] = [
-        (key, units(text, split=split), whose) for key, text, whose in held
-    ]
-    for key, theirs, _whose in window:
+    # bound the caller set is the bound the loop below runs under.
+    window: list[Cut] = [_cut(key, text, whose, split) for key, text, whose in held]
+    home = organisation(origin)
+    for key, theirs, theirs_joined, _theirs_home in window:
         if not key or not long_enough(theirs):
             continue
-        if not inside(mine, theirs):
+        # ``_inside_joined`` rather than ``inside``: both joined forms are
+        # already built — the window's when it was cut, the arriving body's
+        # above — and ``inside`` would rebuild both on every comparison, which
+        # is ``w`` extra joins of the arriving body per arrival.
+        if not _inside_joined(mine, mine_joined, theirs, theirs_joined):
             continue
         # The block is the smaller body — that is what containment means — and
         # its carriers are every body in hand that it sits inside, the arriving
         # one included. ``carrying`` finds the held ones; the arriving body is
         # a carrier by construction, since it matched.
         block = mine if len(mine) <= len(theirs) else theirs
-        if classify((origin, *carrying(block, window))):
+        if classify((home, *carrying(block, window))):
             return key
     return _handle(mine)
+
+
+def _cut(key: str, text: object, whose: object, split: Split) -> Cut:
+    """One held body, with every derivation this rule makes from it done once.
+
+    A module-level function rather than a nested expression so that the guard
+    reading ``declaring``'s syntax tree can say what the comprehension building
+    the window is allowed to call: a name this module already exposes, each of
+    which is pure and reads only what it is handed.
+    """
+    written = units(text, split=split)
+    return (key, written, _joined(written), organisation(whose))
 
 
 def contains(outer: Sequence[str], inner: Sequence[str]) -> bool:
@@ -557,9 +844,7 @@ def contains(outer: Sequence[str], inner: Sequence[str]) -> bool:
     """
     if not outer or not inner or len(inner) > len(outer):
         return False
-    needle = JOIN + JOIN.join(inner) + JOIN
-    haystack = JOIN + JOIN.join(outer) + JOIN
-    return needle in haystack
+    return _joined(inner) in _joined(outer)
 
 
 def inside(mine: Sequence[str], theirs: Sequence[str]) -> bool:
@@ -572,12 +857,47 @@ def inside(mine: Sequence[str], theirs: Sequence[str]) -> bool:
     and comparing the ``units`` directly. Ask this with two ``units`` results, or
     ask ``an_echo`` with two bodies; there is no third way to spell the rule.
 
-    ``contains`` in both directions, and spelled that way rather than repeated:
-    the sentinel discipline that makes the search whole-term lives in one place,
-    and a rule about mailbox ordering is exactly what an asymmetric answer here
-    would be.
+    **One search, not two.** This was ``contains`` asked in both directions,
+    which is two joins and two searches where one of each answers — and
+    ``tools/percolation_sim.py``, its second consumer, pays that a hundred times
+    over, since it compares every pair in a thousand-message mailbox. The
+    shorter sequence is the inner one, which is what containment means.
+
+    The rule itself lives in ``_inside_joined`` and is spelled once.
+    ``declaring`` calls that directly, because it has both joined forms already
+    and calling this would rebuild them on every comparison — which is the join
+    cost this rewrite exists to remove. Both callers therefore run the same
+    line, and a mutation to it is a mutation to both.
     """
-    return contains(theirs, mine) or contains(mine, theirs)
+    return _inside_joined(mine, _joined(mine), theirs, _joined(theirs))
+
+
+def _inside_joined(mine: Sequence[str], mine_joined: str,
+                   theirs: Sequence[str], theirs_joined: str) -> bool:
+    """``inside``, over sequences whose joined forms are already built.
+
+    The one place the containment rule is spelled. It takes both forms of both
+    sides rather than deriving either, so the caller that has them — the loop in
+    ``declaring``, where the window was joined once when it was cut — pays no
+    join at all, and the caller that does not — ``inside`` — builds them once.
+    """
+    if not mine or not theirs:
+        # Nothing contains nothing, and two empty bodies must not be one voice.
+        return False
+    if len(mine) <= len(theirs):
+        return mine_joined in theirs_joined
+    return theirs_joined in mine_joined
+
+
+def _joined(written: Sequence[str]) -> str:
+    """``written`` as the sentinel-wrapped string every containment search runs on.
+
+    One place, because the leading and trailing sentinels are what keep a match
+    on whole-term boundaries at the ends, and two spellings of that would be two
+    rules. Built once per body when the window is cut, rather than once per
+    comparison.
+    """
+    return JOIN + JOIN.join(written) + JOIN
 
 
 def _check_rule() -> None:
@@ -600,26 +920,48 @@ def _check_rule() -> None:
             "containment search would match across term boundaries and 'rat' "
             "would be found inside 'gratis'"
         )
-    if not travelled(("a@one.example", "b@two.example")):
+    if not travelled(("one.example", "two.example")):
         raise ValueError(
             "a block carried by two organisations no longer classifies as "
             "travelling, so every forward is furniture and story 18's defect "
             "is back as a split — which admits claims rather than withholding "
             "them, the direction CAP-3 exists to prevent"
         )
-    if travelled(("a@one.example", "b@one.example")):
+    if travelled(("one.example", "one.example")):
         raise ValueError(
             "a block confined to one organisation classifies as travelling, so "
             "the classifier decides nothing and a footer-only message collapses "
             "every message that carries it (story 19's defect)"
         )
-    if not travelled(("a@one.example", "")) or not travelled(("a@one.example",)):
+    if not travelled(("one.example", None)) or not travelled(("one.example",)):
         raise ValueError(
-            "the classifier answers on an unreadable origin or on a single "
-            "carrier. Both are *cannot decide*, and both must fall back to "
-            "story 18's answer: blankness is not agreement (story 17), and a "
+            "the classifier answers on an unreadable organisation or on a "
+            "single carrier. Both are *cannot decide*, and both must fall back "
+            "to story 18's answer: blankness is not agreement (story 17), and a "
             "branch that cannot decide must merge rather than split"
         )
+    if not travelled(("a@one.example", "b@one.example")):
+        raise ValueError(
+            "the classifier compared raw origins as though they were resolved "
+            "organisations; a caller that forgot ``organisation`` must decline "
+            "and merge rather than be answered confidently on two addresses "
+            "that share a company"
+        )
+    if organisation("a@corp.example") != "corp.example":
+        raise ValueError(
+            "an ordinary company address no longer resolves to its domain, so "
+            "no block is ever furniture and the footer attractor is back"
+        )
+    for anyone in ("a@gmail.com", "b@yahoo.co.uk", "c@cam.ac.uk"):
+        if organisation(anyone) is not None:
+            raise ValueError(
+                f"{anyone!r} resolved to an organisation. A webmail provider, "
+                "an ISP and a university host many unrelated people, so two "
+                "addresses at one of them are two strangers — reading them as "
+                "one company makes an ordinary forward between them two "
+                "supports from one message, which is story 18's over-claiming "
+                "defect handed back"
+            )
 
 
 _check_rule()

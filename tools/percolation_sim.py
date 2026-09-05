@@ -41,7 +41,7 @@ from half.ingest.independence import (
     ORIGIN_AXIS,
     ORIGIN_KIND,
     SAME_MOMENT_FIELDS,
-    _normalize,
+    normalized,
     an_identity,
     independent_groups,
     one_voice,
@@ -74,11 +74,11 @@ def flat_union_find(supporting: list[tuple[str, Mapping[str, Any]]]) -> int:
 
     seen: dict[str, int] = {}
     for index, (source_id, source) in enumerate(supporting):
-        values = {f"source:{_normalize(str(source_id))}"}
+        values = {f"source:{normalized(str(source_id))}"}
         for key, kind in FLAT_FIELDS:
             raw = source.get(key)
             if an_identity(raw):
-                values.add(f"{kind}:{_normalize(str(raw))}")
+                values.add(f"{kind}:{normalized(str(raw))}")
         for value in values:
             first = seen.setdefault(value, index)
             if first != index:
@@ -194,8 +194,8 @@ def a_mailbox_with_a_disclaimer(msgs: int, people: int, threads: int,
     review found it: a block contained in two bodies that do not contain each
     other makes those two one voice, and every corporate mailbox has that block
     arriving alone the day the policy changes. **Story 19 is what those rows
-    measure now.** Every sender here is at one domain — ``p<n>@x``, which is what
-    a company mailbox looks like — so the footer's carriers never leave one
+    measure now.** Every sender here is at one domain — ``p<n>@corp.example``,
+    which is what a company mailbox looks like — so the footer's carriers never leave one
     organisation, the block classifies as that organisation's furniture, and the
     rows that read ``1`` under story 18 read one voice per message.
 
@@ -203,6 +203,9 @@ def a_mailbox_with_a_disclaimer(msgs: int, people: int, threads: int,
     company with many people at it, which is the shape the rule was chosen on: a
     footer carried by three senders at one domain is furniture, one notice
     carried by four senders at four domains is substance.
+
+    Every sender is at ``corp.example`` — one company with ``people`` people at
+    it, which is the shape the rule was chosen on.
 
     ``one_company=False`` puts every person at a **domain of their own**, which
     is the control the footer rows need: the same bodies in the same order, and
@@ -224,7 +227,13 @@ def a_mailbox_with_a_disclaimer(msgs: int, people: int, threads: int,
         # this is still the same mailbox and the counts are still comparable.
         thread = f"t{r.randrange(threads)}"
         who = r.randrange(people)
-        sender = f"p{who}@x" if one_company else f"p{who}@d{who}.example"
+        # **A domain, not a bare label.** These were `p<n>@x`, and `x` is not a
+        # domain — `echo.domain` requires at least two labels, so every origin
+        # here read as unreadable and every footer row declined for the wrong
+        # reason. The draw is unchanged, so this is the same mailbox `a_mailbox`
+        # builds and the counts below are still comparable.
+        sender = (f"p{who}@corp.example" if one_company
+                  else f"p{who}@d{who}.example")
         body = (footer if i == footer_only_at
                 else under_a_footer(i, days.randrange(28) + 1, footer))
         if rule == "sequence":
@@ -290,15 +299,20 @@ def _declaring_by(body: str, held: list[tuple[str, str, str]], same,
     if not echo.long_enough(mine):
         return ""
     ours = (mine, frozenset(mine))
-    window = [(key, echo.units(text), whose) for key, text, whose in held]
-    for key, theirs, _whose in window:
+    # `echo._cut` rather than a tuple built here: the window's shape is the
+    # shipped rule's, and a second spelling of it is the drift this skeleton's
+    # cross-check exists to catch.
+    window = [echo._cut(key, text, whose, echo.terms)
+              for key, text, whose in held]
+    home = echo.organisation(origin)
+    for key, theirs, _joined, _theirs_home in window:
         if not key or not echo.long_enough(theirs):
             continue
         if same(ours, (theirs, frozenset(theirs))):
             if classify is None:
                 return key
             block = mine if len(mine) <= len(theirs) else theirs
-            if classify((origin, *echo.carrying(block, window))):
+            if classify((home, *echo.carrying(block, window))):
                 return key
     return echo.own_key(body)
 
@@ -378,7 +392,17 @@ SWEEP = [
 ]
 
 
-def main() -> None:
+def main() -> int:
+    """Print the sweep. Returns a process exit code.
+
+    **Nothing here is a test, and one thing here is a check.** The footer rows
+    carry a control column — the same bodies with every sender at a domain of
+    their own — and a control that stops being a control makes the column beside
+    it meaningless. A printed verdict nobody reads cannot say that, so the two
+    disagreements it can find are collected and the process exits non-zero on
+    them. The rest still measures, prints, and asserts nothing.
+    """
+    failures: list[str] = []
     print("\n  Story 17's frozen matrix — where all three rules agree\n")
     print(f"  {'shape':<42}{'truth':>6}{'flat':>7}{'levels':>8}{'no-3rd':>9}")
     print("  " + "─" * 65)
@@ -483,7 +507,7 @@ def main() -> None:
           "them — which is the whole of what the rule reads.\n")
     print(f"  {'msgs':>6}{'block':>18}{'arrives':>9}{'one co':>8}"
           f"{'many co':>9}{'story 18':>10}{'truth':>7}   verdict")
-    print("  " + "─" * 65)
+    print("  " + "─" * 78)
     for label, block in (("legal footer", DISCLAIMER),
                          ("one-line footer", FOOTER_LINE)):
         for msgs, position in ((31, 0), (31, 5), (7, 0), (7, 3)):
@@ -505,7 +529,17 @@ def main() -> None:
                        else "the control stopped being the control")
             print(f"  {msgs:>6}{label:>18}{position:>9}{keys:>8}"
                   f"{travelling:>9}{was:>10}{msgs:>7}   {verdict}")
-    print("  " + "─" * 65)
+            # **Checked, not merely printed.** A verdict column nobody reads is
+            # how a sweep goes on agreeing with itself: the control has to be
+            # the control, or the row to its left is measuring a rule that
+            # stopped collapsing anything rather than one that reads the origin.
+            if keys != msgs or travelling != was:
+                failures.append(
+                    f"{label} at {position} in {msgs}: one company {keys} "
+                    f"(truth {msgs}), many companies {travelling} "
+                    f"(story 18 {was})"
+                )
+    print("  " + "─" * 78)
     print("  one co   = every sender at one domain: the block never leaves the "
           "company that\n             staples it, so it is furniture and every "
           "message is its own voice.")
@@ -532,27 +566,51 @@ def main() -> None:
     # function's shape. Cross-checked rather than asserted in a comment,
     # because a copy of `declaring` living in this file is exactly the drift
     # that made this section necessary.
-    probe = [(echo.own_key(under_a_footer(i, i + 1)), under_a_footer(i, i + 1),
-              f"p{i}@d{i}.example")
-             for i in range(MAX_SOURCES)]
     nothing = ("", "a held body that declared nothing", "p@nowhere.example")
     # A stranger, a forward of a held body, a body too short to declare, and a
     # held entry that declared nothing — the four answers `declaring` gives.
-    # Each is asked twice: once from an organisation nobody in the window
-    # belongs to (the block travels) and once from inside the window's own
-    # (it is furniture), so the classifier's two branches are both crossed.
     checked = [under_a_footer(99, 3), "FYI\n\n" + under_a_footer(3, 4),
                "Thanks!", DISCLAIMER]
-    disagreements = sum(
-        _declaring_by(body, [nothing, *probe], BY_SEQUENCE,
-                      origin=whom, classify=echo.travelled)
-        != echo.declaring(body, [nothing, *probe], origin=whom)
-        for body in checked
-        for whom in ("me@elsewhere.example", "p3@d3.example")
-    )
+    # **Two windows, because one of them never reached the furniture branch.**
+    # A window whose bodies are each at their own domain makes every block
+    # travel, so a skeleton that forgot to classify at all would have agreed
+    # with `declaring` on every probe. The second window puts the whole window
+    # at one company, where the answer is furniture and the two rules can
+    # differ. Both branches crossed, and the count says so.
+    windows = {
+        "many companies": [nothing, *[
+            (echo.own_key(under_a_footer(i, i + 1)), under_a_footer(i, i + 1),
+             f"p{i}@d{i}.example") for i in range(MAX_SOURCES)]],
+        "one company": [nothing, *[
+            (echo.own_key(under_a_footer(i, i + 1)), under_a_footer(i, i + 1),
+             f"p{i}@corp.example") for i in range(MAX_SOURCES)]],
+    }
+    probes = 0
+    disagreements = 0
+    furniture = 0
+    for shape, window in windows.items():
+        whom = ("me@elsewhere.example" if shape == "many companies"
+                else "p9@corp.example")
+        for body in checked:
+            probes += 1
+            theirs = _declaring_by(body, window, BY_SEQUENCE, origin=whom,
+                                   classify=echo.travelled)
+            ours = echo.declaring(body, window, origin=whom)
+            disagreements += theirs != ours
+            # Story 18's answer for the same probe: where it differs from the
+            # shipped one, the furniture branch was reached.
+            furniture += _declaring_by(body, window, BY_SEQUENCE) != ours
+    if disagreements:
+        failures.append(f"the sweep's skeleton disagrees with echo.declaring "
+                        f"on {disagreements} of {probes} probes")
+    if not furniture:
+        failures.append("no probe reached the furniture branch, so the "
+                        "cross-check cannot see a skeleton that stopped "
+                        "classifying")
     print(f"  the rejected rules' skeleton, run with the shipped containment "
           f"test and the\n  shipped classifier, disagrees with echo.declaring "
-          f"on {disagreements} of {len(checked) * 2} probes.\n")
+          f"on {disagreements} of {probes}\n  probes, of which {furniture} "
+          f"reach the furniture branch where it could.\n")
 
     print("  flat   = the origin as a fourth union-find axis (story 17, first "
           "version)")
@@ -567,6 +625,10 @@ def main() -> None:
           "a mailbox is one component.\n  The second level is a map from voice "
           "to one handle, so nothing chains.\n")
 
+    for failure in failures:
+        print(f"  CHECK FAILED: {failure}")
+    return 1 if failures else 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

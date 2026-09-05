@@ -2,7 +2,7 @@
 title: 'Story 19 — The block that never leaves one company'
 type: 'fix'
 created: '2026-09-05'
-status: 'in-progress'
+status: 'done'
 baseline_commit: 'defc730'
 review_loop_iteration: 1
 context:
@@ -165,6 +165,13 @@ and `Run._texts` currently does not surface alongside the text.
 - [x] `tools/percolation_sim.py` -- the footer-only rows stop collapsing, with
       the many-company control and the story-18 column beside them
 - [x] story 17's and story 18's guards re-run, margins stated below
+- [x] **loop 1** — the shared-domain exclusion (`echo.shared`,
+      `SHARED_DOMAINS`, `SHARED_HOSTS`, the academic shape), worldwide and
+      asserted to be so
+- [x] **loop 1** — the arriving origin's production wiring, pinned through
+      `Revealed.observe`; blanking it now reddens a case
+- [x] **loop 1** — the first-travelling-match step-over, pinned on an ordering
+      that puts a furniture match ahead of a travelling one
 
 **Acceptance Criteria:**
 - Given a footer-only message and thirty notes carrying it from one origin,
@@ -213,10 +220,14 @@ decide must therefore fall back to story 18's answer, not to "independent".
 - `cd half && uv run --extra dev python tools/admits_sim.py` -- the forward admits nothing
 - `cd half && git status --porcelain` -- clean after commit
 
-**Measured, at `a8a93bf` + this change:**
+**Measured, at `defc730` + this change** — the baseline the frontmatter and the
+Code Map both name; the earlier draft of this section said `a8a93bf`, which is
+the spec commit rather than the code baseline:
 
-- `pytest -q` — **5276 passed**, from 5260. CAP-3 gates **32 / 55 / 89**,
-  margin zero, floors raised in `.github/workflows/ci.yml`.
+- `pytest -q` — **5293 passed**, from 5260 at `defc730`. CAP-3 gates
+  **32 / 63 / 98**, margin zero. Exactly two floors moved, each verified against
+  its own gate; the AD-28 floor was moved by accident in a bulk edit and
+  restored.
 - **Story 17's percolation margins are unmoved.** 50 messages / 40 people /
   45 threads: flat 13, levels 24, no-3rd 28. 1000 / 100 / 400: flat 1, levels
   285, no-3rd 341. The frozen matrix still has all three rules agreeing on 9 of
@@ -234,17 +245,50 @@ decide must therefore fall back to story 18's answer, not to "independent".
   organisations and is being passed on.
 - `tools/mailbox_sim.py` **0 of 5 miscounted**; `tools/admits_sim.py` the
   forward counts 1 and admits nothing.
-- **Mutation-checked three ways.** Making `travelled` always answer yes, and
-  making `organisation` return the whole address, both fail `echo._check_rule`
-  at import by name. Deleting the classification from `declaring` leaves 13
-  cases red.
+- **Mutation-checked six ways.** Making `travelled` always answer yes, making
+  `organisation` return the whole address, and making a webmail provider resolve
+  to an organisation all fail `echo._check_rule` at import, by name. Deleting
+  the classification from `declaring` leaves **23** cases in
+  `tests/test_echo.py` red. Blanking
+  `origin=receipt.sender` at the `Revealed.observe` call site — which left the
+  whole suite green before loop 1 — now reddens
+  `test_the_arriving_origin_reaches_the_classifier_through_observe`. Replacing
+  the step-over `continue` with a `break` — also green before loop 1 — reddens
+  `test_a_furniture_match_before_a_travelling_one_is_stepped_over` and the join bound in
+  `test_the_comparison_is_bounded_by_the_held_window`, since breaking early
+  changes the join count too.
 
-**Residue, recorded in `deferred-work.md`:**
+**Loop 1, measured:**
 
-- **LAUNCH-RELEVANT** — a forward inside one organisation counts as two
-  supports and crosses CAP-3's floor. Over-claiming, and stated up front.
-- A held body past the tokenizer's ceilings is a carrier `carrying` cannot see,
-  which biases the classification towards splitting — the same direction.
+- **The regression closed.** A forward between two addresses at one webmail
+  provider, ISP or university is **one** voice, where the first build made it
+  **two supports from one message**. Each of the three is a row with the same
+  pair at a real company as its in-case control, so the row cannot pass by
+  declining everywhere.
+- **The list is worldwide by assertion**, not by intention: a provider from each
+  of fifteen regions, so deleting a continent's worth fails.
+- **Cost.** A window of eight costs eight tokenizations, eight joins and eight
+  domain reads per arriving message, plus one join and eight searches per match.
+  The first build rebuilt both sides of the search per held body per match — up
+  to sixty-four joins — and re-derived every organisation on every call.
+- The sweep's control column is **checked and exits non-zero**, not printed; its
+  anti-drift probe is a `cap3_structure` case, crosses both classifier branches,
+  and reports 0 of 8 disagreements with 2 reaching the furniture branch.
+
+**Residue, recorded in `deferred-work.md` and each pinned by a case:**
+
+- **LAUNCH-RELEVANT, over-claiming** — a forward inside one organisation counts
+  as two supports and crosses CAP-3's floor. Stated up front.
+- **Over-claiming** — the same, reached through the shared-domain list's
+  incompleteness: a forward on a provider it does not know.
+- **Over-claiming** — a held body past the tokenizer's ceilings is a carrier
+  `carrying` cannot see, which biases towards splitting.
+- **Over-claiming** — `normalized` casefolds, so two domains differing only by
+  `ß`/`ss` read as one organisation.
+- **Merging** — a footer stapled by a shared-domain sender (a university mailing
+  its own students) still collapses the messages carrying it; the exclusion
+  cannot tell that block from a forward between two people there.
+- **Merging** — an IDN's Unicode and `xn--` spellings read as two organisations.
 
 ## Spec Change Log
 
@@ -264,3 +308,20 @@ KEEP, and do not re-derive: the containment rule and every story 18 guard; the
 origin read but never unioned on; the merge-on-cannot-decide fallback; the
 minimal `@`-tail derivation with no public-suffix list or subdomain folding; the
 bounded window; nothing persisted; the six recorded dead ends.
+
+**2026-09-05, loop 1 — implemented.** The exclusion, the two switch-off gaps and
+the review's patch list are in. Two findings I did not implement as asked, with
+the reason:
+
+- *"Consider whether `normalized`'s casefold is right for a domain."* Considered
+  and kept. Casefolding is wrong for a domain in one shape — `ß` folds to `ss`,
+  so two companies read as one, which splits. Replacing it means a second
+  normalisation idea in `echo`, which is the drift the shared function exists to
+  close, and the KEEP list holds the minimal derivation. Recorded with its
+  direction and pinned in both directions instead.
+- *"Matrix rows are cited by number and rows 3 and 10 have no case."* Row 3 (an
+  original and several forwards) now has one and row 10 (the production path)
+  is the `observe` case. The numbered citations elsewhere are **story 18's**
+  matrix, not this one; they are relabelled `Story 18's matrix row N` rather
+  than renamed, because renaming thirteen descriptions I do not have the
+  original matrix for would risk describing them wrongly.

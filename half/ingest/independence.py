@@ -64,7 +64,7 @@ from typing import Any
 #: that turns this module into an outage — see the module docstring and
 #: ``_check_axes``. Nothing is derived from any of these values: no domain, no
 #: plus-address, no display name, no parsing of any kind. The value is what the
-#: receipt carries, under ``_normalize`` and nothing else.
+#: receipt carries, under ``normalized`` and nothing else.
 SAME_MOMENT_FIELDS: tuple[tuple[str, str], ...] = (
     ("thread_id", "thread"),
     ("digest", "content"),
@@ -113,8 +113,32 @@ def an_identity(raw: object) -> bool:
     return raw is not None and bool(str(raw).strip())
 
 
-def _normalize(value: str) -> str:
-    """Casefold under NFC so two spellings of one identity match."""
+def normalized(value: str) -> str:
+    """Casefold under NFC so two spellings of one identity match.
+
+    **Public, and named as a contract rather than as an implementation detail.**
+    It was ``_normalize`` while this module was its only consumer. Story 19 gave
+    it a second one — ``half.ingest.echo.domain`` reads the tail of an origin and
+    has to agree with this module about what two spellings of one address are —
+    and a private name imported across a module boundary is a reuse nothing
+    holds. Renamed rather than aliased: two live spellings of one function is
+    exactly the drift the reuse exists to prevent.
+
+    **What the two consumers share is this and only this.** They agree on
+    casefolding under NFC. They do not agree on what they compare: this module
+    compares whole addresses for identity, and ``echo`` compares the part after
+    the ``@`` to decide whether a block stayed inside one organisation. Saying
+    more than that — as a CI comment once did — reads as though an address and
+    its domain were the same question.
+
+    **Casefolding is right for an address and knowingly imperfect for a
+    domain.** ``str.casefold`` maps ``ß`` to ``ss``, so an internationalised
+    domain spelled with an eszett folds together with one spelled ``ss`` — two
+    organisations read as one, which is the *splitting* direction over in
+    ``echo``. Recorded in ``deferred-work.md`` and pinned by a case rather than
+    fixed here, because a second normalisation idea in ``echo`` would be the
+    drift this rename exists to close.
+    """
     return unicodedata.normalize("NFC", value.strip()).casefold()
 
 
@@ -122,11 +146,11 @@ def origin_of(source: Mapping[str, Any]) -> str | None:
     """This source's origin, normalised — or ``None`` where it has none.
 
     The whole of the second level's reading of a source. Nothing is parsed: two
-    spellings of one address match because ``_normalize`` casefolds under NFC,
+    spellings of one address match because ``normalized`` casefolds under NFC,
     and for no other reason.
     """
     raw = source.get(ORIGIN_FIELD)
-    return _normalize(str(raw)) if an_identity(raw) else None
+    return normalized(str(raw)) if an_identity(raw) else None
 
 
 def one_voice(origins: Iterable[str | None]) -> str | None:
@@ -227,11 +251,11 @@ def same_moment_set(source_id: str, source: Mapping[str, Any]) -> set[str]:
     """
     if not str(source_id).strip():
         raise ValueError("source_id is required; an empty id unions everything")
-    values = {f"source:{_normalize(str(source_id))}"}
+    values = {f"source:{normalized(str(source_id))}"}
     for key, kind in SAME_MOMENT_FIELDS:
         raw = source.get(key)
         if an_identity(raw):
-            values.add(f"{kind}:{_normalize(str(raw))}")
+            values.add(f"{kind}:{normalized(str(raw))}")
     return values
 
 

@@ -765,7 +765,8 @@ class Run:
 
     # -- the scrubbed text, and how long it lives -----------------------------
 
-    def declares(self, label: str, body: object, *, origin: object) -> str:
+    def declares(self, label: str, body: object, *, origin: object,
+                 classify: echo.Classify = echo.travelled) -> str:
         """What an arriving body declares it is the same evidence as.
 
         **Asked before the candidate is built**, and that is the whole of why
@@ -816,6 +817,13 @@ class Run:
         ``ORIGIN_AXIS`` and the two-level structure are untouched by this; what
         comes back is still a key, and ``half.ingest.independence`` is still the
         only place an origin decides an identity (story 17).
+
+        ``classify`` is ``echo.declaring``'s own parameter, forwarded and never
+        read here. It exists so that the case proving the classifier does the
+        work can run **through this method** — that case used to rebuild the
+        held window by hand, appending until full where ``hold`` displaces, so
+        the one case that mattered most was measuring a window the product does
+        not have.
         """
         if not isinstance(body, Scrubbed):
             # The same refusal ``hold`` makes, for the same reason: this reads a
@@ -827,6 +835,7 @@ class Run:
             [(candidate.independence_key, text, candidate.sender)
              for candidate, text in held],
             origin=origin,
+            classify=classify,
         )
 
     def hold(self, candidate: Candidate, body: object) -> bool:
@@ -1359,7 +1368,7 @@ class Revealed:
             source_id=receipt.external_id,
             thread_id=receipt.thread_id,
             # Carried, never derived: no domain, no plus-address, no display
-            # name. The matching rule is `_normalize`'s and lives in the
+            # name. The matching rule is `normalized`'s and lives in the
             # union-find, so there is exactly one place an address is compared.
             sender=receipt.sender,
             digest=receipt.digest,

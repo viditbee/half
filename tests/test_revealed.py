@@ -653,7 +653,7 @@ def test_the_sender_travels_from_the_receipt_to_the_candidate():
                              "independence_key"}
     # The second level reads exactly what travelled, normalised there and
     # nowhere else — so the value on the wire is the receipt's own spelling and
-    # the matching rule stays `_normalize`'s.
+    # the matching rule stays `normalized`'s.
     assert identity["sender"] == "Deals@Shop.Example"
     assert origin_of(identity) == "deals@shop.example", (
         "the origin the second level reads is not the sender that travelled"
