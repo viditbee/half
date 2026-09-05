@@ -453,11 +453,12 @@ class Candidate:
     def identity(self) -> tuple[str, Mapping[str, str]]:
         """This source, in the shape ``independent_groups`` reads.
 
-        Three axes are supplied and the mapping keys are ``IDENTITY_FIELDS``'
-        own, so a renamed field is a dropped axis rather than a quiet mismatch.
-        The sender travels verbatim — an empty one is handed over as empty and
-        ``identity_set`` skips it, which is what stops every senderless source
-        unioning into one group.
+        Three fields are supplied under the keys ``half.ingest.independence``
+        reads — two that make two sources *the same moment*, and the sender,
+        which is read at its own level — so a renamed field is a dropped axis
+        rather than a quiet mismatch. The sender travels verbatim: an empty one
+        is handed over as empty and ``origin_of`` answers ``None``, which is
+        what stops every senderless source answering to one handle.
 
         ``independence_key`` is deliberately not supplied. It exists for a
         source that can *declare* what it is the same as; mail cannot, and

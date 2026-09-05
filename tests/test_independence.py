@@ -1,8 +1,8 @@
-"""Union-find corroboration: ten mentions in one thread is one support, and
-one sender in eight threads is one support.
+"""Two-level corroboration: ten mentions in one thread is one support, and one
+sender in eight threads is one support.
 
-**Read the helper before the cases.** Until story 17 this file's ``source()``
-took a ``sender``, stored it in the fixture dict, and ``identity_set`` never
+**Read the helpers before the cases.** Until story 17 this file's ``source()``
+took a ``sender``, stored it in the fixture dict, and the union-find never
 looked at it. Every case here *read* as though it exercised an origin axis and
 none of them did: the one named *a forward from another sender* varied the
 sender across two messages and passed because of the **content**; the one that
@@ -10,14 +10,27 @@ built thirty messages from one address passed because there was no axis to
 collapse them. A fixture that supplies a field the implementation ignores is
 worse than no fixture, because it tells the next reader the axis is covered.
 
-So two rules hold here now, and they are the point of the file:
+Story 17's own first version then made the same mistake one level up. It added
+the origin as a fourth union-find axis, wrote a case called *ten senders across
+ten threads stay ten supports* to prove the result could not over-collapse, and
+built that case with **one sender per thread** — so the chaining that causes the
+over-collapse could not occur in it. The fixture was unfailable, on the guard
+written to prevent exactly the failure it was hiding. That case is now
+``test_a_mailbox_dense_enough_to_percolate_does_not_collapse``, and it carries
+the rejected rule with it and asserts that rule returns **one** on the same
+sources — so the density is demonstrated rather than claimed.
+
+Three rules hold here, and they are the point of the file:
 
 * ``source()`` **requires** a sender. A case cannot get one by default, and
   therefore cannot collapse by origin without saying that it meant to.
 * every case that names an origin asserts ``without_origin`` — what the same
-  sources would count to with the axis gone. A case whose two numbers are
-  equal is not evidence for the axis, and it says which axis it *is* evidence
-  for instead.
+  sources would count to with the origin never read. A case whose two numbers
+  are equal is not evidence for the origin, and it says which axis it *is*
+  evidence for instead.
+* any case claiming a rule does not over-collapse must show a shape where
+  something **does**, or it is asserting about a mailbox that could not have
+  failed.
 """
 
 from __future__ import annotations
@@ -31,13 +44,20 @@ import pytest
 from half.ingest import independence
 
 from half.ingest.independence import (
-    IDENTITY_FIELDS,
     ORIGIN_AXIS,
+    ORIGIN_FIELD,
+    ORIGIN_KIND,
+    SAME_MOMENT_FIELDS,
     _check_axes,
+    _normalize,
+    adds_a_voice,
     an_identity,
-    identity_set,
     independent_groups,
-    names_the_origin,
+    one_voice,
+    origin_of,
+    same_moment_set,
+    unions_the_origin,
+    voices,
 )
 
 #: Sources whose sender is deliberately not an identity. ``None`` omits the key
@@ -65,11 +85,13 @@ def source(sid, *, sender, thread="t", dgst=None, declared=None):
 def without_origin(sources):
     """What these sources would count to with the origin axis deleted.
 
-    The axis is removed by dropping the field ``IDENTITY_FIELDS`` reads rather
-    than by patching the table, so nothing here mutates module state and a case
-    can hold both numbers at once. It models the mutation that matters — the
-    axis absent — and not every possible one; a *renamed* axis is caught by
-    ``names_the_origin`` and its own guard cases below.
+    The origin is removed by dropping the field ``origin_of`` reads rather than
+    by patching the module, so nothing here mutates global state and a case can
+    hold both numbers at once. Every voice then stands for itself, which is the
+    count the machinery had before story 17. It models the mutation that
+    matters — the origin never consulted — and not every possible one; the
+    origin *unioned back into the first level* is the opposite mistake and is
+    caught by ``unions_the_origin`` and its own guard cases below.
     """
     return independent_groups(
         (sid, {key: value for key, value in src.items() if key != "sender"})
@@ -126,14 +148,131 @@ def test_one_sender_across_ten_threads_at_scale_is_one_support():
     assert without_origin(mailbox) == 10
 
 
-@pytest.mark.cap3_axes
-def test_ten_senders_across_ten_threads_at_scale_stay_ten_supports():
-    """**The anti-outage half, at the same size.** The failure mode of a
-    collapsing fix is that everything collapses, Half finds one support
-    everywhere, admits nothing and goes quiet — which looks like restraint.
+PEOPLE, SHARED_THREADS = 60, 150
 
-    Thirty messages, ten threads, ten senders, one sender per thread. Nothing
-    is shared across a thread boundary, so nothing crosses one.
+
+def a_percolating_mailbox():
+    """A mailbox dense enough that a flat union-find collapses it to one.
+
+    Sixty people. Each has a thread of their own, and each also shares a thread
+    with the next person round a ring — so every thread overlaps two others by a
+    participant, and the overlap graph is connected. 360 messages, 210 threads,
+    every digest distinct, so nothing here collapses by content.
+
+    **Built to make the failure possible, which is the whole point.** The case
+    this replaces used one sender per thread, so no sender ever spanned a thread
+    boundary and the chaining that percolates could not happen in it. It would
+    have passed on the build that shipped the outage.
+    """
+    mail = [
+        source(f"solo{p}", thread=f"ts{p}", sender=f"p{p}@x", dgst=f"ds{p}")
+        for p in range(PEOPLE)
+    ]
+    for i in range(SHARED_THREADS):
+        left, right = i % PEOPLE, (i + 1) % PEOPLE
+        mail.append(source(f"c{i}a", thread=f"tc{i}", sender=f"p{left}@x",
+                           dgst=f"dca{i}"))
+        mail.append(source(f"c{i}b", thread=f"tc{i}", sender=f"p{right}@x",
+                           dgst=f"dcb{i}"))
+    return mail
+
+
+def flat_union_find(sources):
+    """The rejected rule: the origin as a fourth union-find axis.
+
+    Carried here, in the tests, because a case asserting *the shipped rule does
+    not collapse* is worth nothing unless the same sources are shown to collapse
+    something. This is the shape of the mistake, kept next to the assertion that
+    it was a mistake. ``tools/percolation_sim.py`` measures it across densities.
+    """
+    items = list(sources)
+    parents = list(range(len(items)))
+
+    def find(index):
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left, right):
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parents[right_root] = left_root
+
+    seen = {}
+    for index, (source_id, src) in enumerate(items):
+        values = set(same_moment_set(source_id, src))
+        raw = src.get(ORIGIN_FIELD)
+        if an_identity(raw):
+            values.add(f"{ORIGIN_KIND}:{_normalize(str(raw))}")
+        for value in values:
+            first = seen.setdefault(value, index)
+            if first != index:
+                union(first, index)
+    return len({find(index) for index in range(len(items))})
+
+
+@pytest.mark.cap3_axes
+def test_a_mailbox_dense_enough_to_percolate_does_not_collapse():
+    """**The anti-outage case, rebuilt so that it can fail.**
+
+    The failure mode of a collapsing rule is not a wrong claim. It is that Half
+    finds one support everywhere, admits nothing, and goes quiet — which reads
+    as a careful product with nothing to say. Story 17's first version shipped
+    exactly that, and the case written to prevent it was built so the chaining
+    could not occur.
+
+    So this case asserts three things in order, and the first two are what make
+    the third mean anything:
+
+    * the mailbox really is dense enough — ``flat_union_find``, the rejected
+      rule, returns **one** on these very sources, so a shape that cannot
+      percolate would fail here rather than pass quietly;
+    * one is below CAP-3's floor of two, so under that rule this mailbox admits
+      nothing at all, for ever;
+    * and the shipped rule returns **sixty**, exactly the number of people who
+      wrote — not merely *more than one*, because *more than one* is satisfied
+      by two and would hide almost the whole of the collapse.
+    """
+    mailbox = a_percolating_mailbox()
+    assert len(mailbox) == PEOPLE + 2 * SHARED_THREADS
+
+    assert flat_union_find(mailbox) == 1, (
+        "the fixture is not dense enough to percolate, so this case cannot "
+        "fail and is not evidence — which is exactly what was wrong with the "
+        "case it replaces"
+    )
+    assert independent_groups(mailbox) == PEOPLE, (
+        "the count no longer tracks the number of people who wrote"
+    )
+
+
+@pytest.mark.cap3_axes
+def test_the_percolating_shape_is_not_a_special_case_of_its_own_size():
+    """The same shape without the solo threads — nothing but conversations.
+
+    Still collapses to one under the rejected rule; still does not under the
+    shipped one. It is here because the case above could be satisfied by a rule
+    that keys on *solo threads existing*, and this one has none: every thread
+    has two speakers, and none of them has written alone, so no conversation can
+    be absorbed and each stands for itself.
+    """
+    conversations = [
+        entry for entry in a_percolating_mailbox()
+        if not entry[0].startswith("solo")
+    ]
+    assert flat_union_find(conversations) == 1
+    assert independent_groups(conversations) == SHARED_THREADS
+
+
+@pytest.mark.cap3_axes
+def test_ten_senders_across_ten_threads_stay_ten_supports():
+    """The small anti-outage shape, kept — but no longer asked to carry the
+    outage, because it cannot: one sender per thread, so nothing spans a thread
+    boundary and there is no chaining for any rule to get wrong.
+
+    It says what it is evidence for, which is that the second level does not
+    collapse voices that answer to different origins.
     """
     mailbox = [
         source(f"s{i}", thread=f"t{i // 3}", sender=f"p{i // 3}@acme.test",
@@ -142,6 +281,10 @@ def test_ten_senders_across_ten_threads_at_scale_stay_ten_supports():
     ]
     assert independent_groups(mailbox) == 10
     assert without_origin(mailbox) == 10
+    assert flat_union_find(mailbox) == 10, (
+        "even the rejected rule is green here, which is why this case is not "
+        "the anti-outage one"
+    )
 
 
 @pytest.mark.cap3_axes
@@ -180,9 +323,13 @@ def test_two_unrelated_senders_on_unrelated_threads_are_two_supports():
     ]
     assert independent_groups(two) == 2
     assert without_origin(two) == 2
-    left = {v for v in identity_set(*two[0]) if v.startswith("origin:")}
-    right = {v for v in identity_set(*two[1]) if v.startswith("origin:")}
-    assert left and right and not (left & right)
+    left, right = origin_of(two[0][1]), origin_of(two[1][1])
+    assert left and right and left != right
+    # And neither address is a same-moment handle at all: the origin is read at
+    # the second level, so a mutation moving it back into the first would put
+    # `origin:` values into this set and is caught here as well as by the guard.
+    assert not any(value.startswith(f"{ORIGIN_KIND}:")
+                   for value in same_moment_set(*two[0]))
 
 
 @pytest.mark.cap3_axes
@@ -269,8 +416,9 @@ def test_an_identity_is_the_one_rule_and_a_blank_is_never_one():
         assert an_identity(blank) is False
     for real in ("a@x", " a@x ", 0, 1, "0", "ゼロ"):
         assert an_identity(real) is True
-    assert "origin:" not in identity_set("s1", {"sender": "", "digest": "d1"})
-    assert "origin:a@x" in identity_set("s1", {"sender": "A@X", "digest": "d1"})
+    for blank in NO_ORIGIN:
+        assert origin_of({"sender": blank, "digest": "d1"}) is None
+    assert origin_of({"sender": "A@X ", "digest": "d1"}) == "a@x"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -408,12 +556,21 @@ def test_a_missing_field_is_simply_not_an_identity():
 
 
 @pytest.mark.cap3_axes
-def test_identity_values_carry_their_kind():
-    values = identity_set("s1", {"thread_id": "t1", "sender": "a@x",
-                                 "digest": "d1"})
+def test_same_moment_values_carry_their_kind_and_never_the_origin():
+    """Namespaced handles, and the origin is **not among them** — which is the
+    difference between the shipped rule and the one that percolated. The origin
+    is read separately, by ``origin_of``, and never becomes a value two sources
+    can be unioned by."""
+    values = same_moment_set("s1", {"thread_id": "t1", "sender": "a@x",
+                                    "digest": "d1",
+                                    "independence_key": "k1"})
     assert "thread:t1" in values
-    assert "origin:a@x" in values
     assert "content:d1" in values
+    assert "declared:k1" in values
+    assert "source:s1" in values
+    assert not any(value.startswith(f"{ORIGIN_KIND}:") for value in values)
+    assert "a@x" not in {value.split(":", 1)[1] for value in values}
+    assert origin_of({"sender": "a@x"}) == "a@x"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -422,73 +579,164 @@ def test_identity_values_carry_their_kind():
 
 
 @pytest.mark.cap3_axes
-def test_the_shipped_axes_name_the_origin_and_the_module_accepts_them():
-    """The other half a bypass case needs: the predicate is true of the shipped
-    constant, and ``_check_axes`` passes on it. A guard that is red everywhere
-    is not a guard."""
-    assert ORIGIN_AXIS in IDENTITY_FIELDS
-    assert names_the_origin(IDENTITY_FIELDS) is True
-    _check_axes()
-    assert [kind for _, kind in IDENTITY_FIELDS] == [
-        "thread", "origin", "content", "declared"
+def test_the_shipped_axes_keep_the_origin_out_of_the_union_and_are_accepted():
+    """The other half a bypass case needs: the predicate is false of the shipped
+    table, and ``_check_axes`` passes on it. A guard that is red everywhere is
+    not a guard.
+
+    The shipped same-moment table is the thread, the content and the declared
+    key — the three that describe *the same moment* — and the origin is a pair
+    of its own, read at the second level. Asserted as the exact list rather than
+    as a membership test, so an axis added or removed is red here by name.
+    """
+    assert unions_the_origin(SAME_MOMENT_FIELDS) is False
+    assert [kind for _, kind in SAME_MOMENT_FIELDS] == [
+        "thread", "content", "declared"
     ]
+    assert ORIGIN_AXIS == (ORIGIN_FIELD, ORIGIN_KIND) == ("sender", "origin")
+    _check_axes()
 
 
 @pytest.mark.cap3_axes
 @pytest.mark.parametrize("axes, why", [
-    ((("thread_id", "thread"), ("digest", "content"),
-      ("independence_key", "declared")), "the axis simply deleted"),
-    ((("thread_id", "thread"), ("sender", "thread"),
-      ("digest", "content")), "the right field in the wrong namespace"),
-    ((("from", "origin"), ("digest", "content")), "the right namespace, a "
-     "field no receipt carries"),
-    ((), "no axes at all"),
+    ((("thread_id", "thread"), ("sender", "origin"), ("digest", "content")),
+     "the origin put back among the union axes — the outage, verbatim"),
+    ((("thread_id", "thread"), ("sender", "whatever")),
+     "the same field unioned under another name"),
+    ((("from", "origin"), ("digest", "content")),
+     "another field unioned into the origin's own namespace"),
 ])
-def test_the_predicate_refuses_axes_that_do_not_name_the_origin(axes, why):
-    """**The bypass case.** ``names_the_origin`` is asked directly about tables
-    that are not the shipped one, so a mutation of the predicate is red *by
-    name here* and not only red across the whole suite at once.
+def test_the_predicate_catches_a_same_moment_table_that_unions_the_origin(
+        axes, why):
+    """**The bypass case.** ``unions_the_origin`` is asked directly about tables
+    that are not the shipped one, so a mutation of the predicate is red *by name
+    here* and not only red across the whole suite at once.
 
-    Every row is a real way the axis could go missing again, and the middle two
-    are the ones a count-based check would never see: a ``sender`` filed under
-    the thread namespace reads as an axis and collapses a stranger's mail into
-    a thread, and an ``origin`` axis reading a field called ``from`` finds
-    nothing in any source Half builds.
+    Every row is a real way the percolation comes back, and the last two are the
+    ones a membership test on the exact pair would miss: unioning on ``sender``
+    under a different namespace still chains sender to thread, and putting some
+    other field into the ``origin`` namespace puts a voice's handle back into
+    the union-find's value space.
     """
-    assert names_the_origin(axes) is False, why
+    assert unions_the_origin(axes) is True, why
 
 
 @pytest.mark.cap3_axes
-def test_the_module_refuses_to_import_axes_without_an_origin(monkeypatch):
+@pytest.mark.parametrize("axes", [
+    (("thread_id", "thread"), ("digest", "content")),
+    (("thread_id", "thread"),),
+    (),
+])
+def test_the_predicate_passes_tables_that_leave_the_origin_alone(axes):
+    """The other direction, so the predicate is not simply always true — which
+    would make every row above green for the wrong reason and the guard
+    impossible to satisfy."""
+    assert unions_the_origin(axes) is False
+
+
+@pytest.mark.cap3_axes
+def test_the_module_refuses_to_import_a_table_that_unions_the_origin(
+        monkeypatch):
     """The guard itself, driven. A raise rather than a bare ``assert``, because
-    a guarantee ``python -O`` removes is not a guarantee — and the message
-    names the axis, so a build that trips it says what is missing rather than
-    that something is wrong."""
+    a guarantee ``python -O`` removes is not a guarantee — and the message names
+    the percolation and the tool that measures it, so a build that trips this
+    says *why* rather than that something is wrong."""
     monkeypatch.setattr(
-        "half.ingest.independence.IDENTITY_FIELDS",
-        (("thread_id", "thread"), ("digest", "content")),
+        "half.ingest.independence.SAME_MOMENT_FIELDS",
+        (("thread_id", "thread"), ("sender", "origin"), ("digest", "content")),
     )
     with pytest.raises(ValueError) as raised:
         _check_axes()
     assert "origin" in str(raised.value)
+    assert "percolation_sim" in str(raised.value), (
+        "the refusal does not point at the measurement, so the next reader "
+        "gets the rule without the reason and undoes it again"
+    )
 
 
 @pytest.mark.cap3_axes
 @pytest.mark.parametrize("axes, expected", [
-    ((("thread_id", "thread"), ("sender", "origin"), ("digest", "thread")),
-     "namespace"),
-    ((("thread_id", "thread"), ("sender", "origin"), ("sender", "content")),
-     "same field"),
+    ((("thread_id", "thread"), ("digest", "thread")), "namespace"),
+    ((("thread_id", "thread"), ("thread_id", "content")), "same field"),
 ])
-def test_the_module_refuses_axes_that_collide(axes, expected, monkeypatch):
-    """Two axes in one namespace deletes the namespacing that keeps an address
-    from matching a thread id; two axes on one field is an axis that can never
-    disagree with the other. Both are how a later edit adds an axis and
-    silently removes one."""
-    monkeypatch.setattr("half.ingest.independence.IDENTITY_FIELDS", axes)
+def test_the_module_refuses_same_moment_axes_that_collide(axes, expected,
+                                                          monkeypatch):
+    """Two axes in one namespace deletes the namespacing that keeps a thread id
+    from matching a digest; two axes on one field is an axis that can never
+    disagree with the other. Both are how a later edit adds an axis and silently
+    removes one."""
+    monkeypatch.setattr("half.ingest.independence.SAME_MOMENT_FIELDS", axes)
     with pytest.raises(ValueError) as raised:
         _check_axes()
     assert expected in str(raised.value)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# the second level, as two predicates
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.cap3_axes
+def test_one_voice_answers_for_a_single_speaker_and_never_for_a_conversation():
+    """**The bypass case for the second level.** ``one_voice`` decides whether a
+    group of sources speaks with one origin, and it is the whole of what makes a
+    newsletter one support and a ten-person thread not somebody's newsletter.
+
+    A conversation answering to one of its participants would be the
+    over-collapse from the other side: a stranger's thread absorbed into
+    whichever member of it happened to be picked.
+    """
+    assert one_voice(["a@x"]) == "a@x"
+    assert one_voice(["a@x", "a@x", "a@x"]) == "a@x"
+    assert one_voice(["a@x", "b@y"]) is None
+    assert one_voice([]) is None
+    assert one_voice([None, None]) is None
+    # A thread carrying one real sender and one header nothing could be read
+    # out of is still that sender's voice, rather than a conversation.
+    assert one_voice([None, "a@x", ""]) == "a@x"
+
+
+@pytest.mark.cap3_axes
+def test_a_conversation_adds_nothing_when_everyone_in_it_already_spoke():
+    """**The bypass case for the third clause**, which is the one that keeps the
+    count near the number of people who wrote rather than near the number of
+    threads.
+
+    Without it, five hundred messages from ten people count as one hundred and
+    forty-two supports — the over-count that is the mirror of the percolation,
+    and the direction CAP-3 exists to refuse. Measured in
+    ``tools/percolation_sim.py``.
+
+    A voice with nothing readable always adds, because *nothing is known about
+    who spoke* is not *everyone here is already counted*, and treating the first
+    as the second is how a mailbox with no parseable senders would count as
+    nothing at all.
+    """
+    assert adds_a_voice(["a@x", "b@y"], {"a@x", "b@y"}) is False
+    assert adds_a_voice(["a@x", "b@y"], {"a@x"}) is True
+    assert adds_a_voice(["a@x", "b@y"], set()) is True
+    assert adds_a_voice([None, None], {"a@x", "b@y"}) is True
+    assert adds_a_voice([], {"a@x"}) is True
+    # Blanks are not speakers, so they neither absorb nor block absorption.
+    assert adds_a_voice(["a@x", "", None], {"a@x"}) is False
+
+
+@pytest.mark.cap3_axes
+def test_the_two_levels_are_the_partition_and_the_answer():
+    """``voices`` is the first level and nothing else — the origin cannot appear
+    in it. Asserted directly, because every behavioural case above reads the two
+    levels through one number and could not tell which of them moved."""
+    mailbox = [
+        source("a", thread="t1", sender="shop@x", dgst="d1"),
+        source("b", thread="t1", sender="shop@x", dgst="d2"),
+        source("c", thread="t2", sender="shop@x", dgst="d3"),
+    ]
+    grouped = voices(mailbox)
+    assert sorted(len(members) for members in grouped) == [1, 2], (
+        "the first level did not group by thread alone; the origin has leaked "
+        "into it and a and c are one voice before the second level runs"
+    )
+    assert independent_groups(mailbox) == 1, "the second level did not run"
 
 
 def _called_at_import(source: str, name: str) -> int:

@@ -100,7 +100,9 @@ from half.derive.revealed import (
 from half.errors import DeriveError
 from half.governance import ladder
 from half.ingest import pipeline as ingesting
-from half.ingest.independence import IDENTITY_FIELDS, identity_set
+from half.ingest.independence import (
+    ORIGIN_AXIS, origin_of, same_moment_set,
+)
 from half.ingest.pipeline import Pipeline, Receipt
 from half.ingest.port import Message
 from half.ingest.scrub import scrub
@@ -611,10 +613,10 @@ def test_the_sender_travels_from_the_receipt_to_the_candidate():
 
     * the candidate carries the receipt's sender **verbatim** — no domain, no
       plus-address, no display name, nothing parsed;
-    * ``identity()`` supplies it under the key ``IDENTITY_FIELDS`` reads, so a
+    * ``identity()`` supplies it under the key ``ORIGIN_AXIS`` names, so a
       rename on either side is a dropped axis rather than a quiet mismatch;
     * and an empty sender arrives as empty rather than as something invented,
-      which is what leaves ``identity_set`` free to skip it.
+      which is what leaves ``origin_of`` free to answer ``None``.
     """
     reader, _, _, _ = a_reader()
     given = receipt(0, thread="t1", sender="Deals@Shop.Example")
@@ -625,15 +627,26 @@ def test_the_sender_travels_from_the_receipt_to_the_candidate():
     assert key == given.external_id
     assert identity["sender"] == given.sender
     assert set(identity) == {"thread_id", "sender", "digest"}
-    assert dict(IDENTITY_FIELDS)["sender"] == "origin", (
-        "the candidate supplies a key the identity table does not read"
+    # The second level reads exactly what travelled, normalised there and
+    # nowhere else — so the value on the wire is the receipt's own spelling and
+    # the matching rule stays `_normalize`'s.
+    assert identity["sender"] == "Deals@Shop.Example"
+    assert origin_of(identity) == "deals@shop.example", (
+        "the origin the second level reads is not the sender that travelled"
+    )
+    assert ORIGIN_AXIS[0] == "sender", (
+        "the candidate supplies a key the origin level does not read"
     )
     # The bypass half: an absent sender travels as absent, so the union-find's
     # own skip decides, and nothing here fabricates a handle for it.
     blank = observe(a_reader()[0], [receipt(1, thread="t2", sender="")])
     assert blank.supports(TRAVELS)[0].identity()[1]["sender"] == ""
-    assert "origin:" not in "".join(
-        identity_set(*blank.supports(TRAVELS)[0].identity())
+    empty = blank.supports(TRAVELS)[0].identity()
+    assert origin_of(empty[1]) is None, "a blank sender became an origin"
+    assert not any(value.startswith("origin:")
+                   for value in same_moment_set(*empty)), (
+        "the origin has leaked into the same-moment level, which is the "
+        "percolation tools/percolation_sim.py measures"
     )
 
 

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 sys.path.insert(0, ".")
 
 from half.ingest.port import Message
-from half.ingest.independence import identity_set, independent_groups
+from half.ingest.independence import independent_groups
 
 
 # ── the mailbox ───────────────────────────────────────────────────────────────

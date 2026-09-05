@@ -6,30 +6,49 @@ and "ingestion is unbounded, belief is bounded" fails in the first noisy month
 — Half then states things with the full weight of the mirror behind them, on
 the strength of one email quoted nine times.
 
-The mechanism is union-find, adapted from claude-obsidian's ledger
-(`_independent_group_count`): each source contributes an identity *set*, any
-two sources sharing any identity value are unioned, and the answer is the
-number of distinct groups.
+**Two levels, and the reason they are two is measured.**
 
-For mail the identity members are the thread, the **origin** — who sent it —
-and the content digest, so a long reply chain collapses by thread, a shop
-mailing you eight times collapses by origin, and a byte-identical repeat
-collapses by content.
+1. **The same moment.** Union-find over the thread, the content digest and a
+   declared key, adapted from claude-obsidian's ledger
+   (``_independent_group_count``): each source contributes a *same-moment* set,
+   any two sources sharing any of those values are unioned, and each group is
+   one **voice**. A long reply chain is one voice by thread; a byte-identical
+   repeat is one voice by content; a source that declares what it is the same
+   as is one voice by declaration.
+2. **Who is speaking.** Each voice then answers to a single origin — the sender
+   — if it has exactly one. A shop mailing you eight times is eight voices with
+   one origin between them, so it is **one** support. A voice with several
+   speakers is a conversation: it stands for itself, *unless* everyone in it has
+   already written to you separately, in which case it is those people talking
+   and adds nothing. A voice with no readable sender always stands for itself.
+   The answer is the number of distinct answers.
 
-**The origin axis is why this is corroboration rather than counting.** Without
-it two messages from one sender in two threads are two independent supports,
-CAP-3's bar is two, and a shop's newsletter corroborates itself. It was in
-claude-obsidian's ledger, in the extraction manifest, and in story 3's own
-frozen block — *"union-find over origin, content hash, and declared key"* — and
-the first implementation substituted the thread for it. Story 17 restored it;
-the thread stayed, because ten strangers in one conversation are still one
-support and only the thread says so.
+**Why the origin is not simply a fourth axis of the union-find, which is what
+it was for one commit.** Union-find is transitive *across* axes: A shares a
+thread with B, B shares a sender with C, so A, B and C are one group. On a
+realistic mailbox that percolates — measured in ``tools/percolation_sim.py``,
+which is where this rule was chosen rather than argued — and above a low
+density every mailbox becomes a single giant component. The gate then never
+opens, Half finds one support everywhere, admits nothing, and goes quiet. That
+is not restraint, it is an outage, and it looks exactly like a well-behaved
+product with nothing to say. Story 3's implementation left a comment saying so;
+story 17 first deleted the comment and reproduced the failure, then measured
+it.
 
-**A missing origin is not an identity.** ``identity_set`` skips an absent or
-blank value on every axis, and on this axis that skip is load-bearing: were an
-empty sender an identity, every source without one would union into a single
-group, Half would find one support everywhere, admit nothing, and go quiet —
-which reads as restraint and is an outage.
+Applying the axes at *different levels* cannot percolate, because a voice's
+origin never links two voices to a third: the second level is a map from voice
+to one handle, and a map has no transitive closure.
+
+**The declared key is a same-moment axis and deliberately not an origin.** It
+says *this source is the same evidence as that one*, which is a statement about
+the moment rather than about who is speaking — and a source declares it, so at
+the second level a single crafted key would merge unrelated voices for free,
+which is the percolation again through a field the sender controls.
+
+**A missing origin is not an identity.** ``an_identity`` refuses an absent or
+blank value everywhere, and on the origin that refusal is load-bearing: were a
+blank sender an origin, every source without one would answer to the same
+handle and a mailbox nothing could be parsed out of would count as one support.
 """
 
 from __future__ import annotations
@@ -39,56 +58,53 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 
-#: What makes two sources the same evidence.
+#: What makes two sources **the same moment**, unioned transitively.
 #:
-#: The three axes the manifest and story 3 both name — origin, content, declared
-#: — plus the thread, which is mail's own and is what makes a reply chain one
-#: support. Collapsing on origin *is* transitive, and that is the rule rather
-#: than a side effect: one sender's mail is one source however many threads it
-#: arrives in, exactly as one thread is one source however many people speak in
-#: it. Nothing is derived from an address here — no domain, no plus-address, no
-#: display name. The value is the sender as the receipt carries it, under
-#: ``_normalize`` and nothing else.
-IDENTITY_FIELDS: tuple[tuple[str, str], ...] = (
+#: The origin is deliberately **not** here, and putting it back is the one edit
+#: that turns this module into an outage — see the module docstring and
+#: ``_check_axes``. Nothing is derived from any of these values: no domain, no
+#: plus-address, no display name, no parsing of any kind. The value is what the
+#: receipt carries, under ``_normalize`` and nothing else.
+SAME_MOMENT_FIELDS: tuple[tuple[str, str], ...] = (
     ("thread_id", "thread"),
-    ("sender", "origin"),
     ("digest", "content"),
     ("independence_key", "declared"),
 )
 
-
-#: The axis this story restored, as the pair it must appear as. Kept apart from
-#: ``names_the_origin`` so the guard and the case cannot drift into two
-#: different ideas of what "the origin axis" is.
+#: The second level, as the pair it must appear as: the field a source carries
+#: it in, and the namespace a voice answers under. One tuple rather than two
+#: constants so a guard and a case cannot drift into two different ideas of
+#: what "the origin" is.
 ORIGIN_AXIS: tuple[str, str] = ("sender", "origin")
+ORIGIN_FIELD, ORIGIN_KIND = ORIGIN_AXIS
 
 
-def names_the_origin(fields: Iterable[tuple[str, str]]) -> bool:
-    """Whether these axes include the origin, under the name it is read by.
+def unions_the_origin(fields: Iterable[tuple[str, str]]) -> bool:
+    """Whether this same-moment table would union on the origin.
 
-    A predicate rather than a comment, read by ``_check_axes`` below and by the
-    case that asserts it, because *"origin is an identity axis"* was true of
-    the specification, the manifest and story 3's frozen block for eleven
-    stories while being false of the code.
+    **The percolation predicate**, read by ``_check_axes`` and by the cases
+    that assert it. True is the outage: the origin unioned alongside the thread
+    means A's thread reaches C's mail through B, a realistic mailbox becomes one
+    group, and CAP-3's gate never opens again.
 
-    Both halves matter. The **key** is what ``identity_set`` looks up in a
-    source, so a wrong one reads nothing and the axis is silently absent; the
-    **kind** is the namespace an address is compared in, so a wrong one puts
-    senders and thread ids in the same space and a thread called ``a@x``
-    collapses a stranger's mail into it.
+    Both halves are checked because either alone reintroduces it. The **key** is
+    what ``same_moment_set`` looks up in a source, so ``("sender", "whatever")``
+    unions senders under a different name; the **kind** is the namespace, so
+    ``("anything", "origin")`` puts a voice's handle into the union-find's own
+    value space, where it meets the handles this function exists to keep it away
+    from.
     """
-    return ORIGIN_AXIS in tuple(fields)
+    pairs = tuple(fields)
+    return any(key == ORIGIN_FIELD or kind == ORIGIN_KIND for key, kind in pairs)
 
 
 def an_identity(raw: object) -> bool:
     """Whether this value can make two sources the same evidence.
 
-    **The empty-origin rule, as a predicate the runtime and the cases share.**
-    ``None``, ``""`` and whitespace are not identities. This is the single most
-    dangerous line in the module: were a blank sender an identity, every source
-    without one would carry the handle ``origin:`` and union into one group —
-    Half would find one support everywhere, admit nothing, and go quiet, which
-    reads as restraint and is an outage.
+    **The blank rule, as a predicate the runtime and the cases share.** ``None``,
+    ``""`` and whitespace are not identities, on either level. On the origin
+    that refusal is what stops a mailbox whose ``from`` headers could not be
+    read from answering to one handle and counting as one support.
 
     Coerced rather than type-checked, so a provider handing back an integer
     thread id is still an identity; ``0`` is a real thread id and ``str(0)``
@@ -97,71 +113,140 @@ def an_identity(raw: object) -> bool:
     return raw is not None and bool(str(raw).strip())
 
 
-def _check_axes() -> None:
-    """Import-time invariants, as raises rather than bare ``assert``.
-
-    A guarantee ``python -O`` removes is not a guarantee. Deleting the origin
-    axis is a one-line edit that leaves every other case in the suite green and
-    every count in the product quietly too high, so the module refuses to
-    import without it rather than waiting to be caught by a count.
-    """
-    if not names_the_origin(IDENTITY_FIELDS):
-        raise ValueError(
-            "the identity axes do not name the origin. Two messages from one "
-            "sender in two threads are then two independent supports, CAP-3 "
-            "admits at two, and a shop's newsletter corroborates itself — "
-            f"which is the defect story 17 closed. Expected {ORIGIN_AXIS!r} "
-            f"among {IDENTITY_FIELDS!r}"
-        )
-    kinds = [kind for _, kind in IDENTITY_FIELDS]
-    if len(set(kinds)) != len(kinds):
-        raise ValueError(
-            f"two identity axes share a namespace in {IDENTITY_FIELDS!r}. The "
-            "namespace is the whole reason a thread id cannot collide with an "
-            "address, and two axes sharing one deletes that"
-        )
-    keys = [key for key, _ in IDENTITY_FIELDS]
-    if len(set(keys)) != len(keys):
-        raise ValueError(
-            f"two identity axes read the same field in {IDENTITY_FIELDS!r}; "
-            "one of them is an axis that can never disagree with the other"
-        )
-
-
 def _normalize(value: str) -> str:
     """Casefold under NFC so two spellings of one identity match."""
     return unicodedata.normalize("NFC", value.strip()).casefold()
 
 
-def identity_set(source_id: str, source: Mapping[str, Any]) -> set[str]:
-    """Every handle by which this source might be the same as another.
+def origin_of(source: Mapping[str, Any]) -> str | None:
+    """This source's origin, normalised — or ``None`` where it has none.
 
-    Namespaced by kind so a thread id can never collide with a digest, and so
-    an address can never collide with either.
+    The whole of the second level's reading of a source. Nothing is parsed: two
+    spellings of one address match because ``_normalize`` casefolds under NFC,
+    and for no other reason.
+    """
+    raw = source.get(ORIGIN_FIELD)
+    return _normalize(str(raw)) if an_identity(raw) else None
 
-    **An absent or blank value is skipped on every axis**, which on the origin
-    axis is the difference between a fix and an outage: a mailbox where nothing
-    carries a sender would otherwise be one group, one support and no claim at
-    all. The skip is the same one line for all four axes on purpose — a second
-    rule for the origin is a second thing that can be got wrong.
+
+def one_voice(origins: Iterable[str | None]) -> str | None:
+    """The single origin a voice speaks with, or ``None`` if it speaks for itself.
+
+    **The second level, as a predicate.** A voice with exactly one origin is
+    that origin wherever else it appears — which is what makes a newsletter one
+    support across eight threads. A voice with none (nothing carried a sender)
+    or with several (a conversation between people) is its own support, because
+    there is no one speaker to attribute it to and inventing one would collapse
+    every senderless mailbox into a single group.
+
+    Blanks are dropped rather than counted, so a thread carrying one real sender
+    and one unreadable header is still that sender's voice.
+    """
+    distinct = {origin for origin in origins if an_identity(origin)}
+    return next(iter(distinct)) if len(distinct) == 1 else None
+
+
+def adds_a_voice(origins: Iterable[str | None], spoken: Iterable[str]) -> bool:
+    """Whether a conversation is a support of its own, or is already counted.
+
+    **The third clause, and it is here because of a measurement.** Without it,
+    five hundred messages from ten people across four hundred threads count as
+    *one hundred and forty-two* independent supports: every thread two of those
+    ten happened to share becomes its own voice, on top of the ten origins. That
+    is over-counting by fourteen times, in the exact direction CAP-3 exists to
+    prevent — thin evidence admitted — and it is the mirror of the percolation,
+    not a smaller version of it. See ``tools/percolation_sim.py``.
+
+    The rule in one sentence: **a conversation adds nothing when everyone in it
+    has already written to you separately.** A thread carrying somebody new is a
+    support; a thread of people already counted is the same people talking.
+
+    A voice with no readable origin always counts, because *nothing is known
+    about who spoke* is not the same as *everyone here is already counted*, and
+    treating it as the latter is how a mailbox with no parseable senders would
+    collapse to nothing.
+
+    It cannot chain: ``spoken`` is fixed before any of this is asked, so no
+    answer here can change another. That is the whole reason the second level is
+    a map and not a union.
+    """
+    named = {origin for origin in origins if an_identity(origin)}
+    return not named or not named <= set(spoken)
+
+
+def _check_axes() -> None:
+    """Import-time invariants, as raises rather than bare ``assert``.
+
+    A guarantee ``python -O`` removes is not a guarantee, and the one this
+    module exists to keep — *the origin is read at a second level and never
+    unioned into the first* — is a one-line edit away from a product that
+    quietly stops saying anything.
+    """
+    if unions_the_origin(SAME_MOMENT_FIELDS):
+        raise ValueError(
+            f"the same-moment axes {SAME_MOMENT_FIELDS!r} union on the origin. "
+            "Union-find is transitive across axes, so one sender in two threads "
+            "links those threads, a handful of such senders link a mailbox, and "
+            "above a low density every mailbox is one group — the gate never "
+            "opens and Half goes quiet, which looks like restraint and is an "
+            "outage. Measured in tools/percolation_sim.py. The origin belongs "
+            "to the second level, where a voice answers to one handle and "
+            "nothing chains"
+        )
+    kinds = [kind for _, kind in SAME_MOMENT_FIELDS]
+    if len(set(kinds)) != len(kinds):
+        raise ValueError(
+            f"two same-moment axes share a namespace in {SAME_MOMENT_FIELDS!r}. "
+            "The namespace is the whole reason a thread id cannot collide with "
+            "a digest, and two axes sharing one deletes that"
+        )
+    keys = [key for key, _ in SAME_MOMENT_FIELDS]
+    if len(set(keys)) != len(keys):
+        raise ValueError(
+            f"two same-moment axes read the same field in "
+            f"{SAME_MOMENT_FIELDS!r}; one of them is an axis that can never "
+            "disagree with the other"
+        )
+    if not all(isinstance(part, str) and part for part in ORIGIN_AXIS):
+        raise ValueError(
+            f"the origin axis {ORIGIN_AXIS!r} is not a (field, namespace) pair; "
+            "a voice would answer to nothing and every newsletter would "
+            "corroborate itself again"
+        )
+
+
+def same_moment_set(source_id: str, source: Mapping[str, Any]) -> set[str]:
+    """Every handle by which this source might be **the same moment** as another.
+
+    Namespaced by kind so a thread id can never collide with a digest. The
+    origin is not among them: it is read by ``origin_of`` at the second level,
+    and a handle for it here is the percolation ``_check_axes`` refuses.
+
+    An absent or blank value is skipped, so a source that carries nothing but
+    its own id unions with nothing.
     """
     if not str(source_id).strip():
         raise ValueError("source_id is required; an empty id unions everything")
     values = {f"source:{_normalize(str(source_id))}"}
-    for key, kind in IDENTITY_FIELDS:
+    for key, kind in SAME_MOMENT_FIELDS:
         raw = source.get(key)
         if an_identity(raw):
             values.add(f"{kind}:{_normalize(str(raw))}")
     return values
 
 
-def independent_groups(
+def voices(
     supporting: Iterable[tuple[str, Mapping[str, Any]]]
-) -> int:
-    """How many genuinely independent supports these sources represent."""
+) -> list[list[int]]:
+    """The first level: sources grouped into voices, as indices into the input.
+
+    Union-find over ``same_moment_set`` and nothing else. Returned rather than
+    counted so the second level, the cases and the simulations all read the same
+    partition instead of three re-implementations of it.
+    """
     items = list(supporting)
     if not items:
-        return 0
+        return []
 
     parents = list(range(len(items)))
 
@@ -176,18 +261,57 @@ def independent_groups(
         if left_root != right_root:
             parents[right_root] = left_root
 
-    identities = [identity_set(sid, src) for sid, src in items]
-
-    # An index from identity value to the sources carrying it, so this is
-    # linear in the number of shared handles rather than quadratic in sources.
+    # An index from handle to the first source carrying it, so this is linear
+    # in the number of shared handles rather than quadratic in sources.
     seen: dict[str, int] = {}
-    for index, values in enumerate(identities):
-        for value in values:
+    for index, (source_id, source) in enumerate(items):
+        for value in same_moment_set(source_id, source):
             first = seen.setdefault(value, index)
             if first != index:
                 union(first, index)
 
-    return len({find(index) for index in range(len(items))})
+    grouped: dict[int, list[int]] = {}
+    for index in range(len(items)):
+        grouped.setdefault(find(index), []).append(index)
+    return list(grouped.values())
+
+
+def independent_groups(
+    supporting: Iterable[tuple[str, Mapping[str, Any]]]
+) -> int:
+    """How many genuinely independent supports these sources represent.
+
+    The two levels, and the second is a **map rather than a union**: each voice
+    answers to its single origin if it has one, and otherwise to itself unless
+    everyone in it is already counted. Two voices meet only by answering to the
+    same handle, and every handle is decided against a set fixed before any of
+    them is asked — so nothing chains through a third and no density of overlap
+    can collapse a mailbox, which is the failure ``tools/percolation_sim.py``
+    exists to keep measured.
+    """
+    items = list(supporting)
+    if not items:
+        return 0
+
+    groups = voices(items)
+    origins = [
+        [origin_of(items[index][1]) for index in members] for members in groups
+    ]
+    speakers = [one_voice(group) for group in origins]
+
+    # Fixed before anything is decided against it. A speaker discovered later
+    # cannot absorb a conversation already counted, and a conversation cannot
+    # ever make somebody a speaker — either would be a chain, and a chain is
+    # what percolates.
+    spoken = {speaker for speaker in speakers if speaker is not None}
+
+    # Namespaced apart, so a voice standing for itself can never answer to the
+    # same handle as a voice speaking with an origin.
+    answers = {f"{ORIGIN_KIND}:{speaker}" for speaker in spoken}
+    for position, (group, speaker) in enumerate(zip(origins, speakers)):
+        if speaker is None and adds_a_voice(group, spoken):
+            answers.add(f"voice:{position}")
+    return len(answers)
 
 
 _check_axes()
