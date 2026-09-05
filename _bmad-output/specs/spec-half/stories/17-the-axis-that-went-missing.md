@@ -83,13 +83,13 @@ Both upstream sources say otherwise. The extraction manifest records the machine
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `half/ingest/independence.py` -- origin as an identity axis -- CAP-3, the manifest
-- [ ] `half/derive/revealed.py` -- the sender travels from receipt to candidate -- no new data
-- [ ] a source with no origin unions with nothing -- the difference between a fix and an outage
-- [ ] `tests/test_independence.py` -- the dead field live, every case re-read -- the reason this survived
-- [ ] `tests/test_revealed.py` -- the sender varies where it matters -- same reason
-- [ ] `tools/` -- the simulations rerun and their output recorded -- acceptance evidence
-- [ ] `.github/workflows/ci.yml` -- floors moved, margins unchanged -- the floor lesson
+- [x] `half/ingest/independence.py` -- origin as an identity axis -- CAP-3, the manifest
+- [x] `half/derive/revealed.py` -- the sender travels from receipt to candidate -- no new data
+- [x] a source with no origin unions with nothing -- the difference between a fix and an outage
+- [x] `tests/test_independence.py` -- the dead field live, every case re-read -- the reason this survived
+- [x] `tests/test_revealed.py` -- the sender varies where it matters -- same reason
+- [x] `tools/` -- the simulations rerun and their output recorded -- acceptance evidence
+- [x] `.github/workflows/ci.yml` -- floors moved, margins unchanged -- the floor lesson
 
 **Acceptance Criteria:**
 - Given eight messages from one sender across eight threads, when independence is counted, then the answer is one.
@@ -117,3 +117,44 @@ Both upstream sources say otherwise. The extraction manifest records the machine
 - `cd half && uv run --extra dev python tools/mailbox_sim.py` -- expected: newsletter counted 1; others unchanged
 - `cd half && uv run --extra dev python tools/admits_sim.py` -- expected: the newsletter admits nothing
 - `cd half && git status --porcelain` -- expected: clean tree after commit
+
+## Evidence
+
+**Baseline `6acab8d`, 5178 tests green. After: 5201 green.** Purged bytecode and
+a re-asserted green baseline on both sides of every probe.
+
+**`tools/mailbox_sim.py`** — before, then after:
+
+```
+  newsletter, 1 sender / 8 threads       1     8  WRONG        newsletter, 1 sender / 8 threads       1     1  ok
+  airline + hotel, 2 senders             2     2  ok           airline + hotel, 2 senders             2     2  ok
+  one thread, 10 replies                 1     1  ok           one thread, 10 replies                 1     1  ok
+  a forward of one message               1     2  WRONG        a forward of one message               1     2  WRONG
+  two airlines, two scripts              2     2  ok           two airlines, two scripts              2     2  ok
+  shapes miscounted: 2 of 5                                    shapes miscounted: 1 of 5
+```
+
+**`tools/admits_sim.py`** — before, then after:
+
+```
+  newsletter — one shop, eight mailings  1  2  1  THIN         newsletter …   1  0  0  ok
+  airline + hotel — two businesses       2  2  1  ok           airline + hotel  2  2  1  ok
+  one thread — ten replies               1  0  0  ok           one thread       1  0  0  ok
+  a forward — one notice, wrapped        1  2  1  THIN         a forward        1  2  1  THIN
+```
+
+The two shapes that changed are the two the story predicted. The forward is
+deliberately untouched and is now the *only* thing either simulation still
+reports, which is what makes them a measurement of the deferred hole rather
+than of this one.
+
+**Mutation probes: eleven, all red, each red by name somewhere.** Three came
+back green on the first pass and all three were real gaps, now closed:
+`Candidate.identity` dropping the sender, the sender blanked between receipt
+and candidate, and the guard's own call deleted from the bottom of the module.
+See commit `627f06e`.
+
+**CI floors diffed against the baseline file**: exactly one `28 -> 30`, one
+`36 -> 37`, one `34` added, and the other 48 byte-identical — including the
+CAP-5 floor of 28 eight steps above the CAP-3 one.
+
