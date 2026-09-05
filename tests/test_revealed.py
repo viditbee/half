@@ -1062,6 +1062,69 @@ def test_the_shipped_composition_admits_a_claim_from_a_seeded_mailbox(tmp_path):
 
 
 @pytest.mark.cap3
+def test_a_bounded_read_still_stamps_the_claim_it_admitted(tmp_path):
+    """**The stamp a claim is written with, pinned** (story 20).
+
+    ``ingest_mail`` used to stamp its append with ``Ingested.cursor``. Story 20
+    parted that from ``read_through``: the cursor moves only over ground the
+    source finished draining, and a *bounded* read — the shipped
+    demonstration's ``GmailRecent`` — drains nothing and moves it not at all.
+    So under the shipped composition ``cursor`` is ``None``, the old spelling
+    passes ``""``, ``half.store.records.make`` refuses it, and the broad
+    ``except`` around the append swallows the refusal into one log line: every
+    receipt written, the ledger empty, and CAP-2 falling through to *nothing to
+    offer* with no case going red.
+
+    Nothing pinned it, because every other case here drives ``FakeMail``, which
+    publishes no watermark — so ``cursor`` and ``read_through`` are the same
+    string and the two spellings are indistinguishable. This one publishes a
+    watermark of ``None``, which is what a bounded read publishes, and asserts
+    both that the claim lands *and* the stamp it lands with.
+    """
+    class ABoundedRead:
+        """A source that reads and never claims to have drained anything."""
+
+        name = "bounded-read"
+        drained_through = None
+
+        def __init__(self, messages):
+            self.messages = messages
+
+        async def fetch(self, *, since=None):
+            for one in self.messages:
+                yield one
+
+    config = load({ROOT_ENV: str(tmp_path), MAINS_ENV: f"123:{MAIN}"})
+    wiring = build(config, token="123:fake")
+    try:
+        reader, _, _, writer = a_reader()
+        wiring = type(wiring)(
+            **{**{f: getattr(wiring, f) for f in wiring.__dataclass_fields__},
+               "revealed": reader})
+        messages = [mail(0, "your booking is confirmed", thread="t1"),
+                    mail(1, "your itinerary", thread="t2", sender="b@y")]
+        result = asyncio.run(ingest_mail(
+            wiring, main_id=MAIN, source=ABoundedRead(messages)))
+        with Store(tmp_path / MAIN, prefix=build_prefix) as store:
+            beliefs = store.state().beliefs
+            stamps = [record.t for record in store.log
+                      if record.id == f"r_{TRAVELS}"]
+    finally:
+        wiring.registry.close()
+
+    assert result.cursor is None, "a read that drained nothing moved the cursor"
+    assert result.read_through == messages[-1].t
+    assert f"r_{TRAVELS}" in beliefs, (
+        "the claim never reached the ledger; a bounded read's cursor is None "
+        "and an empty stamp is refused, silently"
+    )
+    assert stamps == [messages[-1].t], (
+        "the claim was stamped with something other than the newest mail it "
+        "came from"
+    )
+
+
+@pytest.mark.cap3
 def test_a_later_pull_reaching_the_same_conclusion_writes_no_second_claim(
         tmp_path):
     """**Idempotency at the append**, which is a different rule from the

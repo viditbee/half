@@ -54,6 +54,7 @@ from half.ingest.gmail_transport import (
 )
 from half.ingest.pipeline import Pipeline
 from half.secrets import FileSecretStore
+from tests import mailshapes as shapes
 from half.store.sources import LocalSourceStore
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -172,53 +173,26 @@ def _json(obj: object) -> bytes:
     return json.dumps(obj).encode("utf-8")
 
 
-def _epoch_ms(day: str) -> str:
-    """A day as Gmail's own ``internalDate``: epoch milliseconds, as a string."""
-    import datetime
-
-    at = datetime.datetime.fromisoformat(f"{day}T08:00:00+00:00")
-    return str(int(at.timestamp() * 1000))
-
-
 class Mailbox:
-    """A mailbox at the HTTP door, answering the query it was actually asked.
+    """The shared mailbox double (``tests/mailshapes``) at the HTTP door.
 
     ``FakeHttp`` answers a scripted queue **by position**, which is the right
     shape for a fault case and the wrong one for a walk. Story 20's walk asks
-    real questions — a window is a query bounded at both ends, and a mailbox
-    has to respect both bounds for the answer to mean anything — and a queue
-    cannot fail when the question is wrong: whatever the walk asked, the third
-    response is still the third one handed back.
+    real questions — a window is a bound at each end, and a mailbox has to
+    respect both for the answer to mean anything — and a queue cannot fail when
+    the question is wrong: whatever the walk asked, the third response is still
+    the third one handed back.
 
-    Newest-first, because that is what Gmail does and what the walk exists to
-    reverse. A double that answered oldest-first would let every ordering case
-    below pass against a build that reorders nothing at all.
+    The mailbox itself is the one ``tests/test_ingest.py`` and
+    ``tools/window_sim.py`` drive, so three suites cannot disagree about what
+    Gmail does. This adds only the HTTP shell: a URL parsed, a ``Response``
+    returned, and every request recorded.
     """
 
-    def __init__(self, days: dict[str, str], *, page_size: int = 100,
-                 breaks_on: str | None = None) -> None:
-        self.days = dict(days)
-        self.page_size = page_size
-        #: The message whose read fails, every time it is asked for. Named
-        #: rather than counted: the walk reads a few of the newest messages
-        #: first to find its horizon, and a count would land somewhere
-        #: different each time that number changed.
-        self.breaks_on = breaks_on
+    def __init__(self, when: dict[str, str], **kw: object) -> None:
+        self.mailbox = shapes.Mailbox(when, **kw)
         self.urls: list[str] = []
         self.headers: list[dict[str, str]] = []
-
-    def matching(self, query: str) -> list[str]:
-        after = before = None
-        for term in query.split():
-            if term.startswith("after:"):
-                after = term[len("after:"):].replace("/", "-")
-            elif term.startswith("before:"):
-                before = term[len("before:"):].replace("/", "-")
-        chosen = [
-            mid for mid, day in self.days.items()
-            if (after is None or day >= after) and (before is None or day < before)
-        ]
-        return sorted(chosen, key=lambda mid: (self.days[mid], mid), reverse=True)
 
     def __call__(self, request: object, *, timeout: float) -> Response:
         url = request.full_url
@@ -227,21 +201,15 @@ class Mailbox:
         parts = urllib.parse.urlparse(url)
         params = urllib.parse.parse_qs(parts.query)
         if parts.path.endswith("/messages"):
-            ids = self.matching(params.get("q", [""])[0])
-            start = int(params.get("pageToken", ["0"])[0])
-            payload = {
-                "messages": [
-                    {"id": i} for i in ids[start:start + self.page_size]
-                ]
-            }
-            if start + self.page_size < len(ids):
-                payload["nextPageToken"] = str(start + self.page_size)
-            return Response(_json(payload))
-
+            return Response(self.mailbox.payload(
+                params.get("q", [""])[0],
+                (params.get("pageToken") or [None])[0],
+            ))
         mid = urllib.parse.unquote(parts.path.rsplit("/", 1)[-1])
-        if mid == self.breaks_on:
-            raise a_provider_error(500)
-        return message(mid, body=f"{BODY} — {mid}", at=_epoch_ms(self.days[mid]))
+        try:
+            return Response(_json(self.mailbox.message(mid)))
+        except RuntimeError:
+            raise a_provider_error(500) from None
 
 
 @pytest.fixture
@@ -409,7 +377,7 @@ def test_every_page_is_walked_and_the_page_token_is_carried_forward(monkeypatch)
     got = walked(GmailSource(HttpTransport(TOKEN)))
 
     assert [m.external_id for m in got] == ["m1", "m2"]
-    assert not any("pageToken" in u for u in fake.urls[:1])
+    assert "pageToken" not in fake.urls[0]
     assert any("pageToken=1" in u for u in fake.urls), "the token was never sent"
 
 
@@ -417,7 +385,10 @@ def test_the_cursor_reaches_the_provider_as_the_query_the_rules_built(http):
     """The window is ``gmail._query_for``'s decision and travels unchanged."""
     fake = http(page())
     walked(GmailSource(HttpTransport(TOKEN)), since="2026-03-04T05:06:07Z")
-    assert "q=after%3A2026%2F03%2F04" in fake.urls[0]
+    assert "q=after%3A1772600766" in fake.urls[0], (
+        "the cursor reached the provider as something other than the instant "
+        "it names; a date-shaped bound is read in the mailbox's own timezone"
+    )
 
 
 def test_a_window_reaches_the_provider_bounded_at_both_ends(monkeypatch):
@@ -1098,10 +1069,16 @@ def test_the_shipped_composition_reaches_a_mailbox_and_writes_a_receipt(
         wiring.registry.close()
 
     assert wire.sent, "the main was never told"
-    assert len(fake.urls) == 4 and TOKEN not in "".join(fake.urls)
+    assert TOKEN not in "".join(fake.urls)
     assert any("before%3A" in u and "after%3A" in u for u in fake.urls), (
         "the demonstration read without bounding a window"
     )
+    assert any(u.endswith("format=full") for u in fake.urls), "no message read"
+    # The property, not the probe count: a bounded read of one message asks a
+    # handful of questions and never the mailbox's worth. Pinning the exact
+    # number would make this case a record of how many stamps the horizon is
+    # corroborated against, which is not what it is for.
+    assert len(fake.urls) <= 8, f"{len(fake.urls)} requests to read one message"
     assert done.reason is Reason.NO_CLAIM, (
         "the demonstration ended for a reason other than an empty ledger; "
         "this case is about the mailbox reaching a receipt, and a different "

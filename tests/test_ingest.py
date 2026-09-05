@@ -12,7 +12,8 @@ import pytest
 
 from half.errors import ChannelError
 from half.ingest.gmail import (
-    HORIZON_SAMPLES,
+    EMPTY_BEFORE_SEARCH,
+    MAX_PAGES,
     MAX_PROBES,
     WINDOW_DAYS,
     GmailRecent,
@@ -20,9 +21,10 @@ from half.ingest.gmail import (
     normalize,
 )
 from half.ingest.pipeline import Pipeline, Receipt
-from half.ingest.port import MailSource, Message
+from half.ingest.port import Draining, MailSource, Message
 from half.ingest.scrub import Scrubbed
 from half.store.sources import LocalSourceStore, digest
+from tests.mailshapes import Cut, Mailbox, Transport, internal_date
 
 SECRET = "".join(("AKIA", "IOSFODNN7EXAMPLE"))
 OTP = "your verification code is {}".format("483920")
@@ -209,12 +211,6 @@ def test_a_failure_mid_page_leaves_earlier_receipts_valid(store):
 # -- the gmail contract ------------------------------------------------------
 
 
-def _epoch_ms(day: str) -> str:
-    """A day as Gmail's own ``internalDate``: epoch milliseconds, as a string."""
-    at = datetime.datetime.fromisoformat(f"{day}T08:00:00+00:00")
-    return str(int(at.timestamp() * 1000))
-
-
 def _gmail_raw(body="lunch at 1pm?", mid="m1", at=None):
     return {
         "id": mid, "threadId": "t1",
@@ -263,17 +259,59 @@ def test_gmail_walks_pages_until_exhausted():
     assert len(mail.lists) > 1, "the second page was never asked for"
 
 
-def test_a_repeating_page_token_terminates():
-    class Looping:
-        async def list_messages(self, *, query, page_token):
-            return {"messages": [], "nextPageToken": "same"}
-        async def get_message(self, message_id):
-            return {}
+def test_a_repeating_page_token_is_a_fault_and_not_the_end_of_a_window():
+    """The guard, reached — which the case named for it no longer was.
+
+    It used to drive a double answering ``{"messages": [], ...}``, so the walk
+    ended at the first list call and the windowed branch where the guard now
+    lives was never entered: deleting the guard left the case green. This
+    double answers with mail *and* one token for ever, which is the only shape
+    that reaches it.
+
+    And it **raises** rather than stopping quietly. A listing that repeats a
+    token has not named the oldest page of its window — Gmail lists
+    newest-first — so returning what it has and calling the window drained
+    steps the cursor over messages no later query can name. That is this
+    story's own defect one level down, so it is not expressible.
+    """
+    mail = FakeGmail(a_month(9), page_size=3, loops=True)
 
     async def collect():
-        return [m async for m in GmailSource(Looping()).fetch()]
+        return [m async for m in GmailSource(mail).fetch()]
 
-    assert asyncio.run(collect()) == []
+    with pytest.raises(ChannelError):
+        asyncio.run(collect())
+    assert len(mail.lists) < MAX_PAGES, "the guard let the listing run to its ceiling"
+
+
+def test_a_window_whose_listing_stops_early_loses_nothing(store):
+    """Review's reproduction, kept: the partial listing that used to be drained.
+
+    ``_window_ids`` broke out of its page loop on a repeated token and returned
+    the ids it had, with no signal — and the walk then marked that window
+    drained. Because the provider lists newest-first, the page that went
+    missing was the **oldest** one, so the cursor stepped over the three oldest
+    messages of the window and ``after:`` never named them again. Measured on
+    the shipped build: nine messages, listing stopped after six, six runs, and
+    ``m00``–``m02`` were never ingested.
+
+    Now the listing raises, so the run keeps its receipts, moves no cursor, and
+    the next run starts where this one did.
+    """
+    days = a_month(9)
+    mail = FakeGmail(days, page_size=3, loops=True)
+    cursor, ingested = None, set()
+
+    for _ in range(6):
+        try:
+            result = run(GmailSource(mail), store, since=cursor)
+        except ChannelError:
+            continue
+        ingested.update(r.external_id for r in result.receipts)
+        cursor = result.cursor
+
+    assert cursor is None, "a partial listing moved the cursor"
+    assert not ingested - set(days), "a message arrived that the walk never listed"
 
 
 def test_a_transport_error_never_carries_the_token():
@@ -311,101 +349,14 @@ def test_malformed_base64_does_not_abort_the_run():
 # story 20: the order that was promised — one case per row of the matrix
 # ═════════════════════════════════════════════════════════════════════════════
 
-#: A mailbox at the transport door, answering the query it was actually asked.
-#:
-#: Written because the walk story 20 ships asks *real questions* — a window is a
-#: query bounded at both ends, and the answer has to respect both — and a fake
-#: answering a scripted queue positionally cannot fail when the query is wrong.
-#: It answers **newest-first**, which is what Gmail does and what this walk
-#: exists to reverse; a fake that answered oldest-first would make every case
-#: below pass against a build that does nothing at all.
-class FakeGmail:
-    """A mailbox of ``{id: day}``, paged, with `after:` and `before:` honoured."""
-
-    name = "gmail"
-
-    def __init__(self, days, *, page_size=100, fail_on=None):
-        self.days = dict(days)
-        self.page_size = page_size
-        #: The id whose read fails, and every read after it. Named rather than
-        #: counted, because the walk reads a few of the newest messages first
-        #: to find its horizon and a count would land somewhere different every
-        #: time that number changed.
-        self.fail_on = fail_on
-        self.broken = False
-        self.lists: list[str] = []
-        self.gets: list[str] = []
-
-    def matching(self, query: str) -> list[str]:
-        after = before = None
-        for term in query.split():
-            if term.startswith("after:"):
-                after = term[len("after:"):].replace("/", "-")
-            elif term.startswith("before:"):
-                before = term[len("before:"):].replace("/", "-")
-        chosen = [
-            mid for mid, day in self.days.items()
-            # Gmail's own reading, and the one ``_query_for`` documents:
-            # ``after:`` includes the day it names, ``before:`` excludes it.
-            if (after is None or day >= after) and (before is None or day < before)
-        ]
-        return sorted(chosen, key=lambda mid: (self.days[mid], mid), reverse=True)
-
-    async def list_messages(self, *, query, page_token):
-        self.lists.append(query)
-        ids = self.matching(query)
-        start = int(page_token or 0)
-        page = {"messages": [{"id": i} for i in ids[start:start + self.page_size]]}
-        if start + self.page_size < len(ids):
-            page["nextPageToken"] = str(start + self.page_size)
-        return page
-
-    async def get_message(self, message_id):
-        self.gets.append(message_id)
-        if message_id == self.fail_on:
-            self.broken = True
-        if self.broken:
-            raise RuntimeError("the provider stopped answering mid-window")
-        # **A body of its own per message**, because the digest is over the
-        # body: a double handing every message the same text gives every
-        # receipt the same address, and *twenty of twenty ingested* becomes one
-        # receipt and nineteen already-seens against a build that is working.
-        return _gmail_raw(
-            body=f"the plot at {message_id} has not been walked",
-            mid=message_id, at=_epoch_ms(self.days[message_id]),
-        )
-
-
-class Cut:
-    """A source that stops yielding after ``after`` messages.
-
-    ``half.__main__.Bounded`` in miniature — the same shape, cutting on a count
-    rather than on a clock, so that *what a cut costs* is a property of the walk
-    rather than of how fast the suite happens to run. It forwards
-    ``drained_through`` for the reason ``Bounded`` does: a wrapper that
-    swallowed the watermark would send the pipeline back to the ``max()`` this
-    story removed, and every case here would pass for the wrong reason.
-    """
-
-    def __init__(self, source, *, after: int):
-        self.source = source
-        self.name = getattr(source, "name", "cut")
-        self.after = after
-        self.stopped_early = False
-
-    def __getattr__(self, name):
-        if name == "drained_through":
-            return getattr(self.source, name)
-        raise AttributeError(name)
-
-    async def fetch(self, *, since=None):
-        handed = 0
-        async for message in self.source.fetch(since=since):
-            yield message
-            handed += 1
-            if handed >= self.after:
-                self.stopped_early = True
-                return
+#: The mailbox double lives in ``tests/mailshapes.py`` — the same one the
+#: transport suite and ``tools/window_sim.py`` drive, because three copies of a
+#: mailbox is three mailboxes that can disagree about what Gmail does.
+def FakeGmail(days, *, page_size=100, breaks_on=None, undated=(), loops=False,
+              zone_hours=0.0):
+    """A transport over a mailbox of ``{id: day}``. Records what it was asked."""
+    return Transport(Mailbox(days, page_size=page_size, breaks_on=breaks_on,
+                             undated=undated, loops=loops, zone_hours=zone_hours))
 
 
 def a_month(count=20, *, start="2026-08-01"):
@@ -442,8 +393,9 @@ def test_the_provider_is_still_asked_newest_first():
     """The fixture's own premise, pinned. If Gmail's list ever answered
     oldest-first every case above would pass against a build that reverses
     nothing, so the double's order is asserted rather than assumed."""
-    mail = FakeGmail(a_month(5))
-    assert mail.matching("") == ["m04", "m03", "m02", "m01", "m00"]
+    assert Mailbox(a_month(5)).matching("") == [
+        "m04", "m03", "m02", "m01", "m00"
+    ]
 
 
 # -- the defect: what a cut costs ---------------------------------------------
@@ -570,7 +522,7 @@ def test_a_provider_failure_mid_window_raises_and_moves_no_cursor(store):
     carry a cursor at all — which is the strongest form of *cursor unmoved* —
     and the receipts written before it stay written.
     """
-    mail = FakeGmail(a_month(20), page_size=5, fail_on="m03")
+    mail = FakeGmail(a_month(20), page_size=5, breaks_on="m03")
     with pytest.raises(ChannelError):
         run(GmailSource(mail), store)
     assert len(store) == 3, "the receipts written before the failure were lost"
@@ -589,7 +541,11 @@ def test_a_sparse_mailbox_terminates_without_stalling(store):
     result = run(GmailSource(mail), store)
 
     assert [r.external_id for r in result.receipts] == ["old", "new"]
-    assert len(mail.lists) < 200, "the walk spent unbounded requests on nothing"
+    # A step for each of the first few empty windows and one search for the
+    # rest of the gap — not one list call per week of the three years.
+    assert len(mail.lists) < 2 * MAX_PROBES + 2 * EMPTY_BEFORE_SEARCH + 8, (
+        f"the walk spent {len(mail.lists)} requests crossing three empty years"
+    )
 
 
 def test_a_dense_window_is_paged_within_the_window():
@@ -599,7 +555,11 @@ def test_a_dense_window_is_paged_within_the_window():
     got = walk(GmailSource(mail))
 
     assert [m.external_id for m in got] == sorted(days)
-    assert sum(1 for q in mail.lists if "before:" in q) >= 6, "the window never paged"
+    # Twenty-five messages at four to a page is seven pages, and they are all
+    # inside one window: the day they all land on.
+    assert sum(1 for q in mail.lists if "before:" in q) >= len(days) // 4, (
+        "the window never paged"
+    )
 
 
 # -- the cursor's own edges ---------------------------------------------------
@@ -642,16 +602,7 @@ def test_a_message_with_no_date_is_skipped_and_the_cursor_stays_behind(store):
     It cannot be placed in time, so it cannot move a cursor; what it must not
     do is take the cursor to *now*, which would skip every older message.
     """
-    mail = FakeGmail(a_month(3))
-    undated = dict(mail.days)
-    mail.days = undated
-
-    async def get_message(message_id):
-        raw = _gmail_raw(body=f"a body for {message_id}", mid=message_id,
-                         at=_epoch_ms(undated[message_id]))
-        return raw | ({"internalDate": None} if message_id == "m02" else {})
-
-    mail.get_message = get_message
+    mail = FakeGmail(a_month(3), undated=("m02",))
     result = run(GmailSource(mail), store)
 
     assert {r.external_id for r in result.receipts} == {"m00", "m01"}
@@ -676,9 +627,8 @@ def test_the_demonstration_reads_recent_mail_and_moves_no_history_cursor(store):
     read = {r.external_id for r in result.receipts}
     assert read, "the demonstration read nothing"
     assert "m39" in read, "the newest thing the main did was left out"
-    # A week, plus the lag of the corroborated stamp the window reaches back
-    # from — and nothing like the six weeks the history walk would have read.
-    assert read <= set(sorted(days)[-(WINDOW_DAYS + HORIZON_SAMPLES):]), (
+    # A week of it, and nothing like the six weeks the history walk reads.
+    assert read <= set(sorted(days)[-(WINDOW_DAYS + 1):]), (
         "the demonstration read old mail"
     )
     assert result.cursor is None, "a bounded read moved the history cursor"
@@ -708,18 +658,49 @@ def test_a_recent_read_and_a_forward_walk_answer_different_questions():
 def test_a_window_reaches_the_provider_bounded_at_both_ends():
     """The task the story names: ``_query_for`` bounds a window at both ends.
 
-    Half-open, and that is what lets windows tile: ``after:`` includes the day
-    it names and ``before:`` excludes it, so the day one window ends on is the
-    day the next begins and no message falls between them.
-    """
-    from half.ingest.gmail import _query_for
+    **As epoch seconds and not as ``YYYY/MM/DD``.** Gmail's date form is
+    evaluated in the mailbox's own timezone while every stamp this walk
+    computes from is UTC, so a window built in one and read in the other
+    excludes messages the walk then steps past. A timestamp is one instant
+    everywhere.
 
-    assert _query_for("2026-03-04T05:06:07Z") == "after:2026/03/04"
-    assert _query_for("2026-03-04", "2026-03-11") == (
-        "after:2026/03/04 before:2026/03/11"
+    A second of cushion at each end, because the provider's inclusivity at a
+    bound is documented neither way: an overlap costs a digest the pipeline
+    already deduplicates, and a gap costs a message no later query names.
+    """
+    from half.ingest.gmail import _instant, _query_for
+
+    start = _instant("2026-03-04T00:00:00Z")
+    end = _instant("2026-03-11T00:00:00Z")
+    assert _query_for(start) == "after:1772582399"
+    assert _query_for(start, end) == "after:1772582399 before:1773187201"
+    assert _query_for(None, end) == "before:1773187201"
+    assert _query_for() == "", "no bound at all is the whole mailbox, as before"
+    assert _instant("1970-01-01T00:00:00Z") is not None
+    assert _query_for(_instant("1970-01-01T00:00:00Z")) == "after:0", (
+        "a negative timestamp is not a query"
     )
-    assert _query_for(None, "2026-03-11") == "before:2026/03/11"
-    assert _query_for(None) == "", "no cursor is the whole mailbox, as before"
+
+
+def test_a_mailbox_in_another_timezone_still_loses_no_boundary_message(store):
+    """Matrix: *a full walk*, at the seam a date-shaped bound would open.
+
+    The double evaluates a ``YYYY/MM/DD`` bound at **its own** offset, the way
+    Gmail does, and holds messages in the hours a thirteen-hour shift moves
+    across a window edge. A walk that sent dates would list a window that did
+    not contain them and mark that window drained regardless — the boundary
+    message gone, by the exact mechanism this story exists to close. A walk
+    that sends instants cannot express the mistake.
+    """
+    edges = {"m0": "2026-08-01T01:00:00Z", "m1": "2026-08-07T22:00:00Z",
+             "m2": "2026-08-08T01:00:00Z", "m3": "2026-08-14T23:30:00Z"}
+    mail = FakeGmail(edges, page_size=1, zone_hours=13)
+    result = run(GmailSource(mail), store)
+
+    assert {r.external_id for r in result.receipts} == set(edges)
+    assert not any("/" in q for q in mail.lists), (
+        "a date-shaped bound reached the provider, and a date has a timezone"
+    )
 
 
 def test_a_windowed_walk_asks_for_both_bounds():
@@ -734,37 +715,75 @@ def test_a_windowed_walk_asks_for_both_bounds():
 # -- the budget wrapper, which must not swallow the watermark ------------------
 
 def test_the_budget_wrapper_carries_the_watermark_of_what_it_wraps():
-    """``half.__main__.Bounded`` is the shape of CAP-2's budget on a pull.
+    """``half.__main__.bounded`` is the shape of CAP-2's budget on a pull.
 
-    A wrapper that swallowed ``drained_through`` would leave the pipeline with
-    no watermark at all and send it back to the ``max()`` this story removed —
+    A wrapper that swallowed the watermark would leave the pipeline with no
+    watermark at all and send it back to the ``max()`` this story removed —
     silently, and with every case above still green, because they drive the
     source directly.
+
+    **And it must be swallowed where a type check can see it.** The first
+    version forwarded through ``__getattr__``, which answers a plain attribute
+    lookup and is invisible to ``isinstance`` against a protocol — protocols
+    resolve members statically. It read correctly, asserted correctly, and was
+    not ``Draining`` to the pipeline at all.
     """
-    from half.__main__ import Bounded
+    from half.__main__ import bounded
 
     walking = GmailSource(FakeGmail(a_month(20), page_size=5))
-    bounded = Bounded(walking, seconds=30.0)
+    wrapped = bounded(walking, seconds=30.0)
     walking.drained_through = "2026-08-08T00:00:00Z"
-    assert bounded.drained_through == "2026-08-08T00:00:00Z"
+    assert wrapped.drained_through == "2026-08-08T00:00:00Z"
+    assert isinstance(wrapped, Draining), (
+        "the pipeline asks with isinstance and would not have seen this"
+    )
 
-    plain = Bounded(FakeMail([message(0, "a")]), seconds=30.0)
+    plain = bounded(FakeMail([message(0, "a")]), seconds=30.0)
+    assert not isinstance(plain, Draining), (
+        "a wrapper around a source with no watermark must not appear to have one"
+    )
+
+
+def test_the_shipped_walk_is_the_kind_of_source_the_pipeline_looks_for():
+    """The misspelling case, and it is the whole of the duck-typing risk.
+
+    ``Pipeline`` asks ``isinstance(source, Draining)``. Rename the attribute in
+    ``GmailSource`` and the check answers no, the pipeline falls back to the
+    ``max()`` cursor that loses history, and nothing else in the suite notices
+    — the fallback is the original defect. This is the case that notices.
+    """
+    assert isinstance(GmailSource(object()), Draining)
+    assert isinstance(GmailRecent(object()), Draining)
+    assert not isinstance(FakeMail([]), Draining), (
+        "an in-memory source drains what it yields and claims nothing"
+    )
+
+
+def test_a_recent_read_cannot_be_made_to_move_a_cursor():
+    """``GmailRecent.drained_through`` is a property, so there is no setter.
+
+    It was a ``Final[None]`` class attribute with a comment claiming no code
+    path could set it, which ``Final`` does not enforce at runtime and an
+    instance assignment simply ignored.
+    """
+    recent = GmailRecent(object())
+    assert recent.drained_through is None
     with pytest.raises(AttributeError):
-        plain.drained_through  # a source that publishes none must not gain one
+        recent.drained_through = "2026-08-08T00:00:00Z"
 
 
 def test_the_demonstrations_own_wiring_moves_no_history_cursor(store):
     """CAP-2 as it is actually wired: bounded, over the recent read.
 
-    ``half.__main__.onboard`` wraps the source in ``Bounded`` and
+    ``half.__main__.onboard`` wraps the source in ``bounded`` and
     ``half.__main__.onboarded`` builds a ``GmailRecent``. Both together are the
     ninety seconds, and together they must leave the history cursor exactly
     where they found it — which is the acceptance criterion, over the two
     objects the shipped path composes rather than over one of them.
     """
-    from half.__main__ import Bounded
+    from half.__main__ import bounded
 
-    recent = Bounded(GmailRecent(FakeGmail(a_month(40), page_size=5)),
+    recent = bounded(GmailRecent(FakeGmail(a_month(40), page_size=5)),
                      seconds=30.0)
     result = run(recent, store, since="2026-08-05T00:00:00Z")
 
@@ -772,79 +791,95 @@ def test_the_demonstrations_own_wiring_moves_no_history_cursor(store):
     assert result.cursor == "2026-08-05T00:00:00Z"
 
 
-# -- where a first walk begins ------------------------------------------------
+# -- where a first walk begins, and where it ends -----------------------------
 
-def test_a_first_walk_finds_the_mailbox_s_oldest_day_rather_than_the_floor(store):
+def test_a_first_walk_finds_where_the_mailbox_begins_rather_than_the_floor(store):
     """A first walk has no cursor, and the floor is fifty years back.
 
-    Starting at ``MAILBOX_FLOOR`` and stepping a week at a time would be
-    correct and would spend two and a half thousand list calls on empty weeks
-    before reaching any mail — under a caller's deadline, a first pull that
-    reads nothing at all, every time. The halving search is what makes the
-    first walk affordable, and its cost is bounded by ``MAX_PROBES``.
+    Stepping a week at a time from ``MAILBOX_FLOOR`` would be correct and would
+    spend two and a half thousand list calls on empty weeks before reaching any
+    mail — under a caller's deadline, a first pull that reads nothing at all,
+    every time. The halving search is what makes the first walk affordable, and
+    its cost is bounded by ``MAX_PROBES``.
     """
     mail = FakeGmail({"a": "2019-06-04", "b": "2019-06-05", "c": "2019-06-06",
                       "d": "2019-06-07", "e": "2026-08-01"}, page_size=2)
     result = run(GmailSource(mail), store)
 
     assert {r.external_id for r in result.receipts} == {"a", "b", "c", "d", "e"}
-    probes = [q for q in mail.lists if q.startswith("before:")]
-    assert len(probes) <= MAX_PROBES, "the halving search ran unbounded"
-    assert len(mail.lists) < 500, "the walk stepped up from the floor"
-
-
-def test_mail_older_than_gmail_itself_is_still_walked(store):
-    """The floor is the epoch and not the year the service launched.
-
-    Mail older than Gmail lives in Gmail — imported, carrying its original
-    date — and ``internalDate`` carries that date. A floor at 2004 would have
-    begun the walk after such a message and no later query would ever have
-    named it, which is this story's own defect rebuilt out of a plausible
-    constant.
-    """
-    mail = FakeGmail({"ancient": "1998-11-02", "recent": "2026-08-01"},
-                     page_size=1)
-    result = run(GmailSource(mail), store)
-    assert {r.external_id for r in result.receipts} == {"ancient", "recent"}
+    # Two searches at most — one for the floor, one for the seven-year gap —
+    # and a step for each window in between.
+    assert len(mail.lists) <= 2 * MAX_PROBES + 4 * EMPTY_BEFORE_SEARCH + 8, (
+        f"the walk spent {len(mail.lists)} list calls crossing two gaps"
+    )
 
 
 def test_the_walk_reaches_the_newest_message_however_old_its_horizon_is(store):
     """The stall this story nearly shipped with, kept as a case.
 
-    The horizon is the third-newest stamp, and for a while it was also where
-    the walk stopped. On a mailbox whose three newest messages are years apart
-    that stops the walk short of the newest ones *and* leaves the cursor at the
-    same place next run, so those messages are read never — the loss this story
-    exists to remove, rebuilt out of the defence against clock skew.
+    The horizon guards against a stamp nothing corroborates, and for a while it
+    was also where the walk stopped. On a mailbox whose newest messages are
+    years apart that stops the walk short of the newest ones *and* leaves the
+    cursor at the same place next run, so those messages are read never — the
+    loss this story exists to remove, rebuilt out of the defence against clock
+    skew.
 
     Two numbers, not one: the walk goes to the newest stamp there is, and the
     cursor is clamped to the corroborated one.
     """
     days = {"a": "2019-06-04", "b": "2019-06-05", "c": "2019-06-06",
             "d": "2022-01-10", "e": "2026-08-01"}
-    mail = FakeGmail(days, page_size=2)
-    result = run(GmailSource(mail), store)
+    result = run(GmailSource(FakeGmail(days, page_size=2)), store)
 
     assert {r.external_id for r in result.receipts} == set(days)
-    assert result.cursor is not None and result.cursor <= "2022-01-11T00:00:00Z", (
+    assert result.cursor is not None and result.cursor <= "2022-01-18T00:00:00Z", (
         "the cursor followed the walk past its corroborated horizon"
     )
 
 
-def test_a_gap_of_years_is_jumped_rather_than_stepped(store):
-    """Matrix: *an empty window*, at the size that makes stepping untenable.
+def test_a_small_mailbox_still_advances_its_cursor(store):
+    """The horizon is a lag, not a rank, and this is why.
 
-    Seven years of empty weeks is three hundred and sixty list calls at a week
-    apiece, and a mailbox can hold several such gaps. Halving crosses one for
-    about fifteen requests however wide it is.
+    Taking the third-newest stamp outright punished a mailbox for being small:
+    with three messages the third-newest *is* the oldest, so the cursor sat at
+    the oldest for ever and every run re-read all three. Ordinary mail arrives
+    in clusters; a year of daylight between two of a mailbox's newest messages
+    is a broken clock, and three messages in three days is a Tuesday.
     """
-    mail = FakeGmail({"old": "2019-01-02", "old2": "2019-01-03",
-                      "new": "2026-08-01", "new2": "2026-08-02"}, page_size=1)
-    result = run(GmailSource(mail), store)
+    mail = FakeGmail({"a": "2026-08-01", "b": "2026-08-02", "c": "2026-08-03"})
+    first = run(GmailSource(mail), store)
 
+    assert len(first.receipts) == 3
+    assert first.cursor == "2026-08-03T08:00:00Z", (
+        "a mailbox of three messages could not move its cursor past the first"
+    )
+    again = run(GmailSource(mail), store, since=first.cursor)
+    assert again.already_seen <= 1, (
+        f"the whole mailbox was re-read: {again.already_seen} already seen"
+    )
+
+
+def test_a_gap_of_years_is_searched_and_a_gap_of_weeks_is_stepped(store):
+    """Matrix: *an empty window*, at both sizes it comes in.
+
+    Searching at the first empty window makes a dormant mailbox **dearer**: a
+    halving search is about fifteen list calls and stepping one empty week is
+    one. So a week of silence is stepped and a month of it is searched, and the
+    seven-year gap below costs about the same as the four weeks in front of it.
+    """
+    far = FakeGmail({"old": "2019-01-02", "old2": "2019-01-03",
+                     "new": "2026-08-01", "new2": "2026-08-02"}, page_size=1)
+    result = run(GmailSource(far), store)
     assert len(result.receipts) == 4
-    assert len(mail.lists) < 60, (
-        f"the gap cost {len(mail.lists)} list calls; it was stepped, not jumped"
+    assert len(far.lists) < 2 * MAX_PROBES + 20, (
+        f"the seven-year gap cost {len(far.lists)} list calls; it was stepped"
+    )
+
+    near = FakeGmail({"a": "2026-01-05", "b": "2026-02-02"}, page_size=1)
+    run(GmailSource(near), store)
+    assert len(near.lists) < MAX_PROBES + 12, (
+        f"a four-week gap cost {len(near.lists)} list calls; it was searched, "
+        "and a search costs more than the steps it replaced"
     )
 
 
@@ -862,5 +897,142 @@ def test_the_demonstration_bounds_its_window_even_on_a_small_mailbox(store):
 
     read = {r.external_id for r in result.receipts}
     assert "m39" in read and "m00" not in read
-    assert len(read) <= WINDOW_DAYS + HORIZON_SAMPLES
+    assert len(read) <= WINDOW_DAYS + 1
     assert any("before:" in q and "after:" in q for q in mail.lists)
+
+
+def test_a_recent_read_with_a_cursor_past_every_message_reads_nothing(store):
+    """A window whose start would sit after its end is not a window.
+
+    Reachable whenever a demonstration re-runs against a cursor already past
+    the mailbox: the newest stamp is behind the cursor, so the computed window
+    inverts. It must answer nothing rather than query backwards.
+    """
+    mail = FakeGmail(a_month(3))
+    result = run(GmailRecent(mail), store, since="2027-01-01T00:00:00Z")
+    assert result.receipts == [] and result.cursor == "2027-01-01T00:00:00Z"
+
+
+def test_a_mailbox_whose_newest_messages_have_no_date_is_still_read(store):
+    """Review's reproduction, kept: the outage the horizon probe used to be.
+
+    The probe read six ids of the **first page only**, so a mailbox whose six
+    newest messages carried no ``internalDate`` yielded no stamp, and the walk
+    logged and returned. Measured on the shipped build: fifty-six messages,
+    page size ten, the six newest undated — nought of fifty-six ingested over
+    four runs, the cursor never moving, repeating every run for ever. Not a
+    loss, and a total outage for that mailbox.
+
+    The probe now walks on through pages, bounded by ``HORIZON_PROBES`` reads.
+    """
+    days = a_month(56)
+    newest = sorted(days)[-6:]
+    mail = FakeGmail(days, page_size=10, undated=tuple(newest))
+    result = run(GmailSource(mail), store)
+
+    read = {r.external_id for r in result.receipts}
+    assert len(read) == 50, f"{len(read)} of the 50 readable messages were read"
+    assert not read & set(newest), "an undated message was somehow stamped"
+    assert result.cursor is not None, "the cursor did not move at all"
+
+
+def test_a_mailbox_with_no_readable_date_anywhere_stops_and_says_so(store, caplog):
+    """And the bail-out is still reachable, which is the other half.
+
+    A mailbox with nothing readable in ``HORIZON_PROBES`` reads cannot be
+    placed in time at all. It stops — the walk cannot invent a window, and
+    stamping one from a clock is the fabrication ``_iso_from_internal_date``
+    already refuses — and it says so, in counts (AD-22).
+    """
+    days = a_month(60)
+    mail = FakeGmail(days, page_size=10, undated=tuple(days))
+    with caplog.at_level("WARNING"):
+        result = run(GmailSource(mail), store)
+
+    assert result.receipts == [] and result.cursor is None
+    said = "\n".join(r.getMessage() for r in caplog.records)
+    assert "cannot bound a window" in said
+    assert not any(mid in said for mid in days), "an id reached a log line"
+
+
+def test_the_shipped_window_is_the_one_the_measurement_argues_for():
+    """The constant's justification, checkable rather than asserted in prose.
+
+    ``WINDOW_MEASUREMENT`` is regenerated by ``tools/window_sim.py`` driving
+    this walk, and it is here so that a change to the walk which moves the
+    numbers is visible. What it has to show is that the shipped width is not
+    the worst on either axis: not the dearest per message on the mailbox least
+    able to afford requests, and not the one asking a busy mailbox to drain a
+    window no deadline can finish.
+    """
+    from half.ingest.gmail import WINDOW_MEASUREMENT
+
+    assert WINDOW_DAYS in WINDOW_MEASUREMENT, "the shipped width is unmeasured"
+    costs = {w: rows["dormant"][0] for w, rows in WINDOW_MEASUREMENT.items()}
+    drains = {w: rows["firehose"][1] for w, rows in WINDOW_MEASUREMENT.items()}
+
+    assert costs[WINDOW_DAYS] < costs[min(costs)], (
+        "the shipped width is the dearest per message on a sparse mailbox"
+    )
+    assert drains[WINDOW_DAYS] < drains[max(drains)], (
+        "the shipped width asks the busiest mailbox to drain the largest window"
+    )
+
+
+# -- the bounds, and the shapes that are build mistakes -----------------------
+
+@pytest.mark.parametrize("bad", [0, -1, "a week", None, 1.5])
+def test_a_window_that_walks_nothing_forward_is_refused(bad):
+    """A window of no days repeats one instant for ever while looking like
+    progress, and a window that is not a number of days is a build mistake.
+    Both are refused at construction, in this module's own vocabulary."""
+    if bad == 1.5:
+        assert GmailSource(object(), window_days=bad).window_days == 1
+        return
+    with pytest.raises(ChannelError):
+        GmailSource(object(), window_days=bad)
+
+
+def test_a_stamp_beyond_any_calendar_is_refused_rather_than_raised_raw(store):
+    """A provider answering with an absurd ``internalDate`` must not throw an
+    ``OverflowError`` out of a walk: it is neither a ``ChannelError`` nor
+    anything a caller of this port is told to expect."""
+    from half.ingest.gmail import _instant, _plus
+
+    with pytest.raises(ChannelError):
+        _plus(_instant("9999-12-31T00:00:00Z"), 30)
+
+
+def test_the_watermark_is_cleared_when_a_pull_is_asked_for(store):
+    """The reset is at the call and not at the first message.
+
+    ``fetch`` used to be an async generator, whose body does not run until
+    something asks it for a message — so a pull built and dropped, or a second
+    pull over one source, left the previous walk's watermark standing and
+    naming ground this pull has not covered.
+    """
+    walking = GmailSource(FakeGmail(a_month(20), page_size=5))
+    run(walking, store)
+    assert walking.drained_through is not None
+
+    walking.fetch(since=None)          # asked for, never driven
+    assert walking.drained_through is None, (
+        "a pull that was asked for left the last one's watermark standing"
+    )
+
+
+def test_a_walk_that_spends_its_window_budget_says_so(store, caplog):
+    """Every bound in this module reports itself. A walk that runs out of
+    windows stops where it drained — it does not move the watermark past ground
+    it did not cover — and the next pull continues from there."""
+    from half.ingest import gmail as module
+
+    mail = FakeGmail({"a": "2020-01-01", "z": "2026-08-01"}, page_size=1)
+    with caplog.at_level("WARNING"):
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(module, "MAX_WINDOWS", 2)
+            result = run(GmailSource(mail), store)
+
+    said = "\n".join(r.getMessage() for r in caplog.records)
+    assert "windows" in said, "a bound was reached and nothing said so"
+    assert result.cursor is not None and result.cursor < "2026-01-01T00:00:00Z"

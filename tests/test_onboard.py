@@ -424,14 +424,6 @@ def a_demonstration(registry, *, consent=TOLD, wire=None, voice=None,
     )), channel
 
 
-def a_pull(wiring, source, *, main_id=MAIN):
-    """The mailbox pull the shipped composition hands the demonstration."""
-    async def pull():
-        return await ingest_mail(wiring, main_id=main_id, source=source)
-
-    return pull
-
-
 def a_wiring(tmp_path, *, reader=None, voice=None, consent=TOLD,
              nothing_yet="", channel=None, main_id=MAIN):
     """The real ``Wiring``, with the doubles this file needs swapped in.

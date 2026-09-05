@@ -2,7 +2,7 @@
 title: 'Story 20 — The order that was promised'
 type: 'fix'
 created: '2026-09-05'
-status: 'in-progress'
+status: 'done'
 baseline_commit: 'e218117'
 review_loop_iteration: 1
 context:
@@ -119,6 +119,20 @@ builds `after:` only and validates the cursor), `:30` (`MAX_PAGES = 10_000`),
 cursor) and `:159-162` (where it is returned), `half/onboard/flow.py:107-125`
 (`BUDGET_SECONDS` and the reserve, the deadline that cuts the pull).
 
+*Those line numbers are the ones this story was written against and every one
+of them has moved; they are kept as written because the frozen block above was
+approved against them. Where the same things live after the change:*
+`half/ingest/port.py` — `Draining` and `MailSource.fetch`;
+`half/ingest/gmail.py` — `GmailSource` (the walk and its window loop),
+`GmailRecent` (CAP-2's bounded read), `_query_for`, `_window_ids`, `_stamps`,
+`_next_mail`, `_horizon_of`, and the constants `WINDOW_DAYS`,
+`WINDOW_MEASUREMENT`, `MAX_PAGES`, `MAX_WINDOWS`, `MAX_PROBES`,
+`EMPTY_BEFORE_SEARCH`, `HORIZON_SAMPLES`, `SKEW_GAP_DAYS`, `HORIZON_PROBES`,
+`MAILBOX_FLOOR`; `half/ingest/pipeline.py` — `Ingested.cursor`,
+`Ingested.read_through`, `_drained`; `half/__main__.py` — `Bounded`,
+`DrainingBounded`, `bounded`, `ingest_mail`'s append, `onboarded`;
+`half/onboard/flow.py` — unchanged.
+
 **Note the transport needs no change:** `list_messages(*, query, page_token)`
 takes an arbitrary query, so `before:` is already expressible.
 
@@ -217,3 +231,76 @@ three stamps; the floor at the Unix epoch rather than Gmail's launch year, so
 imported mail older than the service is still walked; the watermark set
 *before* the last message of a window rather than after it, because a walk cut
 on a boundary is never resumed.
+
+**2026-09-05, loop 1 — three adversarial reviews.** Nine findings; six were
+losses, outages or unpinned changes and are fixed, two were measurement debts
+and are paid, one is recorded rather than fixed. The frozen block is unchanged
+and nothing in it was renegotiated.
+
+- **A window whose *listing* stopped early was treated as drained** — the
+  story's own defect one level down. ``_window_ids`` broke out on a repeated
+  page token or at ``MAX_PAGES`` and returned what it had; because the provider
+  lists newest-first, the page that went missing was the **oldest**, and the
+  walk then moved the watermark over it. Measured on that build: nine messages,
+  listing cut at six, six runs, ``m00``–``m02`` ingested never. A listing that
+  did not finish now **raises** — story 3's vocabulary, receipts kept, cursor
+  unmoved — and the guard is reached by a case that fails when it is deleted,
+  which the case named for it no longer was.
+- **A mailbox whose newest messages had no date was never read at all.** The
+  horizon probe read six ids of the first page only; measured, fifty-six
+  messages with the six newest undated were nought-of-fifty-six over four runs,
+  repeating for ever. The probe now walks through pages under a read bound.
+- **The claim stamp was unpinned.** Moving the append from ``result.cursor`` to
+  ``result.read_through`` is what keeps CAP-2 working — under the shipped
+  composition the cursor is ``None``, the old spelling passes ``""``, the store
+  refuses it and the broad ``except`` swallows the refusal, leaving every
+  receipt written and the ledger empty. Every existing case drove a source with
+  no watermark, where the two spellings are the same string. Now pinned by a
+  case that goes red when the line is reverted.
+- **The bounds are timezone-correct.** Gmail's ``after:``/``before:`` in their
+  date form are evaluated in the mailbox's own timezone while every stamp here
+  is UTC, so a window built in one and read in the other loses the messages at
+  its edge. Every bound is now epoch seconds, with a second of cushion at each
+  end; the mailbox double evaluates a date form at its own offset, so the
+  mistake is expressible and a case asserts the walk never makes it.
+- **A wrapper that forwarded the watermark through ``__getattr__`` was
+  invisible to the check that reads it.** ``isinstance`` against a
+  runtime-checkable protocol resolves members statically, so the forwarding
+  read correctly, asserted correctly, and was not ``Draining`` to the pipeline
+  at all — the ``max()`` cursor restored silently, which *is* the original
+  defect. ``half.__main__.DrainingBounded`` and the ``bounded`` factory mirror
+  the wrapped source's kind where a type check can see it.
+- **The horizon is a lag, not a rank.** Taking the third-newest stamp outright
+  made a mailbox of three messages re-read all three for ever. It now walks
+  down from the newest and stops at the first stamp with company within
+  ``SKEW_GAP_DAYS``, so ordinary mail keeps its newest stamp and a message a
+  year clear of everything else is still stepped over.
+- **The window measurement now runs the walk.** The old tool modelled it — one
+  list call per window — and the model had stopped being the walk: it knew
+  nothing of the halving search, and review measured 2.97 requests per message
+  on a dormant mailbox where the tool claimed 1.77. Two fixes: the search is
+  now spent only after ``EMPTY_BEFORE_SEARCH`` empty windows (searching at the
+  first one made a sparse mailbox *dearer*, which is what the gap was), and
+  ``tools/window_sim.py`` drives the shipped ``GmailSource`` and counts what it
+  actually asks. Re-measured, seven days still wins and ``WINDOW_MEASUREMENT``
+  carries the table as data.
+- **Recorded, not fixed: none of the walk runs in production yet.** ``onboarded``
+  wires ``GmailRecent`` and nothing constructs ``GmailSource``; nothing in
+  ``half/`` reads ``Ingested.cursor``. What ships is that *the demonstration no
+  longer damages a cursor nothing reads*. The windowed walk, the searches,
+  ``MAILBOX_FLOOR``, ``MAX_WINDOWS``, the horizon clamp and the non-fallback
+  branch of ``Pipeline._drained`` are groundwork, exercised only by the suite.
+  Wiring a recurring history pull — and the durable cursor it needs, which this
+  story's *Ask First* forbids adding — is the next story, and until it exists
+  the loss this story prevents has not been prevented in anyone's mailbox.
+
+Deferred, and named so the next story does not have to rediscover them:
+
+- **A recurring CAP-3 history pull**, with somewhere durable to keep the cursor.
+- **A window that will not drain inside a caller's bound never advances the
+  cursor.** The frozen rule working as written; the Design Notes name it. It
+  bites only a *bounded* history walk, which nothing wires yet.
+- **A batch seam** would collapse the busiest-window column and make a wider
+  window the right answer; ``WINDOW_MEASUREMENT`` records that.
+- **Mail stamped before 1970** is out of reach: Gmail's timestamp operators take
+  epoch seconds and a negative one is not a query.

@@ -3,13 +3,14 @@
 Narrow on purpose. Half needs to walk a mailbox forward from a cursor and stop;
 everything else a mail API offers is not this product's concern.
 
-**A source may say more than the Protocol asks, and one thing is read.** If an
-implementation publishes ``drained_through`` — how far it has *finished*
-handing over, which is not how far it got — ``half.ingest.pipeline`` advances
-its cursor to that and to nothing else. It is not declared here because it is
-not part of the promise: the *order* is the port's business, while how a
-particular provider proves it drained a stretch of mailbox is that adapter's.
-A source that publishes nothing is taken at the promise's word.
+**A source may say more than ``MailSource`` asks, and one thing is read.** A
+``Draining`` source publishes ``drained_through`` — how far it has *finished*
+handing over, which is not how far it got — and ``half.ingest.pipeline``
+advances its cursor to that and to nothing else. It is a protocol of its own
+rather than a member of ``MailSource`` because it is not part of the promise:
+the *order* is the port's business, while how a particular provider proves it
+drained a stretch of mailbox is that adapter's. A source that is not
+``Draining`` is taken at the promise's word.
 """
 
 from __future__ import annotations
@@ -46,6 +47,24 @@ class Message:
             f"Message(external_id={self.external_id!r}, "
             f"thread_id={self.thread_id!r}, bytes={len(self.body)})"
         )
+
+
+@runtime_checkable
+class Draining(Protocol):
+    """A source that also says how far it has **finished**.
+
+    Separate from ``MailSource`` and checked with ``isinstance``, which is what
+    makes the pipeline's fallback a decision rather than an accident. Read off
+    the object with a bare ``getattr`` it was a silent side channel: misspell
+    the attribute in an adapter and every walk quietly reverts to the ``max()``
+    cursor story 20 removed — the failure mode being the original defect. Named
+    here, ``tests/test_ingest.py`` can assert that the shipped source satisfies
+    it, and the misspelling fails a case.
+    """
+
+    #: The furthest point behind which this source has left nothing unread, or
+    #: ``None`` while it has drained nothing. Never *how far it got*.
+    drained_through: str | None
 
 
 @runtime_checkable

@@ -64,7 +64,7 @@ from half.governance import ladder
 from half.ingest.gmail import GmailRecent
 from half.ingest.gmail_transport import HttpTransport, MailboxMisconfigured
 from half.ingest.pipeline import Ingested, Pipeline
-from half.ingest.port import MailSource
+from half.ingest.port import Draining, MailSource
 from half.interrupt.gate import Interrupt
 from half.onboard import flow as onboarding
 from half.onboard.consent import LEAVES_THE_MACHINE, Consent
@@ -557,8 +557,13 @@ async def ingest_mail(
     story 7). Cancelling here would lose the run with the local and admit
     nothing from a pull whose receipts are already on disk; a source that stops
     yielding lets the ``async for`` end normally, so a truncated pull still
-    admits what it gathered and still returns a cursor. See
+    admits what it gathered and still reports where it read to. See
     ``half.__main__.bounded``.
+
+    **What a truncated pull does *not* return is a moved cursor** (story 20).
+    ``Ingested.cursor`` advances only over ground the source finished draining,
+    so a cut mid-window leaves it where it was; ``Ingested.read_through`` is
+    the pull's own position and is what stamps the claim below.
     """
     with Run() as run:
         # **The scrubbed text's whole lifetime, as a scope** (story 15c). A
@@ -638,21 +643,6 @@ class Bounded:
         self._seconds = float(seconds)
         self.stopped_early = False
 
-    def __getattr__(self, name: str):
-        """Pass ``drained_through`` through, and nothing else.
-
-        The watermark belongs to the source being bounded — it is that source's
-        statement about how far it *finished* — and a wrapper that swallowed it
-        would leave the pipeline with no watermark at all and send it back to
-        the ``max()`` this story removed. Written as a lookup that can fail
-        rather than as a property that answers ``None``, because a source with
-        no watermark and a source whose watermark is ``None`` mean different
-        things and the pipeline distinguishes them.
-        """
-        if name == "drained_through":
-            return getattr(self.source, name)
-        raise AttributeError(name)
-
     async def fetch(self, *, since: str | None = None):
         deadline = asyncio.get_running_loop().time() + self._seconds
         async for message in self.source.fetch(since=since):
@@ -666,6 +656,35 @@ class Bounded:
                     self._seconds,
                 )
                 return
+
+
+class DrainingBounded(Bounded):
+    """``Bounded`` over a source that publishes a watermark, forwarding it.
+
+    **A wrapper must mirror the kind of source it wraps**, and it has to do so
+    where a type check can see it. The watermark belongs to the source being
+    bounded — it is that source's statement about how far it *finished* — and a
+    wrapper that swallowed it would leave the pipeline with no watermark and
+    send it back to the ``max()`` cursor story 20 removed, silently.
+
+    Written as a subclass rather than as a ``__getattr__`` on ``Bounded``
+    because ``isinstance`` against a runtime-checkable protocol resolves
+    attributes **statically** (``inspect.getattr_static``): a ``__getattr__``
+    answers a plain attribute lookup and is invisible to the check, so a
+    forwarding wrapper written that way passes every direct assertion and is
+    not ``Draining`` to the pipeline at all. That is the story's own defect
+    wearing the fix's clothes, and it shipped for exactly one review round.
+    """
+
+    @property
+    def drained_through(self) -> str | None:
+        return self.source.drained_through
+
+
+def bounded(source: MailSource, *, seconds: float) -> Bounded:
+    """Bound a pull, mirroring whether its source publishes a watermark."""
+    kind = DrainingBounded if isinstance(source, Draining) else Bounded
+    return kind(source, seconds=seconds)
 
 
 async def onboard(
@@ -704,11 +723,11 @@ async def onboard(
     — CAP-2's ninety seconds is a requirement, and a caller that never sees the
     number cannot hold anybody to it.
     """
-    bounded = Bounded(source, seconds=onboarding.PULL_SECONDS)
+    pull_from = bounded(source, seconds=onboarding.PULL_SECONDS)
 
     async def pull() -> Ingested:
         return await ingest_mail(
-            wiring, main_id=main_id, source=bounded, since=since,
+            wiring, main_id=main_id, source=pull_from, since=since,
         )
 
     return await onboarding.demonstrate(

@@ -38,10 +38,10 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Final
+from typing import Awaitable, Callable
 
 from half.ingest.normalize import normalize
-from half.ingest.port import MailSource, Message
+from half.ingest.port import Draining, MailSource, Message
 from half.ingest.scrub import Scrubbed, scrub
 from half.store.sources import SourceStore, digest
 
@@ -207,13 +207,6 @@ class Pipeline:
         )
 
 
-#: What ``getattr`` hands back for a source that publishes no watermark. A
-#: sentinel rather than ``None``, because a source that publishes ``None``
-#: deliberately — a bounded read that drained nothing — is saying something
-#: different from a source that was never asked to say anything.
-_UNREPORTED: Final = object()
-
-
 def _drained(source: MailSource, *, since: str | None, newest: str | None) -> str | None:
     """How far the cursor may move: the ground the source finished handing over.
 
@@ -232,14 +225,20 @@ def _drained(source: MailSource, *, since: str | None, newest: str | None) -> st
     is the Protocol's business, and how a particular provider proves it drained
     a stretch of mailbox is that adapter's.
 
-    A source that publishes nothing is taken at the port's word — it yields
+    A source that is not ``Draining`` is taken at the port's word — it yields
     oldest first, so the last stamp it handed over *is* drained ground, with
     nothing older left behind it. Every in-memory source in this tree is of
     that kind, and so is a walk over a mailbox small enough to arrive whole.
+
+    **Checked with ``isinstance`` and not with ``getattr``**, because the
+    fallback is the original defect: a source whose watermark is misspelled
+    would drop silently back to the ``max()`` cursor that loses history, with
+    every case still green. ``half.ingest.port.Draining`` gives that a name a
+    test can assert about the shipped adapter.
     """
-    drained = getattr(source, "drained_through", _UNREPORTED)
-    if drained is _UNREPORTED:
+    if not isinstance(source, Draining):
         return newest
+    drained = source.drained_through
     if drained is None or (since is not None and drained <= since):
         # Nothing drained, or nothing drained beyond where we began. A cursor
         # that moves on the strength of a read that did not finish is the
