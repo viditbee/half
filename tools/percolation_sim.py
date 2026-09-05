@@ -157,7 +157,8 @@ def a_mailbox_with_a_disclaimer(msgs: int, people: int, threads: int,
                                 *, seed: int = 18, rule: str = "sequence",
                                 window: int | None = MAX_SOURCES,
                                 footer_only_at: int | None = None,
-                                footer: str = DISCLAIMER):
+                                footer: str = DISCLAIMER,
+                                one_company: bool = True):
     """The same mailbox, with story 18's declared key live on every message.
 
     **The anti-outage measurement, and it belongs in the sweep for the reason
@@ -192,7 +193,23 @@ def a_mailbox_with_a_disclaimer(msgs: int, people: int, threads: int,
     that position, which is the shape this sweep could not see at all until a
     review found it: a block contained in two bodies that do not contain each
     other makes those two one voice, and every corporate mailbox has that block
-    arriving alone the day the policy changes.
+    arriving alone the day the policy changes. **Story 19 is what those rows
+    measure now.** Every sender here is at one domain — ``p<n>@x``, which is what
+    a company mailbox looks like — so the footer's carriers never leave one
+    organisation, the block classifies as that organisation's furniture, and the
+    rows that read ``1`` under story 18 read one voice per message.
+
+    ``organisation`` is the sender's domain, so *one origin* here means one
+    company with many people at it, which is the shape the rule was chosen on: a
+    footer carried by three senders at one domain is furniture, one notice
+    carried by four senders at four domains is substance.
+
+    ``one_company=False`` puts every person at a **domain of their own**, which
+    is the control the footer rows need: the same bodies in the same order, and
+    the block now crosses organisations, so it is being passed on and the rule
+    collapses it exactly as story 18 did. Without that column the footer rows
+    would be satisfied by a rule that simply stopped collapsing anything, and
+    the discriminator would be unmeasured.
     """
     # Two generators, and that is not fussiness: the bodies must not move the
     # thread and sender draws, or this mailbox would not be the same mailbox
@@ -200,8 +217,14 @@ def a_mailbox_with_a_disclaimer(msgs: int, people: int, threads: int,
     r = random.Random(seed)
     days = random.Random(seed + 1)
     mail = []
-    held: list[tuple[str, str]] = []
+    held: list[tuple[str, str, str]] = []
     for i in range(msgs):
+        # Drawn before the body so the origin can reach the rule that reads it,
+        # and in the order `a_mailbox` draws them — thread, then sender — so
+        # this is still the same mailbox and the counts are still comparable.
+        thread = f"t{r.randrange(threads)}"
+        who = r.randrange(people)
+        sender = f"p{who}@x" if one_company else f"p{who}@d{who}.example"
         body = (footer if i == footer_only_at
                 else under_a_footer(i, days.randrange(28) + 1, footer))
         if rule == "sequence":
@@ -212,14 +235,19 @@ def a_mailbox_with_a_disclaimer(msgs: int, people: int, threads: int,
             # nothing. `echo.inside` was made public so that a second consumer
             # would not need a second implementation, and a second
             # implementation arrived anyway. There is now one.
-            key = echo.declaring(body, held)
+            key = echo.declaring(body, held, origin=sender)
+        elif rule == "story18":
+            # The shipped containment test with story 19's classifier off:
+            # exactly the rule that shipped before, so the footer rows can
+            # print what they used to alongside what they do now.
+            key = _declaring_by(body, held, BY_SEQUENCE)
         else:
             key = _declaring_by(body, held, BY_FRACTION if rule == "fraction"
                                 else BY_SET)
         if window is None or len(held) < window:
-            held.append((key, body))
-        mail.append((f"m{i}", {"thread_id": f"t{r.randrange(threads)}",
-                               "sender": f"p{r.randrange(people)}@x",
+            held.append((key, body, sender))
+        mail.append((f"m{i}", {"thread_id": thread,
+                               "sender": sender,
                                "digest": f"d{i}",
                                "independence_key": key}))
     return mail
@@ -234,14 +262,23 @@ BY_SET = staticmethod(lambda mine, theirs: total_set(mine[1], theirs[1]))
 BY_SEQUENCE = staticmethod(lambda mine, theirs: echo.inside(mine[0], theirs[0]))
 
 
-def _declaring_by(body: str, held: list[tuple[str, str]], same) -> str:
+def _declaring_by(body: str, held: list[tuple[str, str, str]], same,
+                  *, origin: str = "", classify=None) -> str:
     """``echo.declaring``'s shape, with the containment test as a parameter.
 
     **Only the two rejected rules come through here in the sweep.** The shipped
     rule calls ``echo.declaring`` itself, and ``main`` runs this skeleton with
-    ``BY_SEQUENCE`` — the shipped test — over the same window and prints whether
-    the two agree. A divergence is then a printed answer rather than the silent
-    one this file was already carrying.
+    ``BY_SEQUENCE`` — the shipped test — *and* the shipped classifier over the
+    same window, and prints whether the two agree. A divergence is then a
+    printed answer rather than the silent one this file was already carrying.
+
+    ``classify`` defaults to ``None``, which is **story 18's answer for every
+    match** — the rule as it stood before story 19. That is deliberate and it is
+    what keeps the ``set`` and ``frac`` columns comparable to the numbers story
+    18 recorded: those columns measure a *containment test*, and running them
+    with story 19's origin classifier would measure two changes at once and
+    report that the rejected rules had been rescued by something that has
+    nothing to do with why they were rejected.
 
     The three things it does that the version this replaced did not, each
     because ``declaring`` does: it skips a held body that declared nothing, it
@@ -253,14 +290,16 @@ def _declaring_by(body: str, held: list[tuple[str, str]], same) -> str:
     if not echo.long_enough(mine):
         return ""
     ours = (mine, frozenset(mine))
-    for key, text in held:
-        if not key:
-            continue
-        theirs = echo.units(text)
-        if not echo.long_enough(theirs):
+    window = [(key, echo.units(text), whose) for key, text, whose in held]
+    for key, theirs, _whose in window:
+        if not key or not echo.long_enough(theirs):
             continue
         if same(ours, (theirs, frozenset(theirs))):
-            return key
+            if classify is None:
+                return key
+            block = mine if len(mine) <= len(theirs) else theirs
+            if classify((origin, *echo.carrying(block, window))):
+                return key
     return echo.own_key(body)
 
 
@@ -437,11 +476,13 @@ def main() -> None:
         print(f"  {msgs:>6}{seq_keys:>6}{set_keys:>6}{frac_keys:>7}   {verdict}")
     print("  " + "─" * 65 + "\n")
 
-    print("\n  The shape the sweep above could not see: the shared block "
-          "arriving as a\n  message of its own. Truth is one voice per "
-          "message in every row.\n")
-    print(f"  {'msgs':>6}{'block':>18}{'arrives':>9}{'seq':>6}{'truth':>7}"
-          f"   verdict")
+    print("\n  The shape the sweep above could not see, and story 19's rule "
+          "on it: the shared\n  block arriving as a message of its own. Truth "
+          "is one voice per message in every\n  row, and the three columns are "
+          "the same bodies in the same order differing only\n  in who sent "
+          "them — which is the whole of what the rule reads.\n")
+    print(f"  {'msgs':>6}{'block':>18}{'arrives':>9}{'one co':>8}"
+          f"{'many co':>9}{'story 18':>10}{'truth':>7}   verdict")
     print("  " + "─" * 65)
     for label, block in (("legal footer", DISCLAIMER),
                          ("one-line footer", FOOTER_LINE)):
@@ -450,38 +491,68 @@ def main() -> None:
                                                footer_only_at=position,
                                                footer=block)
             keys = len({m["independence_key"] for _, m in mail})
-            verdict = "" if keys == msgs else "COLLAPSED"
-            print(f"  {msgs:>6}{label:>18}{position:>9}{keys:>6}{msgs:>7}"
-                  f"   {verdict}")
+            crossed = a_mailbox_with_a_disclaimer(msgs, 60, 120,
+                                                  footer_only_at=position,
+                                                  footer=block,
+                                                  one_company=False)
+            travelling = len({m["independence_key"] for _, m in crossed})
+            before = a_mailbox_with_a_disclaimer(msgs, 60, 120, rule="story18",
+                                                 footer_only_at=position,
+                                                 footer=block)
+            was = len({m["independence_key"] for _, m in before})
+            verdict = ("COLLAPSED" if keys != msgs
+                       else "" if travelling == was
+                       else "the control stopped being the control")
+            print(f"  {msgs:>6}{label:>18}{position:>9}{keys:>8}"
+                  f"{travelling:>9}{was:>10}{msgs:>7}   {verdict}")
     print("  " + "─" * 65)
+    print("  one co   = every sender at one domain: the block never leaves the "
+          "company that\n             staples it, so it is furniture and every "
+          "message is its own voice.")
+    print("  many co  = the same bodies in the same order with every sender at "
+          "a domain of\n             their own: the block crossed "
+          "organisations, so it is being passed on\n             and collapses "
+          "exactly as it did before. Without this column the row\n             "
+          "to its left would be satisfied by a rule that stopped collapsing\n"
+          "             anything at all.")
+    print("  story 18 = the same sweep with the classifier switched off.")
     print("  A block contained in two bodies that do not contain each other "
-          "makes those\n  two one voice: both adopt its handle. The damage "
-          "stops where the block\n  lands in the arrival order, because what "
-          "it can reach is what it was\n  compared against. Four measured "
-          "levers were rejected — see echo.py's\n  docstring and "
-          "deferred-work.md. The direction is MERGING, so Half\n  under-counts "
-          "and admits fewer claims, which is the conservative side.\n")
+          "made those two\n  one voice: both adopted its handle. Six measured "
+          "levers were rejected before\n  the one that works — see echo.py's "
+          "docstring and deferred-work.md — and the\n  one that works is not "
+          "in the text at all: a footer is stapled by one company\n  to its "
+          "own mail and never leaves it, while a forwarded original travels "
+          "between\n  senders, which is what forwarding is. What remains "
+          "uncaught is a forward that\n  never leaves one company: on the only "
+          "signal that works it IS furniture. That\n  direction is "
+          "OVER-CLAIMING, so it is the more serious residue and is pinned as "
+          "one.\n")
 
     # The skeleton the two rejected rules run through must stay the shipped
     # function's shape. Cross-checked rather than asserted in a comment,
     # because a copy of `declaring` living in this file is exactly the drift
     # that made this section necessary.
-    probe = [(echo.own_key(under_a_footer(i, i + 1)), under_a_footer(i, i + 1))
+    probe = [(echo.own_key(under_a_footer(i, i + 1)), under_a_footer(i, i + 1),
+              f"p{i}@d{i}.example")
              for i in range(MAX_SOURCES)]
+    nothing = ("", "a held body that declared nothing", "p@nowhere.example")
     # A stranger, a forward of a held body, a body too short to declare, and a
     # held entry that declared nothing — the four answers `declaring` gives.
+    # Each is asked twice: once from an organisation nobody in the window
+    # belongs to (the block travels) and once from inside the window's own
+    # (it is furniture), so the classifier's two branches are both crossed.
     checked = [under_a_footer(99, 3), "FYI\n\n" + under_a_footer(3, 4),
                "Thanks!", DISCLAIMER]
     disagreements = sum(
-        _declaring_by(body, [("", "a held body that declared nothing"), *probe],
-                      BY_SEQUENCE)
-        != echo.declaring(body, [("", "a held body that declared nothing"),
-                                 *probe])
+        _declaring_by(body, [nothing, *probe], BY_SEQUENCE,
+                      origin=whom, classify=echo.travelled)
+        != echo.declaring(body, [nothing, *probe], origin=whom)
         for body in checked
+        for whom in ("me@elsewhere.example", "p3@d3.example")
     )
     print(f"  the rejected rules' skeleton, run with the shipped containment "
-          f"test,\n  disagrees with echo.declaring on {disagreements} of "
-          f"{len(checked)} probes.\n")
+          f"test and the\n  shipped classifier, disagrees with echo.declaring "
+          f"on {disagreements} of {len(checked) * 2} probes.\n")
 
     print("  flat   = the origin as a fourth union-find axis (story 17, first "
           "version)")

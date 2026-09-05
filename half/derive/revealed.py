@@ -765,7 +765,7 @@ class Run:
 
     # -- the scrubbed text, and how long it lives -----------------------------
 
-    def declares(self, label: str, body: object) -> str:
+    def declares(self, label: str, body: object, *, origin: object) -> str:
         """What an arriving body declares it is the same evidence as.
 
         **Asked before the candidate is built**, and that is the whole of why
@@ -796,6 +796,26 @@ class Run:
         second support. All three are the same shape — the original is not in
         hand — and all three are stated as behaviour rather than silently
         half-caught.
+
+        **Since story 19 the window carries each held body's origin**, and that
+        is the whole of this method's change. ``echo.declaring`` asks *who
+        carries the block two bodies share* — a block confined to one
+        organisation is that organisation's furniture and must not make two
+        messages one voice — and a window of texts alone cannot answer it. The
+        origin is not new state and nothing is stored for it: it is
+        ``Candidate.sender``, already on every held candidate and already on the
+        receipt, surfaced beside the text this list was carrying anyway.
+
+        ``origin`` is the **arriving** body's, and it is required rather than
+        defaulted for the reason ``Candidate.sender`` is: a caller that forgets
+        it is a ``TypeError``, where a default of ``""`` would classify every
+        block as furniture and hand story 18's defect back as a split — which
+        admits claims, the direction CAP-3 exists to prevent.
+
+        **The origin is read and never unioned on.** ``SAME_MOMENT_FIELDS``,
+        ``ORIGIN_AXIS`` and the two-level structure are untouched by this; what
+        comes back is still a key, and ``half.ingest.independence`` is still the
+        only place an origin decides an identity (story 17).
         """
         if not isinstance(body, Scrubbed):
             # The same refusal ``hold`` makes, for the same reason: this reads a
@@ -804,7 +824,9 @@ class Run:
         held = self._texts.get(label, ())
         return echo.declaring(
             body.text,
-            [(candidate.independence_key, text) for candidate, text in held],
+            [(candidate.independence_key, text, candidate.sender)
+             for candidate, text in held],
+            origin=origin,
         )
 
     def hold(self, candidate: Candidate, body: object) -> bool:
@@ -1346,7 +1368,15 @@ class Revealed:
             # digest above cannot see it; containment can, and this is the one
             # moment the body is in hand. Bounded by the held window and never
             # by the mailbox — see ``Run.declares``.
-            independence_key=into.declares(doing.label, body),
+            #
+            # **The origin is passed, not parsed.** Story 19 classifies the
+            # block two bodies share by asking who carries it, so the arriving
+            # body's origin travels alongside it — the same value the field
+            # above carries, handed over verbatim. Everything derived from it
+            # is derived inside ``half.ingest.echo`` and reaches no axis.
+            independence_key=into.declares(
+                doing.label, body, origin=receipt.sender
+            ),
         )
         if into.add(candidate):
             self._tally.candidates += 1

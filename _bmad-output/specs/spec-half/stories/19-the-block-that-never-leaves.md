@@ -2,7 +2,7 @@
 title: 'Story 19 — The block that never leaves one company'
 type: 'fix'
 created: '2026-09-05'
-status: 'in-progress'
+status: 'done'
 baseline_commit: 'defc730'
 review_loop_iteration: 0
 context:
@@ -131,12 +131,19 @@ and `Run._texts` currently does not surface alongside the text.
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] the origin-crossing classifier, bounded by `MAX_SOURCES` -- CAP-3
-- [ ] the held window carries each body's origin -- `Run.declares`
-- [ ] story 18's containment rule consulted, not replaced
-- [ ] every matrix row tested, the intra-company limit asserted as a limit
-- [ ] `tools/percolation_sim.py` -- the footer-only rows stop collapsing
-- [ ] story 17's and story 18's guards re-run, margins stated
+- [x] the origin-crossing classifier, bounded by `MAX_SOURCES` -- CAP-3
+      (`echo.travelled`, `echo.carrying`, `echo.organisation`)
+- [x] the held window carries each body's origin -- `Run.declares`, from
+      `Candidate.sender`; no new state, nothing persisted
+- [x] story 18's containment rule consulted, not replaced -- `declaring` still
+      answers containment first and narrows *first match* to *first travelling
+      match*, so strictly more of story 18's rule reaches its answer
+- [x] every matrix row tested, the intra-company limit asserted as a limit
+      (`test_a_forward_inside_one_company_is_not_caught`), plus a mutation guard
+      that fails the suite with the classifier switched off
+- [x] `tools/percolation_sim.py` -- the footer-only rows stop collapsing, with
+      the many-company control and the story-18 column beside them
+- [x] story 17's and story 18's guards re-run, margins stated below
 
 **Acceptance Criteria:**
 - Given a footer-only message and thirty notes carrying it from one origin,
@@ -174,3 +181,36 @@ decide must therefore fall back to story 18's answer, not to "independent".
 - `cd half && uv run --extra dev python tools/mailbox_sim.py` -- 0 of 5 miscounted
 - `cd half && uv run --extra dev python tools/admits_sim.py` -- the forward admits nothing
 - `cd half && git status --porcelain` -- clean after commit
+
+**Measured, at `a8a93bf` + this change:**
+
+- `pytest -q` — **5276 passed**, from 5260. CAP-3 gates **32 / 55 / 89**,
+  margin zero, floors raised in `.github/workflows/ci.yml`.
+- **Story 17's percolation margins are unmoved.** 50 messages / 40 people /
+  45 threads: flat 13, levels 24, no-3rd 28. 1000 / 100 / 400: flat 1, levels
+  285, no-3rd 341. The frozen matrix still has all three rules agreeing on 9 of
+  9 hand-built shapes.
+- **Story 18's numbers are unmoved.** `seq` one key per message at every density
+  and unbounded; `set` 475 of 500, 957 of 1000, 269 of 300; `frac` 3 at every
+  row.
+- **The footer-only rows resolve.** 31 messages with the block arriving first:
+  **31** voices where story 18 counted **1**; arriving sixth **31** where it
+  counted **5**. The eight-term line: **7** where it counted **1**, and **7**
+  where it counted **3**. Same in all nine scripts.
+- **The control that makes it a discriminator rather than a switch-off.** The
+  same bodies in the same order with every sender at a domain of their own read
+  1, 5, 1, 3 — exactly the story-18 column — because the block then crossed
+  organisations and is being passed on.
+- `tools/mailbox_sim.py` **0 of 5 miscounted**; `tools/admits_sim.py` the
+  forward counts 1 and admits nothing.
+- **Mutation-checked three ways.** Making `travelled` always answer yes, and
+  making `organisation` return the whole address, both fail `echo._check_rule`
+  at import by name. Deleting the classification from `declaring` leaves 13
+  cases red.
+
+**Residue, recorded in `deferred-work.md`:**
+
+- **LAUNCH-RELEVANT** — a forward inside one organisation counts as two
+  supports and crosses CAP-3's floor. Over-claiming, and stated up front.
+- A held body past the tokenizer's ceilings is a carrier `carrying` cannot see,
+  which biases the classification towards splitting — the same direction.

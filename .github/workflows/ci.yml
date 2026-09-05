@@ -1663,12 +1663,25 @@ jobs:
         # that the seven confound rows are still the rows they claim to be —
         # a count gate cannot tell seven "must not fire" cases from seven
         # trivially-firing replacements, so the ids and the scores are held.
+        #
+        # **Story 19 adds one, 54 -> 55**, and it is the whole of the parsing
+        # this project does to an address: `organisation` takes the part after
+        # the last `@` and derives nothing else — no public-suffix list, no
+        # subdomain folding, no plus-address stripping, no locale — and matches
+        # under `half.ingest.independence`'s own `_normalize`, so two spellings
+        # of one address agree here exactly as they agree there. The full
+        # address cannot be the unit: three people at one company are one
+        # organisation, and reading them as three would call a stapled footer a
+        # travelling block. The bounded-window case above was widened rather
+        # than replaced — `declaring` now cuts its window once and walks the
+        # cut, so the guard checks that every sequence walked *came from* the
+        # window, which is strictly more than the name it used to assert.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap3_structure -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-3 structural cases collected: $collected"
-          if [ "$collected" -lt 54 ]; then
+          if [ "$collected" -lt 55 ]; then
             echo "::error::the CAP-3 structural gate collected $collected cases; the scrub ordering, the threshold that nothing can lower, the closed vocabulary, the narrow holder, the tokenizer this rule is pinned to, the key that carries no body, or the confound rows the containment axis was chosen over has stopped being asserted"
             exit 1
           fi
@@ -1790,13 +1803,49 @@ jobs:
         # that `Run.hold`'s *displacement* creates, a forward still containing
         # its original once a secret is redacted in both, and Ge'ez added to
         # the script table the reader already carried.
+        #
+        # **Story 19 adds fifteen, 74 -> 89**, and one of story 18's recorded
+        # limits stops being one. The fan shape is closed by asking *who
+        # carries the block* rather than what it looks like: a legal footer is
+        # stapled by one organisation to its own outgoing mail and never leaves
+        # it, while a forwarded original travels between senders, which is what
+        # forwarding is. So the thirty-one messages that came to one voice come
+        # to thirty-one, in every script, and the eight-term footer line does
+        # too.
+        #
+        # What the fifteen hold. The rows that must still fire: one notice and
+        # eight forwards from eight organisations as one voice (the viral
+        # forward, which is the shape that inverts a frequency discount and a
+        # fan-refusal alike), and a forward carrying its forwarder's footer,
+        # where two blocks are present at once and must be classified apart.
+        # The rows that must not: the footer arriving alone, first and
+        # mid-stream, long and eight-term. The declines, which are the half a
+        # count gate cannot see: an origin that cannot be read declines rather
+        # than treating blankness as agreement (story 17's rule at a second
+        # level), and fewer than two carriers is nothing to classify from —
+        # both fall back to story 18's answer, which *merges*, because this
+        # rule can now cause a split and a split admits claims. The nine
+        # scripts, because the block is found with `half.text.terms` and
+        # classified on a domain and neither reads a language. And the
+        # mutation guard: the same mailbox run with the classifier switched off
+        # collapses back to story 18's one voice, so a suite that stopped
+        # measuring the classifier fails rather than staying green.
+        #
+        # **The residue it leaves is the more serious of the two directions and
+        # is pinned as a limit.** A forward that never leaves one organisation
+        # is indistinguishable from that organisation's furniture — on the only
+        # signal that works it *is* the same shape — so Half counts it as two
+        # supports and can admit a claim on one message that travelled inside
+        # one building. That is OVER-CLAIMING, the direction story 18 closed,
+        # and `test_a_forward_inside_one_company_is_not_caught` asserts it with
+        # its direction named and the cross-company pair beside it as control.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap3_axes -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-3 counting cases collected: $collected"
-          if [ "$collected" -lt 74 ]; then
-            echo "::error::the CAP-3 counting gate collected $collected cases; the percolation floor, the origin level, the blank origin, the third clause, the import-time guard, the containment axis and its confounds, or one of the recorded limits (a shared block arriving alone, the redacted sign-in, the first match, the held window's three ceilings) has stopped being asserted"
+          if [ "$collected" -lt 89 ]; then
+            echo "::error::the CAP-3 counting gate collected $collected cases; the percolation floor, the origin level, the blank origin, the third clause, the import-time guard, the containment axis and its confounds, the origin-crossing classifier and its declines, or one of the recorded limits (the intra-company forward, the redacted sign-in, the first match, the held window's three ceilings) has stopped being asserted"
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap3_axes

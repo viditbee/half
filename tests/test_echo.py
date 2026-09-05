@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -130,21 +131,51 @@ def a_sign_in_notice(code: str, *, browser: str, system: str, city: str) -> str:
             f"minutes. Requested from {browser} on {system} in {city}.")
 
 
-def a_run(*bodies: str, label: str = TRAVELS, hold: bool = True) -> Run:
+#: The organisation every sender in a one-company fixture belongs to. A domain
+#: rather than an address, because that is what story 19 reads: *three senders
+#: at one domain* is the shape a company footer has, and one address repeated
+#: would be a different case — story 17's origin level would make those thirty
+#: messages one support before this rule was ever asked.
+ONE_COMPANY = "corp.example"
+
+
+def a_run(*bodies: str, label: str = TRAVELS, hold: bool = True,
+          at: str | None = None, senders: Sequence[str] | None = None) -> Run:
     """A run with one candidate per body, through the shipped path.
 
     Each body is asked for its declaration **before** its candidate is built and
     held **after**, which is the order ``Revealed.observe`` uses and the order
     the whole rule depends on: a key derived after ``add`` lands where nothing
     counts it.
+
+    **Every body gets its own sender, and since story 19 its own organisation.**
+    ``at=None`` puts each message at a domain of its own, which is what a forward
+    between two people at two companies looks like and is the state story 19's
+    matrix calls *many origins*. ``at=ONE_COMPANY`` puts every sender at one
+    domain with a local part of its own — several people at one company, the
+    state the matrix calls *one origin*, and the shape a stapled legal footer
+    has.
+
+    The senders were ``p<n>@x`` for every fixture in this file before story 19,
+    which is *one* organisation: read that way, every forward case here was an
+    intra-company forward and the rule would have declined on all of them. The
+    distinction was invisible while nothing read the domain, and it is the whole
+    of what this rule reads, so it is a parameter rather than a constant.
+
+    ``senders`` names one per body, for the shapes neither default describes —
+    a notice crossing two companies while a footer stays inside one of them.
     """
     run = Run()
     for index, body in enumerate(bodies):
         scrubbed = scrub(body)
+        if senders is not None:
+            sender = senders[index]
+        else:
+            sender = f"p{index}@{at}" if at else f"p{index}@d{index}.example"
         candidate = Candidate(
             label=label, source_id=f"m{index}", thread_id=f"t{index}",
-            sender=f"p{index}@x", digest=f"d{index}",
-            independence_key=run.declares(label, scrubbed),
+            sender=sender, digest=f"d{index}",
+            independence_key=run.declares(label, scrubbed, origin=sender),
         )
         run.add(candidate)
         if hold:
@@ -556,8 +587,9 @@ def test_a_forward_read_under_another_label_is_not_caught():
         scrubbed = scrub(body)
         candidate = Candidate(
             label=label, source_id=f"m_{label}", thread_id=f"t_{label}",
-            sender=f"{label}@x", digest=f"d_{label}",
-            independence_key=run.declares(label, scrubbed),
+            sender=f"{label}@d_{label}.example", digest=f"d_{label}",
+            independence_key=run.declares(label, scrubbed,
+                                          origin=f"{label}@d_{label}.example"),
         )
         run.add(candidate)
         run.hold(candidate, scrubbed)
@@ -686,8 +718,19 @@ def test_the_comparison_is_bounded_by_the_held_window():
     It used to assert the literal string ``"for key, text in held"`` inside
     ``inspect.getsource``, which renaming either loop variable turns red for no
     reason and which a rule iterating something else entirely could satisfy by
-    keeping the line. What matters is that ``held`` is what is iterated, and
-    that is a name in the tree.
+    keeping the line. What matters is that ``held`` is what is walked, and that
+    is a name in the tree.
+
+    **Story 19 made the guard's first form too narrow, so it is widened rather
+    than dropped.** ``declaring`` now cuts the window into units once, before
+    the loop, and walks the cut — otherwise a classification per match would
+    re-tokenize the whole window per match and the cost would be quadratic in
+    it. So the loop's name is no longer literally ``held``. The rule the guard
+    keeps is the one it always meant: *every sequence this function walks comes
+    from the window it was handed*. That is strictly more than the old form
+    checked, because a comprehension over something else was invisible to it and
+    is not invisible now — and it is asserted of ``carrying`` too, which is the
+    second function story 19 gave a window to.
     """
     read: list[str] = []
 
@@ -695,12 +738,27 @@ def test_the_comparison_is_bounded_by_the_held_window():
         read.append(text)
         return list(text.split())
 
-    held = [(f"k{i}", f"Held body number {i} about item {i} on day {i + 1}.")
-            for i in range(MAX_SOURCES)]
-    echo.declaring(ORIGINALS["latin"], held, split=counting)
-    assert len(read) <= len(held) + 2, (
+    held = [(f"k{i}", f"Held body number {i} about item {i} on day {i + 1}.",
+             f"p{i}@d{i}.example") for i in range(MAX_SOURCES)]
+    echo.declaring(ORIGINALS["latin"], held, origin="me@mine.example",
+                   split=counting)
+    assert len(read) <= len(held) + 1, (
         f"one declaration read {len(read)} bodies against a window of "
-        f"{len(held)}; something is comparing outside the bound"
+        f"{len(held)}; something is comparing outside the bound, or the window "
+        "is being cut more than once per arrival"
+    )
+
+    # **And a window every body matches costs the same**, which is the half
+    # story 19 could have broken: a classification per match, each re-reading
+    # the window, is quadratic in it. One notice and a window of forwards of it.
+    read.clear()
+    notice = ORIGINALS["latin"]
+    carried = [(f"k{i}", f"Passing this on, note {i}." + SEPARATOR + notice,
+                f"p{i}@d{i}.example") for i in range(MAX_SOURCES)]
+    echo.declaring(notice, carried, origin="me@mine.example", split=counting)
+    assert len(read) <= len(carried) + 1, (
+        f"a window of {len(carried)} bodies that every one of them matches cost "
+        f"{len(read)} readings; the window is being cut once per match"
     )
 
     # And the window itself is the ceiling, so the two bounds are the same one.
@@ -710,14 +768,54 @@ def test_the_comparison_is_bounded_by_the_held_window():
         "the run held more bodies than MAX_SOURCES, so the comparison is no "
         "longer bounded by the ceiling this rule leans on"
     )
-    tree = ast.parse(inspect.getsource(echo.declaring))
-    iterated = {node.iter.id for node in ast.walk(tree)
-                if isinstance(node, ast.For) and isinstance(node.iter, ast.Name)}
-    assert iterated == {"held"}, (
-        f"declaring iterates {sorted(iterated)}; the one thing it may walk is "
-        "the window it was handed, and anything else is a second source of "
-        "bodies the caller did not bound"
-    )
+    for function, window in ((echo.declaring, "held"), (echo.carrying, "window")):
+        assert _walks_only(function, window), (
+            f"{function.__name__} walks something that did not come from "
+            f"{window!r}; the one thing it may read is the window it was "
+            "handed, and anything else is a second source of bodies the caller "
+            "did not bound"
+        )
+
+
+def _walks_only(function, window: str) -> bool:
+    """Whether every sequence ``function`` walks comes from ``window``.
+
+    A ``for`` loop and a comprehension both count as walking, because the whole
+    reason the old form of this guard needed widening is that ``declaring`` now
+    reads its window in a comprehension. A name is allowed if it *is* the window
+    or if it was bound, in this function, from something already allowed —
+    which is what makes a cut of the window allowed and a second list of bodies
+    not.
+    """
+    tree = ast.parse(inspect.getsource(function))
+    allowed = {window}
+
+    def source(node) -> str | None:
+        """The name a walked iterable came from, or ``None`` if it is not one."""
+        return node.id if isinstance(node, ast.Name) else None
+
+    for node in ast.walk(tree):
+        # A comprehension binding: ``window = [... for ... in held]``.
+        if isinstance(node, ast.Assign) and isinstance(
+            node.value, ast.ListComp | ast.SetComp | ast.GeneratorExp
+        ):
+            drawn = {source(gen.iter) for gen in node.value.generators}
+            if drawn <= allowed and len(node.targets) == 1:
+                allowed |= {source(node.targets[0])} - {None}
+        # An annotated one: ``window: list[Cut] = [...]``.
+        if isinstance(node, ast.AnnAssign) and isinstance(
+            node.value, ast.ListComp | ast.SetComp | ast.GeneratorExp
+        ):
+            drawn = {source(gen.iter) for gen in node.value.generators}
+            if drawn <= allowed:
+                allowed |= {source(node.target)} - {None}
+
+    walked = {source(node.iter) for node in ast.walk(tree)
+              if isinstance(node, ast.For)}
+    walked |= {source(gen.iter) for node in ast.walk(tree)
+               if isinstance(node, ast.ListComp | ast.SetComp | ast.GeneratorExp)
+               for gen in node.generators}
+    return bool(walked) and walked <= allowed
 
 
 @pytest.mark.cap3_structure
@@ -729,10 +827,12 @@ def test_the_run_refuses_a_body_that_is_not_scrubber_output():
     property of the shape rather than of the call order.
     """
     run = Run()
-    assert run.declares(TRAVELS, ORIGINALS["latin"]) == ""
-    assert run.declares(TRAVELS, None) == ""
-    assert run.declares(TRAVELS, b"bytes") == ""
-    assert run.declares(TRAVELS, scrub(ORIGINALS["latin"])).startswith(
+    whom = "a@one.example"
+    assert run.declares(TRAVELS, ORIGINALS["latin"], origin=whom) == ""
+    assert run.declares(TRAVELS, None, origin=whom) == ""
+    assert run.declares(TRAVELS, b"bytes", origin=whom) == ""
+    assert run.declares(TRAVELS, scrub(ORIGINALS["latin"]),
+                        origin=whom).startswith(
         echo.PREFIX
     )
 
@@ -975,63 +1075,354 @@ def test_a_body_past_the_tokenizer_ceiling_declines_rather_than_raising():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# the collapse this rule cannot see, pinned as an accepted limit
+# the block that never leaves one company — story 19's rows
 # ═════════════════════════════════════════════════════════════════════════════
 
 
 @pytest.mark.cap3_axes
-def test_a_shared_block_arriving_as_its_own_message_collapses_the_mailbox():
-    """**The known limit, asserted as behaviour rather than left to be found.**
+def test_a_footer_arriving_as_its_own_message_no_longer_collapses_the_mailbox():
+    """**Story 19's matrix rows one and two, and the defect they close.**
 
-    The module's safety argument is that containment chains only with itself, so
+    Story 18's safety argument was that containment chains only with itself, so
     a chain of containments is a genuine chain of derivation. That covers the
-    *chain* shape and only the chain shape. The shape it does not cover is a
+    *chain* shape and only the chain shape. The shape it did not cover is a
     **fan**: A inside B and A inside C, where B and C share nothing but A. Both
-    adopt A's handle and the two become one voice.
+    adopted A's handle and the two became one voice — and A is any block a
+    mailbox repeats, needing only to arrive as a message of its own, which a
+    legal footer, a policy notice or a signature routinely does.
 
-    A is any block a mailbox repeats, and it only has to arrive as a message of
-    its own — which a legal footer, a policy notice or a signature routinely
-    does. The three shapes below are measured through the shipped path and the
-    numbers are the ones this build produces, not the ones it should.
+    **The three shapes below are the ones story 18 measured, with the numbers it
+    recorded named beside the ones this build produces**, because the whole
+    point of the fix is which of the two you get. Every sender is a different
+    person at one company, which is what a stapled footer's carriers are.
 
-    **This is a recorded limit and not an xfail.** An xfail says *"we intend to
-    fix this"*; four candidate fixes were measured and every one of them inverts
-    on a real shape (see the module docstring and ``deferred-work.md``), so what
-    is intended is that this stays visible. **The direction of harm is
-    merging**: Half under-counts supports and admits *fewer* claims, which is
-    the conservative direction and the opposite of the over-claiming defect this
-    rule was written to close. A future edit that changes any number here has
-    changed the rule and owes an explanation either way.
+    The rule is not about what the block looks like. It is about who carries it:
+    a footer never leaves the organisation that staples it, and a forwarded
+    original travels between senders, which is what forwarding *is*.
     """
     note_one = "Can you send me the offsite deck before Thursday?"
     note_two = "The invoice for August has been approved by finance."
 
-    # One: the footer arrives between two notes that carry it. Truth is three.
+    # One: the footer arrives between two notes that carry it. Story 18: one.
     trio = a_run(note_one + "\n\n" + DISCLAIMER, DISCLAIMER,
-                 note_two + "\n\n" + DISCLAIMER)
-    assert voices(trio) == 1, (
-        "the footer-only message no longer collapses the two notes around it; "
-        "if that is a fix rather than a fixture edit, this case should be "
-        "rewritten to assert three and the residue closed"
+                 note_two + "\n\n" + DISCLAIMER, at=ONE_COMPANY)
+    assert voices(trio) == 3, (
+        "the footer-only message still collapses the two notes around it; "
+        "story 18 counted one voice here and the truth is three"
     )
 
     # Two: thirty strangers under one footer, and the footer as a message.
-    # Where it lands in the arrival order is where the damage stops, because
-    # the window it can reach is what it has already been compared against.
+    # Story 18: one when it arrives first, five when it arrives sixth — the
+    # damage stopping where the block landed in the arrival order.
     mail = [under_a_footer(i, i % 28 + 1) for i in range(30)]
-    assert voices(a_run(DISCLAIMER, *mail)) == 1, "arriving first: truth is 31"
-    assert voices(a_run(*mail[:5], DISCLAIMER, *mail[5:])) == 5, (
-        "arriving sixth: truth is 31, and five is the five that were already "
-        "past it"
+    assert voices(a_run(DISCLAIMER, *mail, at=ONE_COMPANY)) == 31, (
+        "arriving first: story 18 counted one voice for thirty-one messages"
+    )
+    assert voices(a_run(*mail[:5], DISCLAIMER, *mail[5:], at=ONE_COMPANY)) == 31, (
+        "arriving sixth: story 18 counted five"
     )
 
-    # Three: and it does not need a long footer. Eight distinct terms — one
-    # over MIN_TERMS — does the same thing, which is why raising the floor is
-    # not the lever it looks like.
+    # Three: and it never needed a long footer. Eight distinct terms — one over
+    # MIN_TERMS — did the same thing, which is why raising the floor was never
+    # the lever it looked like.
     assert len(frozenset(echo.units(FOOTER_LINE))) == 8
     six = [under_a_footer(i, i % 28 + 1, FOOTER_LINE) for i in range(6)]
-    assert voices(a_run(FOOTER_LINE, *six)) == 1, "arriving first: truth is 7"
-    assert voices(a_run(*six[:3], FOOTER_LINE, *six[3:])) == 3
+    assert voices(a_run(FOOTER_LINE, *six, at=ONE_COMPANY)) == 7, (
+        "arriving first: story 18 counted one"
+    )
+    assert voices(a_run(*six[:3], FOOTER_LINE, *six[3:], at=ONE_COMPANY)) == 7, (
+        "mid-stream: story 18 counted three"
+    )
+
+
+@pytest.mark.cap3_axes
+def test_the_same_mailbox_collapses_again_with_the_classifier_switched_off():
+    """**The mutation guard: this suite must fail without the classifier.**
+
+    A fix that cannot be switched off cannot be shown to be doing anything. The
+    classifier is a parameter of ``declaring`` for the same reason the tokenizer
+    is — so a case can run the shipped rule with it disabled and watch story
+    18's numbers come back — and *disabled* here means the honest thing: a
+    classifier that answers *"it travelled"* for every block, which is exactly
+    what story 18 did by never asking.
+
+    The numbers on the right of each assertion are story 18's own, quoted from
+    the case above.
+    """
+    mail = [under_a_footer(i, i % 28 + 1) for i in range(30)]
+    always = staticmethod(lambda origins: True).__func__
+
+    def keys(*bodies: str, classify) -> int:
+        """Distinct declared handles, through ``declaring`` and its window."""
+        held: list[tuple[str, str, str]] = []
+        declared = []
+        for index, body in enumerate(bodies):
+            whom = f"p{index}@{ONE_COMPANY}"
+            key = echo.declaring(body, held, origin=whom, classify=classify)
+            if len(held) < MAX_SOURCES:
+                held.append((key, body, whom))
+            declared.append(key)
+        return len(set(declared))
+
+    assert keys(DISCLAIMER, *mail, classify=echo.travelled) == 31
+    assert keys(DISCLAIMER, *mail, classify=always) == 1, (
+        "the footer no longer collapses the mailbox even with the classifier "
+        "answering yes to everything, so this suite is not measuring the "
+        "classifier and would stay green if it were deleted"
+    )
+    # And the row the classifier must *not* change: a genuine forward across
+    # two organisations is one voice either way.
+    original = ORIGINALS["latin"]
+    for rule in (echo.travelled, always):
+        held = [(echo.own_key(original), original, "billing@svc.example")]
+        assert echo.declaring(forwarded(original), held,
+                              origin="asst@work.example",
+                              classify=rule) == echo.own_key(original)
+
+
+@pytest.mark.cap3_axes
+def test_one_notice_and_eight_forwards_from_eight_origins_are_one_voice():
+    """**Matrix row four: the inversion that killed two candidate rules.**
+
+    A viral forward is the shape that inverts a frequency discount and a
+    fan-refusal alike: at eight copies of one notice the forwarded body itself
+    starts to look like boilerplate, so any rule that fires on *how often a
+    block is seen* switches its defence off exactly when the truth is one voice.
+
+    Origin-crossing does not invert on it, because eight carriers at eight
+    organisations is the most travelling a block can do. One voice, and the
+    ``ready`` half matters as much: the run must not pay for a generation over
+    one message that was passed around.
+    """
+    notice = ORIGINALS["latin"]
+    carried = [f"Passing this on, {i}." + SEPARATOR + notice for i in range(8)]
+    run = a_run(notice, *carried)
+    assert len(run.supports(TRAVELS)) == 9, "nine messages, nine candidates"
+    assert voices(run) == 1, (
+        "one notice and eight forwards of it from eight organisations counted "
+        "as more than one support"
+    )
+    assert not run.ready(TRAVELS)
+    keys = {candidate.independence_key for candidate in run.supports(TRAVELS)}
+    assert len(keys) == 1, "one notice being passed on declared nine handles"
+
+
+@pytest.mark.cap3_axes
+def test_a_forward_carrying_a_footer_too_is_one_voice():
+    """**Matrix row five: both blocks present at once, classified separately.**
+
+    A forward wraps the original and the forwarder's own company staples its
+    legal footer to it, so one message carries two shared blocks: one that
+    travelled between two companies and one that never left the second. The two
+    must be classified apart, or a forward carrying a footer would be decided by
+    whichever block happened to match first.
+
+    Four messages, and the senders are the whole fixture: the notice comes from
+    a billing service, the forward and the two footer-carrying messages all come
+    from the company that forwarded it. So the notice's carriers cross an
+    organisation and the footer's do not.
+    """
+    notice = ORIGINALS["latin"]
+    wrapped = forwarded(notice) + "\n\n" + DISCLAIMER
+    stapled = ("Reminder: the quarterly return is due on Friday.\n\n"
+               + DISCLAIMER)
+    run = a_run(notice, wrapped, DISCLAIMER, stapled,
+                senders=("billing@svc.example", "asst@work.example",
+                         "legal@work.example", "hr@work.example"))
+    keys = [candidate.independence_key for candidate in run.supports(TRAVELS)]
+    assert keys[1] == keys[0], (
+        "the forward stopped adopting the notice once a footer arrived beside "
+        "it, so the two blocks are being decided as one"
+    )
+    assert len({keys[0], keys[2], keys[3]}) == 3, (
+        "the footer-only message or the message carrying it adopted something; "
+        "a block that never leaves one company is that company's furniture"
+    )
+    assert voices(run) == 3, (
+        "the truth is three voices — the notice and its forward as one, and "
+        "the two messages the footer is stapled to standing for themselves"
+    )
+
+
+@pytest.mark.cap3_axes
+def test_a_forward_inside_one_company_is_not_caught():
+    """**Matrix row six: the limit this leaves, and it is the serious one.**
+
+    A forward that never leaves one organisation looks exactly like that
+    organisation's furniture, because on the only signal that works it *is* the
+    same shape: one block, carriers all at one domain. Half counts it as two
+    supports where the truth is one.
+
+    **The direction of harm is OVER-CLAIMING**, which is the direction story 18
+    was written to close and the opposite of the residue story 18 left. That
+    makes it the more serious of the two and it is recorded here rather than
+    buried: a claim can now be admitted on one message that travelled, provided
+    it never left the building.
+
+    Asserted against the same two bodies from two organisations, so the only
+    difference between one voice and two is who carried them.
+    """
+    original = ORIGINALS["latin"]
+    inside_one = a_run(original, forwarded(original), at=ONE_COMPANY)
+    assert voices(inside_one) == 2, (
+        "an intra-company forward is one voice again; if that is a fix rather "
+        "than a fixture edit, this case should assert one and the residue is "
+        "closed"
+    )
+    assert {c.independence_key for c in inside_one.supports(TRAVELS)} == {
+        echo.own_key(scrub(original).text),
+        echo.own_key(scrub(forwarded(original)).text),
+    }, "the two declared something other than their own handles"
+
+    # The same pair across two organisations: one voice. The bodies are
+    # identical; only the senders differ.
+    assert voices(a_run(original, forwarded(original))) == 1
+
+    # And it crosses CAP-3's floor, which is what makes it over-claiming rather
+    # than merely wrong: two supports is exactly what admits a claim.
+    assert MIN_INDEPENDENT == 2
+    assert inside_one.ready(TRAVELS), (
+        "the intra-company forward no longer crosses the admission floor, so "
+        "the direction of this residue is not what this case says it is"
+    )
+
+
+@pytest.mark.cap3_axes
+def test_an_origin_that_cannot_be_read_declines_rather_than_agreeing():
+    """**Matrix row eight: story 17's blank-origin rule, at a second level.**
+
+    A missing origin is not an identity, and it is not agreement either. Were
+    blankness agreement, a mailbox whose ``from`` headers could not be read
+    would classify every block as one organisation's furniture and hand story
+    18's defect back **as a split** — which admits claims rather than
+    withholding them, the direction CAP-3 exists to prevent.
+
+    So an origin this cannot read declines, and declining means story 18's
+    answer: the voices stay merged. Every shape that cannot be read is here,
+    including the one that is not blank at all — a sender with no ``@`` in it,
+    which is a name rather than an address and tells nothing about a company.
+    """
+    for unreadable in ("", "   ", None, "Billing Team", "@nolocal.example",
+                       "nolocal@"):
+        assert echo.organisation(unreadable) is None, repr(unreadable)
+        assert echo.travelled(("a@one.example", unreadable)), (
+            f"{unreadable!r} was read as agreement with a@one.example, so a "
+            "mailbox with unreadable senders would split rather than merge"
+        )
+    # Through the shipped path: a forward whose sender cannot be read is still
+    # one voice with its original, because the rule declined to classify it.
+    original = ORIGINALS["latin"]
+    run = Run()
+    for index, (body, whom) in enumerate(
+        ((original, "billing@svc.example"), (forwarded(original), ""))
+    ):
+        scrubbed = scrub(body)
+        candidate = Candidate(
+            label=TRAVELS, source_id=f"m{index}", thread_id=f"t{index}",
+            sender=whom, digest=f"d{index}",
+            independence_key=run.declares(TRAVELS, scrubbed, origin=whom),
+        )
+        run.add(candidate)
+        run.hold(candidate, scrubbed)
+    keys = {candidate.independence_key for candidate in run.supports(TRAVELS)}
+    assert len(keys) == 1, (
+        "a forward with an unreadable sender declared its own handle; blankness "
+        "was treated as agreement and the pair split"
+    )
+
+
+@pytest.mark.cap3_axes
+def test_one_carrier_is_nothing_to_classify_from():
+    """**Matrix row seven: below two carriers the rule has no question to ask.**
+
+    A block seen once has not been shown to stay anywhere. There is no answer to
+    *"does this leave the organisation"* from a single carrier, so the rule
+    declines and story 18's answer stands unchanged — which merges, the
+    direction that withholds claims rather than admitting them.
+
+    Unreachable from ``declaring``, where a containment match always puts at
+    least the arriving body and the body it matched in the carrier set. It is a
+    guard on the predicate rather than a shape in the mail, and it is asserted
+    here so that a future caller reaching it gets the conservative answer rather
+    than whatever falls out of an empty set.
+    """
+    assert echo.travelled(()) is True
+    assert echo.travelled(("a@one.example",)) is True
+    assert echo.travelled(("",)) is True
+    # Two carriers is where the question starts being answerable, and both
+    # answers are here so neither is the default.
+    assert echo.travelled(("a@one.example", "b@two.example")) is True
+    assert echo.travelled(("a@one.example", "b@one.example")) is False
+
+
+@pytest.mark.cap3_structure
+def test_the_organisation_is_the_domain_and_nothing_else_is_parsed():
+    """**The one derivation this rule makes from an origin.**
+
+    Three people at one company are one organisation with three addresses, which
+    is why the full address cannot be the unit: story 19's whole discriminator
+    would answer *"three origins, it travelled"* for a footer that never left
+    the building. So the part after the last ``@`` is taken — and nothing else
+    is. No public-suffix list, no subdomain folding, no known-provider table, no
+    plus-address stripping, and no locale anywhere.
+
+    ``_normalize`` is ``half.ingest.independence``'s own, so two spellings of one
+    address match here exactly as they match there and for the same reason.
+    """
+    assert echo.organisation("billing@service.example") == "service.example"
+    # Story 17's address-spelling row, at the second level: casefolded under NFC.
+    assert echo.organisation("A@X.Com") == echo.organisation("a@x.com")
+    # A display name is tolerated because the last @ is inside the brackets.
+    assert echo.organisation("Billing <billing@service.example>") == (
+        "service.example"
+    )
+    assert echo.organisation('"Doe, John" <john@corp.example>') == "corp.example"
+    # Nothing is folded: a subdomain is a different string, and that is the
+    # conservative direction — it makes a block look like it travelled, which
+    # merges, rather than like furniture, which splits.
+    assert echo.organisation("a@mail.corp.example") != (
+        echo.organisation("b@corp.example")
+    )
+    # And no plus-address parsing: the local part is never read at all.
+    assert echo.organisation("a+tag@corp.example") == "corp.example"
+    # Worldwide: an internationalised domain is a string like any other, and no
+    # script is special-cased.
+    assert echo.organisation("संपर्क@उदाहरण.भारत") == "उदाहरण.भारत"
+
+
+@pytest.mark.cap3_axes
+@pytest.mark.parametrize("script", sorted(ORIGINALS))
+def test_the_classification_gives_the_same_answers_in_every_script(script):
+    """**Matrix row nine: scriptio continua and combining marks change nothing.**
+
+    The block is found with ``half.text.terms`` and classified on the sender's
+    domain, and neither reads a language. So the same two answers must come out
+    in all nine writing systems: a footer that never leaves one company keeps
+    every message its own voice, and a notice forwarded between two companies is
+    one voice — the second of which is already story 18's row, asserted again
+    here beside the first so the pair is measured on one fixture.
+
+    A rule green on Latin alone would be dead for a large share of the world and
+    nothing would say so.
+    """
+    block = ORIGINALS[script]
+    assert len(frozenset(echo.units(block))) >= echo.MIN_TERMS, (
+        f"the {script} block is too short to declare anything, so this row "
+        "measures nothing"
+    )
+    # The block arriving alone in front of three messages that carry it, every
+    # sender a different person at one company: every message its own voice.
+    notes = [f"Note {i}.\n\n{block}" for i in range(3)]
+    assert voices(a_run(block, *notes, at=ONE_COMPANY)) == 4, (
+        f"a {script} block stapled by one company collapsed the messages "
+        "carrying it"
+    )
+    # The same four bodies, each from a different company: the block travelled,
+    # so they are one voice. Only the senders differ between the two runs.
+    assert voices(a_run(block, *notes)) == 1, (
+        f"a {script} block carried between four companies stopped being one "
+        "voice"
+    )
 
 
 @pytest.mark.cap3_axes
@@ -1123,8 +1514,9 @@ def test_a_body_arriving_after_its_label_generated_declares_its_own_handle():
     run = Run()
     scrubbed = scrub(original)
     candidate = Candidate(label=TRAVELS, source_id="m0", thread_id="t0",
-                          sender="a@x", digest="d0",
-                          independence_key=run.declares(TRAVELS, scrubbed))
+                          sender="a@one.example", digest="d0",
+                          independence_key=run.declares(TRAVELS, scrubbed,
+                                                        origin="a@one.example"))
     run.add(candidate)
     assert run.hold(candidate, scrubbed)
     assert run.holding == 1
@@ -1134,13 +1526,15 @@ def test_a_body_arriving_after_its_label_generated_declares_its_own_handle():
     assert run.holding == 0
 
     forward = scrub(forwarded(original))
-    assert run.declares(TRAVELS, forward) == echo.own_key(forward.text), (
+    assert run.declares(TRAVELS, forward,
+                        origin="b@two.example") == echo.own_key(forward.text), (
         "a body arriving after the generation adopted something, so a text "
         "outlived its label's one generation"
     )
     later = Candidate(label=TRAVELS, source_id="m1", thread_id="t1",
-                      sender="b@x", digest="d1",
-                      independence_key=run.declares(TRAVELS, forward))
+                      sender="b@two.example", digest="d1",
+                      independence_key=run.declares(TRAVELS, forward,
+                                                    origin="b@two.example"))
     run.add(later)
     assert not run.hold(later, forward), "a generated label held a body again"
     assert voices(run) == 2, "the ceiling is a second support, by construction"
@@ -1179,10 +1573,12 @@ def test_an_original_displaced_at_the_ceiling_leaves_its_forward_nothing():
         for index, body in enumerate(bodies):
             scrubbed = scrub(body)
             thread = "t0" if (redundant and index == 1) else f"t{index}"
+            sender = f"p{index}@d{index}.example"
             candidate = Candidate(
                 label=TRAVELS, source_id=f"m{index}", thread_id=thread,
-                sender=f"p{index}@x", digest=f"d{index}",
-                independence_key=run.declares(TRAVELS, scrubbed),
+                sender=sender, digest=f"d{index}",
+                independence_key=run.declares(TRAVELS, scrubbed,
+                                              origin=sender),
             )
             run.add(candidate)
             run.hold(candidate, scrubbed)

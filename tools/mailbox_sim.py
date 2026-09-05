@@ -148,17 +148,24 @@ def counted(ms: list[Message]) -> int:
     the time the rule sees them. A simulation comparing the unredacted text
     cannot see that and would have reported a mailbox the product does not have.
 
+    **And the window carries each held body's origin**, because story 19's rule
+    reads it: a block confined to one organisation is that organisation's
+    furniture, and a block that crosses organisations is being passed on. The
+    forward row below is the one that depends on it — ``billing@service.example``
+    to ``assistant@work.example`` is two organisations, so the notice is still
+    one voice.
+
     The window is ``MAX_SOURCES`` in size, as ``Run.hold`` bounds it. It appends
     until full where ``hold`` displaces; the difference does not reach any shape
     here, since no group is larger than the window.
     """
-    held: list[tuple[str, str]] = []
+    held: list[tuple[str, str, str]] = []
     sources = []
     for m in ms:
         body = scrub(m.body.decode("utf-8", errors="replace")).text
-        key = echo.declaring(body, held)
+        key = echo.declaring(body, held, origin=m.sender)
         if len(held) < MAX_SOURCES:
-            held.append((key, body))
+            held.append((key, body, m.sender))
         sources.append((m.external_id, {
             "thread_id": m.thread_id, "sender": m.sender,
             "digest": f"d_{m.external_id}", "independence_key": key,

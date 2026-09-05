@@ -33,6 +33,14 @@ SEPARATOR = ("\n\n---------- Forwarded message ----------\n"
 #: vocabulary, and a rule that scored the fraction would call them one voice.
 #: Long on purpose — the longer the shared block, the higher the score between
 #: two messages that share nothing else.
+#:
+#: **Since story 19 it is also the furniture fixture**, and the two roles are the
+#: same text on purpose. What decides which it is is not in this string at all:
+#: a footer carried only by senders at one domain is that company's furniture,
+#: and the same footer carried across domains is a block being passed on. So the
+#: senders a case gives its messages are as much the fixture as the body is, and
+#: a case that leaves them at one domain is asserting *one origin* whether or not
+#: it meant to.
 DISCLAIMER = (
     "This electronic mail message and any attachments transmitted with it are "
     "confidential and privileged information intended solely for the use of "
