@@ -22,7 +22,13 @@ So two rules hold here now, and they are the point of the file:
 
 from __future__ import annotations
 
+import ast
+import inspect
+from pathlib import Path
+
 import pytest
+
+from half.ingest import independence
 
 from half.ingest.independence import (
     IDENTITY_FIELDS,
@@ -483,3 +489,44 @@ def test_the_module_refuses_axes_that_collide(axes, expected, monkeypatch):
     with pytest.raises(ValueError) as raised:
         _check_axes()
     assert expected in str(raised.value)
+
+
+def _called_at_import(source: str, name: str) -> int:
+    """How many times ``name()`` is called at a module's top level.
+
+    Counted rather than ``any``-ed, so a renamed function is a **dead anchor
+    that fails** — zero — rather than a scan that quietly watches nothing.
+    """
+    tree = ast.parse(source)
+    return sum(
+        1 for node in tree.body
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name) and node.value.func.id == name
+    )
+
+
+@pytest.mark.cap3_axes
+def test_the_guard_is_actually_run_when_the_module_is_imported():
+    """A guard nothing calls is a comment.
+
+    ``_check_axes`` has its own cases above, and every one of them calls it by
+    hand — so deleting the call at the bottom of the module leaves all of them
+    green and leaves the guard switched off. Found in the module's own syntax
+    tree, because that is the only place the difference between *defined* and
+    *called at import* is visible.
+    """
+    module = Path(inspect.getfile(independence)).read_text("utf-8")
+    assert _called_at_import(module, "_check_axes") == 1, (
+        "half/ingest/independence.py no longer runs its axis guard at import"
+    )
+
+
+@pytest.mark.cap3_axes
+def test_the_import_scan_finds_nothing_where_there_is_nothing():
+    """**The bypass case for the scan itself**, so a mutation of the finder is
+    red by name here rather than turning the case above into a guard that can
+    only ever pass. A call inside a function is not a call at import, and a
+    call to something else is not this one."""
+    assert _called_at_import("def f():\n    _check_axes()\n", "_check_axes") == 0
+    assert _called_at_import("_check_something_else()\n", "_check_axes") == 0
+    assert _called_at_import("_check_axes()\n", "_check_axes") == 1

@@ -100,6 +100,7 @@ from half.derive.revealed import (
 from half.errors import DeriveError
 from half.governance import ladder
 from half.ingest import pipeline as ingesting
+from half.ingest.independence import IDENTITY_FIELDS, identity_set
 from half.ingest.pipeline import Pipeline, Receipt
 from half.ingest.port import Message
 from half.ingest.scrub import scrub
@@ -509,6 +510,102 @@ def test_a_forward_of_the_same_content_is_one_support():
     assert len(run.supports(TRAVELS)) == 2
     assert run.ready(TRAVELS) is False
     assert run.admitted() == ()
+
+
+@pytest.mark.cap3
+def test_a_newsletter_from_one_sender_admits_no_claim():
+    """**Story 17's defect, at the layer it actually lived at.**
+
+    Eight mailings from one shop, eight threads, eight contents, eight bodies —
+    driven through the real reader, so the sender has to survive the whole trip
+    from ``Receipt`` to ``Candidate`` to ``identity()`` to the union-find.
+
+    Every other case in this file is green with the origin axis absent from
+    ``Candidate.identity``, because their fixtures differ on the thread and the
+    digest as well. **This one is the only case that is not**, which is exactly
+    how the axis was dropped one layer below the union-find and stayed dropped
+    for eleven stories: the data was on the receipt, the tests supplied it, and
+    nothing carried it across.
+    """
+    reader, holder, _, writer = a_reader()
+    run = observe(
+        reader,
+        [receipt(k, thread=f"t_news_{k}", sender="deals@shop.example")
+         for k in range(8)],
+        texts=[f"a booking, offer {k}" for k in range(8)],
+    )
+    assert holder.calls == 8, "the bodies were not all read"
+    assert len(run.supports(TRAVELS)) == 8, "eight messages, eight supports"
+    assert run.ready(TRAVELS) is False, (
+        "one shop mailing eight times was treated as a group worth a "
+        "generation; the newsletter is corroborating itself"
+    )
+    assert writer.calls == 0
+    assert run.admitted() == ()
+
+
+@pytest.mark.cap3
+def test_two_senders_each_mailing_four_times_are_two_supports_not_eight():
+    """The other side of the same rule, and the one that says the fix collapses
+    what shares an origin rather than everything.
+
+    Two businesses, four mailings each, eight threads. Two groups — so a claim
+    is admitted and its count is **two**, not eight. Were the origin axis to
+    collapse unrelated addresses, this would be one group and Half would say
+    nothing at all, which is the failure that looks like restraint.
+    """
+    reader, _, _, writer = a_reader()
+    run = observe(
+        reader,
+        [receipt(k, thread=f"t{k}",
+                 sender="booking@airline.example" if k < 4
+                 else "stay@hotel.example")
+         for k in range(8)],
+        texts=[f"a booking {k}" for k in range(8)],
+    )
+    claims = run.admitted()
+    assert len(claims) == 1
+    assert claims[0].independent == 2, (
+        "eight mailings from two businesses were not two independent supports"
+    )
+    assert writer.calls == 1
+
+
+@pytest.mark.cap3_structure
+def test_the_sender_travels_from_the_receipt_to_the_candidate():
+    """**The seam the axis went missing at, asserted as a seam.**
+
+    ``Receipt`` has carried a sender since story 3 and ``Candidate`` dropped
+    it, so the union-find could not have collapsed on an origin however the
+    identity table was written. Three things, each of which alone is enough to
+    lose the axis again:
+
+    * the candidate carries the receipt's sender **verbatim** — no domain, no
+      plus-address, no display name, nothing parsed;
+    * ``identity()`` supplies it under the key ``IDENTITY_FIELDS`` reads, so a
+      rename on either side is a dropped axis rather than a quiet mismatch;
+    * and an empty sender arrives as empty rather than as something invented,
+      which is what leaves ``identity_set`` free to skip it.
+    """
+    reader, _, _, _ = a_reader()
+    given = receipt(0, thread="t1", sender="Deals@Shop.Example")
+    run = observe(reader, [given])
+    candidate = run.supports(TRAVELS)[0]
+    assert candidate.sender == given.sender, "the sender did not travel"
+    key, identity = candidate.identity()
+    assert key == given.external_id
+    assert identity["sender"] == given.sender
+    assert set(identity) == {"thread_id", "sender", "digest"}
+    assert dict(IDENTITY_FIELDS)["sender"] == "origin", (
+        "the candidate supplies a key the identity table does not read"
+    )
+    # The bypass half: an absent sender travels as absent, so the union-find's
+    # own skip decides, and nothing here fabricates a handle for it.
+    blank = observe(a_reader()[0], [receipt(1, thread="t2", sender="")])
+    assert blank.supports(TRAVELS)[0].identity()[1]["sender"] == ""
+    assert "origin:" not in "".join(
+        identity_set(*blank.supports(TRAVELS)[0].identity())
+    )
 
 
 @pytest.mark.cap3
