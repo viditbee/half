@@ -2,7 +2,7 @@
 title: 'Story 17 — The axis that went missing'
 type: 'fix'
 created: '2026-09-05'
-status: 'in-progress'
+status: 'done'
 baseline_commit: '6acab8d'
 review_loop_iteration: 0
 context:
