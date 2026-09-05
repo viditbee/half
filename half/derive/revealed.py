@@ -103,6 +103,7 @@ from typing import Final
 from half.derive import particular
 from half.derive.claim import Derivers
 from half.errors import DeriveError
+from half.ingest import echo
 from half.ingest.independence import independent_groups
 from half.ingest.pipeline import Receipt
 from half.ingest.scrub import Scrubbed
@@ -449,25 +450,42 @@ class Candidate:
     #: *source* identity already collapses, and a mutation removing the content
     #: identity would be green — a guard that cannot fail.
     digest: str
+    #: **What this body declares it is the same evidence as.** The union-find's
+    #: *declared* same-moment axis, and the one axis here that is derived rather
+    #: than carried: ``half.ingest.echo`` answers it from the body while the
+    #: body is still in hand, and what travels is a one-way digest and never a
+    #: text (AD-13). ``""`` where the rule declined — a body too short to
+    #: compare, or one past the tokenizer's ceilings — which ``an_identity``
+    #: skips, so a declining body unions with nothing.
+    #:
+    #: Defaulted rather than required, unlike ``sender``: a caller with no body
+    #: in hand has nothing to derive it from, and every such caller is one that
+    #: wants no declaration. The sender is the opposite case — it is on the
+    #: receipt already, so forgetting it is a bug worth a ``TypeError``.
+    independence_key: str = ""
 
     def identity(self) -> tuple[str, Mapping[str, str]]:
         """This source, in the shape ``independent_groups`` reads.
 
-        Three fields are supplied under the keys ``half.ingest.independence``
-        reads — two that make two sources *the same moment*, and the sender,
+        Four fields are supplied under the keys ``half.ingest.independence``
+        reads — three that make two sources *the same moment*, and the sender,
         which is read at its own level — so a renamed field is a dropped axis
         rather than a quiet mismatch. The sender travels verbatim: an empty one
         is handed over as empty and ``origin_of`` answers ``None``, which is
         what stops every senderless source answering to one handle.
 
-        ``independence_key`` is deliberately not supplied. It exists for a
-        source that can *declare* what it is the same as; mail cannot, and
-        inventing one here would be a matching rule of exactly the kind this
-        story defers.
+        ``independence_key`` **is** supplied, and what fills it is
+        ``half.ingest.echo``: a forward contains the original, so the forward
+        declares the original's own handle and the two are one voice. Mail still
+        cannot declare anything by itself — the declaration is *derived* from
+        the body at ``Run.hold``, the one place a body exists — so this is a
+        containment rule rather than the matching-by-similarity CAP-3 has no use
+        for. An empty key travels as empty and unions nothing, which is what
+        leaves a body the rule declined on standing for itself.
         """
         return (self.source_id, {
             "thread_id": self.thread_id, "sender": self.sender,
-            "digest": self.digest,
+            "digest": self.digest, "independence_key": self.independence_key,
         })
 
 
@@ -699,6 +717,28 @@ class Run:
         self._budget -= 1
         return True
 
+    def counts(self, label: str, source_id: str) -> bool:
+        """Whether a candidate for this label and source would be counted.
+
+        **``add``'s two refusals, asked before the body is read.** Story 18 put
+        a tokenization of the arriving body and a walk of the whole held window
+        in front of the ``Candidate`` constructor, because the declared key has
+        to be a *constructor argument* — computing it after ``add`` answered
+        would put it where nothing counts it. So a redelivered message, or one
+        whose label nothing counts, would pay the entire cost of the containment
+        rule and then be dropped by the next line.
+
+        This is that gate, and ``add`` still makes both refusals itself: a
+        caller that forgets to ask must not be able to double-count. The
+        duplication is deliberate and it is the cheap direction — asking twice
+        costs a set lookup, and asking only here would make one message two
+        supports the first time somebody wrote a new call site.
+        """
+        return (
+            doing_named(label) is not None
+            and (label, source_id) not in self._seen
+        )
+
     def add(self, candidate: Candidate) -> bool:
         """Record one body's reading. Answers whether it was new.
 
@@ -725,6 +765,48 @@ class Run:
 
     # -- the scrubbed text, and how long it lives -----------------------------
 
+    def declares(self, label: str, body: object) -> str:
+        """What an arriving body declares it is the same evidence as.
+
+        **Asked before the candidate is built**, and that is the whole of why
+        this method exists rather than a line inside ``hold``. One ``Candidate``
+        instance is handed to ``add`` and then to ``hold``; ``add`` appends it to
+        the list ``ready`` and ``admitted`` count, ``hold`` appends it to the
+        held texts, and nothing counts *those*. A ``dataclasses.replace`` inside
+        ``hold`` — the tree's usual rebuild pattern — would therefore put the key
+        somewhere no counter reads it, and the rule would be green and inert.
+        Answering first makes the key a constructor argument, so there is nothing
+        to keep in sync and nothing to mutate on a frozen type.
+
+        **Where the body exists and nowhere else** (AD-13). The comparison is
+        against the bodies already held for this label — ``MAX_SOURCES`` of them
+        at most, which is the same window ``hold`` bounds — so there is no pass
+        over every candidate and nothing quadratic in a mailbox (story 9d). What
+        comes back is a key; the bodies stay where they were and are dropped when
+        the label generates.
+
+        **Three ceilings, not two, and the third is the one a reader misses.**
+        A label that has already generated holds no texts, so a body arriving
+        after it declares only its own handle and collapses nothing; a label
+        holds at most ``MAX_SOURCES`` texts, so an original that never reached
+        the window is not there to be adopted. The third is that ``hold``
+        *displaces* at that ceiling rather than refusing: a held original can be
+        evicted by a later source that brings independence, and a forward
+        arriving after the eviction finds nothing to adopt and stands as a
+        second support. All three are the same shape — the original is not in
+        hand — and all three are stated as behaviour rather than silently
+        half-caught.
+        """
+        if not isinstance(body, Scrubbed):
+            # The same refusal ``hold`` makes, for the same reason: this reads a
+            # body, so it takes the scrubber's own output type or nothing.
+            return ""
+        held = self._texts.get(label, ())
+        return echo.declaring(
+            body.text,
+            [(candidate.independence_key, text) for candidate, text in held],
+        )
+
     def hold(self, candidate: Candidate, body: object) -> bool:
         """Keep one candidate's scrubbed text for its label. Answers whether.
 
@@ -748,6 +830,16 @@ class Run:
         held ones do not have makes room by displacing one that brings none, and
         a source that brings none is simply not held. The whole comparison is
         ``independent_groups``' own, over at most ``MAX_SOURCES`` sources.
+
+        **Since story 18 that comparison reads the declared key as well**, since
+        ``independence_key`` is one of ``SAME_MOMENT_FIELDS`` and ``_groups`` is
+        ``independent_groups`` over ``Candidate.identity``. Two consequences
+        worth writing down. A forward arriving beside its original brings no
+        independence — it carries the original's key — so at the ceiling it is
+        refused rather than displacing anything, which is right. And an original
+        *can* be displaced by a later source that does bring independence, which
+        is what makes the third ceiling in ``declares`` reachable: the body a
+        forward would have adopted may already have been evicted when it lands.
         """
         if not isinstance(body, Scrubbed):
             return False
@@ -1231,6 +1323,15 @@ class Revealed:
         if doing is None:
             self._report()
             return None
+        if not into.counts(doing.label, receipt.external_id):
+            # **A redelivery, refused before it is paid for.** The declared key
+            # must exist before the candidate does, so the line below tokenizes
+            # this body and compares it against the whole held window — and for
+            # a message already counted for this label, every bit of that work
+            # lands on a candidate ``add`` drops on the next line. The gate is
+            # ``add``'s own, asked one step earlier; ``add`` still makes it.
+            self._report()
+            return None
         candidate = Candidate(
             label=doing.label,
             source_id=receipt.external_id,
@@ -1240,6 +1341,12 @@ class Revealed:
             # union-find, so there is exactly one place an address is compared.
             sender=receipt.sender,
             digest=receipt.digest,
+            # **Derived from the body, and asked before the candidate exists.**
+            # A forward is never byte-identical to what it forwards, so the
+            # digest above cannot see it; containment can, and this is the one
+            # moment the body is in hand. Bounded by the held window and never
+            # by the mailbox — see ``Run.declares``.
+            independence_key=into.declares(doing.label, body),
         )
         if into.add(candidate):
             self._tally.candidates += 1

@@ -99,9 +99,9 @@ from half.derive.revealed import (
 )
 from half.errors import DeriveError
 from half.governance import ladder
-from half.ingest import pipeline as ingesting
+from half.ingest import echo, pipeline as ingesting
 from half.ingest.independence import (
-    ORIGIN_AXIS, origin_of, same_moment_set,
+    ORIGIN_AXIS, independent_groups, origin_of, same_moment_set,
 )
 from half.ingest.pipeline import Pipeline, Receipt
 from half.ingest.port import Message
@@ -111,6 +111,7 @@ from half.retrieval.prefix import build_prefix
 from half.store.records import CLAIM, DERIVATION, DERIVED, LEDGER, SUBJECT
 from half.store.sources import LocalSourceStore
 from half.store.store import Store
+from tests.mailshapes import forwarded
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -150,6 +151,25 @@ SCRIPTS: dict[str, str] = {
     "amharic": "ማስያዣዎ ተረጋግጧል። ጉዞ መጋቢት 14።",
     "arabic": "تم تأكيد حجزك. المغادرة في 14 مارس.",
     "japanese": "ご予約が確定しました。3月14日出発。",
+}
+
+#: A **second** body in each of those scripts, about something else.
+#:
+#: Story 18 is why this exists. The script case used to read one body twice —
+#: the same sentence from two senders in two threads, the second with a
+#: zero-width space glued on so the digests differed — and called that two
+#: independent supports. It was two supports only because the content axis was a
+#: *byte* digest, which one invisible character defeats. Containment sees
+#: straight through that: two bodies made of the same words are one voice,
+#: correctly, and the case went red. The fix is a second body rather than a
+#: weaker rule, because what the case is about is the script and never the
+#: counting — and a fixture that needs two independent sources should carry two.
+SECOND_SCRIPTS: dict[str, str] = {
+    "latin": "The hotel has confirmed two nights from 14 March, room 508.",
+    "devanagari": "होटल ने चौदह मार्च से दो रातों की पुष्टि की है।",
+    "amharic": "ሆቴሉ ከመጋቢት 14 ጀምሮ ሁለት ሌሊት አረጋግጧል።",
+    "arabic": "أكد الفندق ليلتين اعتبارا من الرابع عشر من مارس.",
+    "japanese": "ホテルから三月十四日以降の二泊の確認が届きました。",
 }
 
 #: What a writer answers with, in each of those scripts.
@@ -626,7 +646,11 @@ def test_the_sender_travels_from_the_receipt_to_the_candidate():
     key, identity = candidate.identity()
     assert key == given.external_id
     assert identity["sender"] == given.sender
-    assert set(identity) == {"thread_id", "sender", "digest"}
+    # **Still an exact set, and it grew by exactly one.** Story 18 filled the
+    # declared axis story 15b left open; a subset check here would have let that
+    # arrive silently, and would let the next one arrive silently too.
+    assert set(identity) == {"thread_id", "sender", "digest",
+                             "independence_key"}
     # The second level reads exactly what travelled, normalised there and
     # nowhere else — so the value on the wire is the receipt's own spelling and
     # the matching rule stays `_normalize`'s.
@@ -663,6 +687,42 @@ def test_a_byte_identical_forward_never_reaches_the_reader(sources):
     assert holder.calls == 1, "the identical body was read twice"
     assert len(run.supports(TRAVELS)) == 1
     assert writer.calls == 0, "a claim was written from one source"
+    assert run.admitted() == ()
+
+
+@pytest.mark.cap3
+def test_a_real_forward_is_one_support_through_the_whole_pipeline(sources):
+    """**Story 18's defect, end to end.**
+
+    A real forward is not byte-identical — it wraps the original in ``FYI`` and a
+    separator — so it has its own digest, its own thread and its own sender, it
+    reaches the reader, and until story 18 it crossed CAP-3's admission floor of
+    two independent supports on **one** message that travelled.
+
+    Two bodies are read, because a forward genuinely is a second message. What
+    must not happen is a second *support*: the forward declares the original's
+    handle, the two are one voice, and nothing is written.
+    """
+    reader, holder, _, writer = a_reader()
+    original = ("Your subscription to the reading service renews on 1 October "
+                "for 499 rupees. The card ending 4242 is charged that day.")
+    # **The separator is `tests/mailshapes.py`'s**, not a third spelling of it.
+    # This file, `tests/test_echo.py` and `tools/admits_sim.py` each carried
+    # their own; an edit to one that did not reach the others would have left
+    # the suite and the sweep measuring two different mailboxes.
+    forward = forwarded(original)
+    run = pull([mail(0, original, thread="t_sub", sender="billing@svc.example"),
+                mail(1, forward, thread="t_fwd", sender="asst@work.example")],
+               reader, sources)
+    assert holder.calls == 2, "the forward was not read; it is a second message"
+    assert len(run.supports(TRAVELS)) == 2, "two messages, two candidates"
+    counted = independent_groups(c.identity() for c in run.supports(TRAVELS))
+    assert counted == 1, (
+        "a forward was counted as a second independent support, which is the "
+        "shape CAP-3 exists to refuse"
+    )
+    assert not run.ready(TRAVELS)
+    assert writer.calls == 0, "a claim was generated over one message and its echo"
     assert run.admitted() == ()
 
 
@@ -884,8 +944,12 @@ def test_mail_in_any_script_is_read_the_same_way(script, sources):
     written = IN_SCRIPT[script]
     reader, holder, _, writer = a_reader(writes=written)
     body = SCRIPTS[script]
+    # **Two different bodies, not one body twice.** See ``SECOND_SCRIPTS``: the
+    # earlier fixture repeated one sentence and relied on a zero-width space to
+    # keep the digests apart, which story 18's containment axis correctly reads
+    # as one voice. Two supports here must come from two messages.
     run = pull([mail(0, body, thread="t1"),
-                mail(1, body + "​", thread="t2", sender="b@y")],
+                mail(1, SECOND_SCRIPTS[script], thread="t2", sender="b@y")],
                reader, sources)
     claims = run.admitted()
     assert len(claims) == 1 and claims[0].independent == 2
@@ -2000,6 +2064,11 @@ def test_the_fixture_claim_is_not_a_quotation_of_any_fixture_body(script):
     assert not quotes(IN_SCRIPT[script], [SCRIPTS[script]])
     assert not quotes(A_CLAIM, list(SCRIPTS.values()))
     assert not quotes(ANOTHER_CLAIM, list(SCRIPTS.values()))
+    # The second body is held to the same rule, and to story 18's as well: a
+    # fixture pair that this axis collapsed would make the script case assert
+    # the *collapse* rather than the two supports it is written around.
+    assert not quotes(IN_SCRIPT[script], [SECOND_SCRIPTS[script]])
+    assert not echo.an_echo(SCRIPTS[script], SECOND_SCRIPTS[script])
 
 
 @pytest.mark.cap3_particular

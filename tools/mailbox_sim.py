@@ -18,8 +18,13 @@ from dataclasses import dataclass
 
 sys.path.insert(0, ".")
 
+from tests.mailshapes import forwarded
+
+from half.derive.particular import MAX_SOURCES
+from half.ingest import echo
 from half.ingest.port import Message
 from half.ingest.independence import independent_groups
+from half.ingest.scrub import scrub
 
 
 # ── the mailbox ───────────────────────────────────────────────────────────────
@@ -79,8 +84,10 @@ def a_realistic_mailbox() -> list[Message]:
     n += 1
     out.append(msg(n, thread="t_fwd", sender="assistant@work.example",
                    subject="Fwd: Subscription renewal",
-                   body=f"FYI\n\n---------- Forwarded message ----------\n{original}",
-                   day=16))
+                   # `tests/mailshapes.py`'s separator, not a fourth spelling
+                   # of it: what a forward looks like is the thing being
+                   # measured, so it lives in one place.
+                   body=forwarded(original), day=16))
 
     # 5. Mixed scripts, two genuinely independent senders.
     n += 1
@@ -125,11 +132,38 @@ def groups(mail: list[Message]) -> list[Group]:
 
 
 def counted(ms: list[Message]) -> int:
-    return independent_groups(
-        (m.external_id, {"thread_id": m.thread_id, "sender": m.sender,
-                         "digest": f"d_{m.external_id}"})
-        for m in ms
-    )
+    """What Half's union-find makes of these messages.
+
+    **The declared key is computed from the body, the way the shipped run
+    computes it.** This function used to synthesise a digest per message and
+    never look at ``m.body`` at all, so the containment rule — which reads
+    nothing but the body — was invisible to it and the forward row could not
+    move however the rule behaved. A simulation that cannot see the rule it is
+    measuring is a simulation of the fixture.
+
+    **And *the way the shipped run computes it* means through the scrubber.**
+    This read ``m.body`` raw while ``Run.declares`` compares ``Scrubbed.text``,
+    which is a different input: CAP-13 rewrites a one-time code to a fixed
+    marker, so two bodies that differ only in a redacted value are identical by
+    the time the rule sees them. A simulation comparing the unredacted text
+    cannot see that and would have reported a mailbox the product does not have.
+
+    The window is ``MAX_SOURCES`` in size, as ``Run.hold`` bounds it. It appends
+    until full where ``hold`` displaces; the difference does not reach any shape
+    here, since no group is larger than the window.
+    """
+    held: list[tuple[str, str]] = []
+    sources = []
+    for m in ms:
+        body = scrub(m.body.decode("utf-8", errors="replace")).text
+        key = echo.declaring(body, held)
+        if len(held) < MAX_SOURCES:
+            held.append((key, body))
+        sources.append((m.external_id, {
+            "thread_id": m.thread_id, "sender": m.sender,
+            "digest": f"d_{m.external_id}", "independence_key": key,
+        }))
+    return independent_groups(sources)
 
 
 def main() -> None:

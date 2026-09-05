@@ -1577,12 +1577,17 @@ jobs:
         # message rather than that something raised — and the append's cross-run
         # guard, which the re-ingest case never reached because the pipeline had
         # already skipped every message. A second case reaches it.
+        #
+        # Story 18 added one: a real forward, end to end through the pipeline.
+        # It is not the byte-identical case above — a forward wraps its original,
+        # so it has its own digest, reaches the reader, and until story 18 it
+        # crossed the admission floor on one message that travelled. 31 -> 32.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap3 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-3 admission cases collected: $collected"
-          if [ "$collected" -lt 31 ]; then
+          if [ "$collected" -lt 32 ]; then
             echo "::error::the CAP-3 gate collected $collected cases; the independence threshold, the honest count, the scrub ordering or the body scan has stopped being asserted"
             exit 1
           fi
@@ -1634,13 +1639,37 @@ jobs:
         # axis lost at. A probe that dropped it from `Candidate.identity` came
         # back green against the whole suite before that case existed, which is
         # what a structural rule with no case looks like.
+        #
+        # Story 18 added twelve, all in `tests/test_echo.py`: the tokenizer
+        # pinned by the three scriptio-continua scripts a whitespace one loses
+        # in silence, the key that carries no fragment of a body, the window
+        # bounded by MAX_SOURCES, the second door typed with the scrubber's own
+        # output, the key supplied as a constructor argument rather than
+        # replaced into a half nothing counts, and the import-time guards.
+        # 37 -> 49.
+        #
+        # **Story 18's review adds five, 49 -> 54**, and every one of them
+        # closes a rule that was described and not asserted: the tokenizer
+        # ceiling on the *asymmetric* shape (a forward is longer than its
+        # original, so the realistic case is the original fitting and the
+        # forward not — the existing case passed an oversized body on both
+        # sides and could not see it); that same ceiling's script dependence,
+        # measured, because `terms` emits grapheme clusters and an unspaced
+        # body declines at three quarters the length a Latin one does; that
+        # `TokenGrowthLimitError` is the *only* class `half.text` raises, read
+        # off its syntax tree, which is what makes `echo.units`' narrow catch
+        # safe; that the two script fixtures may not diverge, which is how
+        # Ge'ez was read through the reader and never through this rule; and
+        # that the seven confound rows are still the rows they claim to be —
+        # a count gate cannot tell seven "must not fire" cases from seven
+        # trivially-firing replacements, so the ids and the scores are held.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap3_structure -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-3 structural cases collected: $collected"
-          if [ "$collected" -lt 37 ]; then
-            echo "::error::the CAP-3 structural gate collected $collected cases; the scrub ordering, the threshold that nothing can lower, the closed vocabulary or the narrow holder has stopped being asserted"
+          if [ "$collected" -lt 54 ]; then
+            echo "::error::the CAP-3 structural gate collected $collected cases; the scrub ordering, the threshold that nothing can lower, the closed vocabulary, the narrow holder, the tokenizer this rule is pinned to, the key that carries no body, or the confound rows the containment axis was chosen over has stopped being asserted"
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap3_structure
@@ -1739,13 +1768,35 @@ jobs:
         # of it, every anchor asserted unique, `-rfE` so collection errors are
         # parsed as well as failures, and the failing case *names* recorded
         # rather than an exit code.
+        #
+        # Story 18 added twenty-six: the containment axis, every row of its
+        # matrix, and — the half that matters — the confounds it must *not*
+        # fire on, one shared legal footer among them, plus the mailbox of
+        # strangers under one footer that carries the rejected fractional rule's
+        # own counterexample. 41 -> 67.
+        #
+        # **Story 18's review adds seven, 67 -> 74**, six cases and one script.
+        # Three of them are *recorded limits* rather than passes, asserted as
+        # the behaviour this build has so that it is visible rather than
+        # hidden: a shared block arriving as its own message collapses the
+        # mailbox around it (the fan shape the chain argument does not cover —
+        # thirty-one messages to one voice, and four measured levers rejected,
+        # so it is recorded and not fixed); two sign-in notices from one
+        # machine become one voice once CAP-13 has redacted the code; and
+        # `declaring` returns on the first match, so a digest mail containing
+        # two held originals unions with one of them. All three merge voices,
+        # which is the conservative direction. The other four are ceilings and
+        # scripts: the ceiling after a label has generated, the third ceiling
+        # that `Run.hold`'s *displacement* creates, a forward still containing
+        # its original once a secret is redacted in both, and Ge'ez added to
+        # the script table the reader already carried.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap3_axes -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-3 counting cases collected: $collected"
-          if [ "$collected" -lt 41 ]; then
-            echo "::error::the CAP-3 counting gate collected $collected cases; the percolation floor, the origin level, the blank origin, the third clause or the import-time guard has stopped being asserted"
+          if [ "$collected" -lt 74 ]; then
+            echo "::error::the CAP-3 counting gate collected $collected cases; the percolation floor, the origin level, the blank origin, the third clause, the import-time guard, the containment axis and its confounds, or one of the recorded limits (a shared block arriving alone, the redacted sign-in, the first match, the held window's three ceilings) has stopped being asserted"
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap3_axes
