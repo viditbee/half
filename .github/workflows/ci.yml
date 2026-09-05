@@ -1719,7 +1719,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap3_axes -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-3 identity-axis cases collected: $collected"
-          if [ "$collected" -lt 34 ]; then
+          if [ "$collected" -lt 41 ]; then
             echo "::error::the CAP-3 identity-axis gate collected $collected cases; the origin axis, the blank origin that is never an identity, the namespacing or the import-time guard has stopped being asserted"
             exit 1
           fi
