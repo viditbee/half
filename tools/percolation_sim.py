@@ -1,7 +1,8 @@
 """Why the origin is a second level and not a fourth axis of the union-find.
 
 Story 17 restored the origin axis that story 3 lost. The first version added it
-to `IDENTITY_FIELDS` alongside the thread, which is what both upstream sources
+to the identity table (then `IDENTITY_FIELDS`, now `SAME_MOMENT_FIELDS`)
+alongside the thread, which is what both upstream sources
 say — and it shipped an outage, because **union-find is transitive across
 axes**: A shares a thread with B, B shares a sender with C, so A, B and C are
 one group. Above a low density of overlap that percolates into a single giant
