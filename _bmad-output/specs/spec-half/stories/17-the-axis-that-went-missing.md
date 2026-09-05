@@ -120,7 +120,7 @@ Both upstream sources say otherwise. The extraction manifest records the machine
 
 ## Evidence
 
-**Baseline `6acab8d`, 5178 tests green. After: 5201 green.** Purged bytecode and
+**Baseline `6acab8d`, 5178 tests green. After: 5202 green.** Purged bytecode and
 a re-asserted green baseline on both sides of every probe.
 
 **`tools/mailbox_sim.py`** — before, then after:
@@ -154,7 +154,18 @@ back green on the first pass and all three were real gaps, now closed:
 and candidate, and the guard's own call deleted from the bottom of the module.
 See commit `627f06e`.
 
-**CI floors diffed against the baseline file**: exactly one `28 -> 30`, one
+**CI floors diffed against the baseline file**: exactly one `28 -> 31`, one
 `36 -> 37`, one `34` added, and the other 48 byte-identical — including the
 CAP-5 floor of 28 eight steps above the CAP-3 one.
+
+**The empty-origin case, verified four ways**, because it is the one a reviewer
+should be hardest on and its failure is silence rather than a wrong answer:
+`an_identity` asserted directly as a predicate, with a bypass case; eight
+senderless sources counted as eight supports, parametrised over absent, empty,
+spaces and tabs; a mixed mailbox where blank sources do not drag a real one in
+with them; and — the one that matters to a person — a run over four receipts
+with **no sender at all** still admitting a claim. Four mutations that would
+each have produced the outage were probed and all four are red: a blank origin
+becoming an identity, the candidate inventing a constant origin, every address
+normalising to one value, and `_normalize` losing its casefold.
 

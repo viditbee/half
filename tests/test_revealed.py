@@ -571,6 +571,35 @@ def test_two_senders_each_mailing_four_times_are_two_supports_not_eight():
     assert writer.calls == 1
 
 
+@pytest.mark.cap3
+def test_a_mailbox_with_no_senders_at_all_still_admits():
+    """**The outage this fix could have been, at the product's own layer.**
+
+    A transport that parses no ``from`` header — every receipt's sender empty.
+    Were a blank origin an identity, all four sources would carry the handle
+    ``origin:``, union into one group, and Half would admit nothing from any
+    mailbox it could not read a sender out of. The symptom would not be a
+    crash or a wrong claim. It would be **silence**, which is indistinguishable
+    from Half having nothing to say, and it is the ordinary outcome here
+    already — so nothing else in this file would have gone red.
+
+    The unit rule has its own cases in ``tests/test_independence.py``. This one
+    exists because that rule holding and *a run still producing a claim* are
+    two different statements, and only the second is the one that matters to
+    somebody whose mail stopped being worth anything.
+    """
+    reader, _, _, writer = a_reader()
+    run = observe(
+        reader,
+        [receipt(k, thread=f"t{k}", sender="") for k in range(4)],
+        texts=[f"a booking {k}" for k in range(4)],
+    )
+    claims = run.admitted()
+    assert claims, "a mailbox with no senders admitted nothing at all"
+    assert claims[0].independent >= MIN_INDEPENDENT
+    assert writer.calls == 1
+
+
 @pytest.mark.cap3_structure
 def test_the_sender_travels_from_the_receipt_to_the_candidate():
     """**The seam the axis went missing at, asserted as a seam.**

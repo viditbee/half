@@ -1518,18 +1518,24 @@ jobs:
         #   main* unreachable, and the `cap3_particular` gate below is the rest
         #   of that story.
         #
-        # **The margin is deliberately zero: 30 selected, 30 required.** Every
+        # **The margin is deliberately zero: 31 selected, 31 required.** Every
         # case in this gate is the only one asserting its rule, which is the
         # condition under which a zero margin is right — and it is why no
         # existing floor was inflated instead. It also means every case added
         # here owes an edit to this number, which is why `cap3` is applied **per
         # case** rather than as a module-wide `pytestmark`.
         #
-        # **Story 17 adds two and the floor moves with them, 28 to 30**, so the
-        # margin does not grow. Both are the origin axis at the layer it went
-        # missing: eight mailings from one shop admit no claim, and two
-        # businesses mailing four times each are two supports rather than eight
-        # — the defect and its anti-outage half. They are here rather than in
+        # **Story 17 adds three and the floor moves with them, 28 to 31**, so
+        # the margin does not grow. All three are the origin axis at the layer
+        # it went missing: eight mailings from one shop admit no claim; two
+        # businesses mailing four times each are two supports rather than
+        # eight; and a mailbox whose receipts carry **no sender at all** still
+        # admits — the defect and its two anti-outage halves. That third one is
+        # the case a reviewer should be hardest on, because the failure mode of
+        # a collapsing fix is not a wrong claim, it is silence, and silence is
+        # the ordinary outcome here already: every other case in the file stays
+        # green while Half quietly stops finding two groups in any mailbox
+        # whose `from` header it could not read. They are here rather than in
         # `cap3_axes` because they are admission decisions through the real
         # reader; `cap3_axes` below is the union-find's own unit.
         #
@@ -1576,7 +1582,7 @@ jobs:
           collected=$(uv run --locked --extra dev pytest -m cap3 -q --collect-only \
             | grep -c '::' || true)
           echo "CAP-3 admission cases collected: $collected"
-          if [ "$collected" -lt 30 ]; then
+          if [ "$collected" -lt 31 ]; then
             echo "::error::the CAP-3 gate collected $collected cases; the independence threshold, the honest count, the scrub ordering or the body scan has stopped being asserted"
             exit 1
           fi
