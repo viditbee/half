@@ -316,10 +316,21 @@ def a_reader(answers=TRAVELS, *, gates=None, main=MAIN, sleep=0.0,
     return reader, read_holder, gate_holder, write_holder
 
 
-def receipt(index: int, *, thread="t1", digest=None, text="body") -> Receipt:
+def receipt(index: int, *, thread="t1", sender=None, digest=None,
+            text="body") -> Receipt:
+    """One receipt. **Distinct on every axis unless a case says otherwise.**
+
+    ``sender`` used to be the constant ``"a@x"`` here, and the union-find never
+    read it — so a case whose docstring said *two unrelated senders* was in
+    fact two messages from one, and would have been green either way. It
+    defaults per index for the reason ``digest`` and ``external_id`` do: a
+    fixture's default should make sources independent, so that every collapse
+    in this file is one a case asked for by repeating a value.
+    """
     return Receipt(
         digest=digest if digest is not None else f"d{index}",
-        external_id=f"m{index}", thread_id=thread, sender="a@x",
+        external_id=f"m{index}", thread_id=thread,
+        sender=sender if sender is not None else f"p{index}@x",
         subject="s", t=f"2026-08-{index + 1:02d}T00:00:00Z",
     )
 
@@ -343,17 +354,22 @@ def observe(reader, receipts, *, run=None, main=MAIN, text="a booking",
 
 
 def candidates(*specs, label=TRAVELS) -> Run:
-    """A run holding one candidate per ``(id, thread, digest)`` spec.
+    """A run holding one candidate per ``(id, thread, sender, digest)`` spec.
 
     **No scrubbed text and therefore no generation**, which is what makes it the
     right instrument for the questions that are purely about grouping —
     ``supports`` and ``ready`` — and the wrong one for any question about what a
     claim says. Those go through a reader.
+
+    **The sender is positional and has no default**, so a case cannot collapse
+    by origin without saying that it means to. A spec with a repeated sender is
+    a case about the origin axis; one with distinct senders is a case about
+    some other axis, and it says which by repeating that value instead.
     """
     run = Run()
-    for source_id, thread_id, digest in specs:
+    for source_id, thread_id, sender, digest in specs:
         run.add(Candidate(label=label, source_id=source_id,
-                          thread_id=thread_id, digest=digest))
+                          thread_id=thread_id, sender=sender, digest=digest))
     return run
 
 
@@ -387,9 +403,14 @@ class FakeMail:
                 yield message
 
 
-def mail(index, body, *, thread="t1", sender="a@x", subject="s", headers=None):
+def mail(index, body, *, thread="t1", sender=None, subject="s", headers=None):
+    """One inbound message. **Distinct on every axis unless a case says so**,
+    for the reason ``receipt`` above is: the sender is now an identity, and a
+    fixture whose default repeats it would collapse sources that no case asked
+    to have collapsed."""
     return Message(
-        external_id=f"m{index}", thread_id=thread, sender=sender,
+        external_id=f"m{index}", thread_id=thread,
+        sender=sender if sender is not None else f"p{index}@x",
         subject=subject,
         body=body if isinstance(body, bytes) else body.encode(),
         t=f"2026-08-{index + 1:02d}T00:00:00Z", headers=headers or {},
@@ -448,13 +469,18 @@ def test_ten_messages_sharing_a_thread_admit_no_claim():
     """**CAP-3's own sentence, as its own case.** *"No claim admitted from a
     single non-independent cluster of mentions."*
 
-    Ten distinct messages, ten distinct contents, one thread. The union-find
-    unions them all by ``thread`` and answers one, so nothing is admitted — and
-    a build that counted *supports* instead would admit here with a count of
-    ten, which is exactly the failure story 3 predicted: the belief set inflates
-    with echoes and *bounded* fails in the first noisy month.
+    Ten distinct messages, ten distinct contents, **ten distinct senders**, one
+    thread. The union-find unions them all by ``thread`` and answers one, so
+    nothing is admitted — and a build that counted *supports* instead would
+    admit here with a count of ten, which is exactly the failure story 3
+    predicted: the belief set inflates with echoes and *bounded* fails in the
+    first noisy month.
+
+    **The thread is the only axis that can be doing this**, which is why the
+    senders vary: with one sender the case would be green with the thread
+    identity deleted, and would be evidence for nothing.
     """
-    run = candidates(*((f"m{i}", "t1", f"d{i}") for i in range(10)))
+    run = candidates(*((f"m{i}", "t1", f"p{i}@x", f"d{i}") for i in range(10)))
     assert len(run.supports(TRAVELS)) == 10
     assert run.ready(TRAVELS) is False, (
         "ten messages in one thread were treated as a group worth a generation"
@@ -473,8 +499,13 @@ def test_a_forward_of_the_same_content_is_one_support():
     load-bearing rather than decorative: were the source id the digest, this
     would collapse by ``source`` instead and removing ``digest`` from
     ``Candidate.identity`` would still be green.
+
+    **The two senders differ and the two threads differ**, so content is the
+    only axis left that can collapse these — the case fails if the content
+    identity goes, and it also fails if the origin axis wrongly collapses two
+    unrelated addresses.
     """
-    run = candidates(("m0", "t1", "same"), ("m1", "t2", "same"))
+    run = candidates(("m0", "t1", "x@x", "same"), ("m1", "t2", "y@y", "same"))
     assert len(run.supports(TRAVELS)) == 2
     assert run.ready(TRAVELS) is False
     assert run.admitted() == ()
@@ -500,7 +531,7 @@ def test_a_byte_identical_forward_never_reaches_the_reader(sources):
 def test_one_message_admits_nothing():
     """Matrix row four. Never from one cluster, and one message is the smallest
     cluster there is."""
-    run = candidates(("m0", "t1", "d0"))
+    run = candidates(("m0", "t1", "x@x", "d0"))
     assert len(run.supports(TRAVELS)) == 1
     assert run.ready(TRAVELS) is False
     assert run.admitted() == ()
@@ -1286,7 +1317,8 @@ def test_the_claim_vocabulary_is_closed_and_is_never_the_bodys_words():
         assert doing_named(label) is None
     assert doing_named(TRAVELS) is DOINGS[0]
     assert Run().add(Candidate(label=NOTHING_DOING, source_id="m0",
-                               thread_id="t1", digest="d0")) is False
+                               thread_id="t1", sender="x@x",
+                               digest="d0")) is False
     assert set(LABELS) == {d.label for d in DOINGS} | {NOTHING_DOING,
                                                        DOING_UNSURE}
 
@@ -1336,9 +1368,9 @@ def test_one_message_read_twice_inside_a_run_is_one_support():
     run = Run()
     for _ in range(5):
         run.add(Candidate(label=TRAVELS, source_id="m0", thread_id="t1",
-                          digest="d0"))
+                          sender="x@x", digest="d0"))
     run.add(Candidate(label=TRAVELS, source_id="m1", thread_id="t2",
-                      digest="d1"))
+                      sender="y@y", digest="d1"))
     assert len(run.supports(TRAVELS)) == 2
     assert run.ready(TRAVELS) is True
 
@@ -2052,7 +2084,7 @@ def test_a_run_refuses_to_hold_anything_that_is_not_scrubber_output():
     """
     run = Run()
     candidate = Candidate(label=TRAVELS, source_id="m0", thread_id="t1",
-                          digest="d0")
+                          sender="x@x", digest="d0")
     for body in ("a plain string", b"bytes", None, {"text": "a dict"}):
         assert run.hold(candidate, body) is False
     assert run.holding == 0

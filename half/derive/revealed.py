@@ -416,13 +416,18 @@ def prompt_for(text: str, *, main_id: str) -> Prompt:
 class Candidate:
     """One body's reading: which claim, and the source that supports it.
 
-    **No body on this type, and no field one could travel in.** The three
-    strings here are a label from ``LABELS``, a message id and a thread id, and
-    the digest is the receipt's own — which is a digest of the *scrubbed* text
-    and is already what the source store is addressed by. So *"a reading
-    returns a decision and never content"* is a property of the type rather than
-    a promise about its callers, on exactly the terms ``half.derive.claim``'s
-    ``Derived`` holds it.
+    **No body on this type, and no field one could travel in.** The four
+    strings here are a label from ``LABELS``, a message id, a thread id and a
+    sender — all four already on the receipt — and the digest is the receipt's
+    own, which is a digest of the *scrubbed* text and is already what the
+    source store is addressed by. So *"a reading returns a decision and never
+    content"* is a property of the type rather than a promise about its
+    callers, on exactly the terms ``half.derive.claim``'s ``Derived`` holds it.
+
+    The sender is here for one reason: ``identity()`` is the only place the
+    union-find learns anything about a source, and a field the receipt carries
+    but the candidate drops is an axis the union-find can never see. That is
+    precisely how the origin axis went missing for eleven stories.
     """
 
     #: The ``Doing`` this body is evidence for. Always a member of ``DOINGS``.
@@ -432,6 +437,12 @@ class Candidate:
     source_id: str
     #: The thread it arrived in. One of the union-find's identities.
     thread_id: str
+    #: Who sent it — the receipt's own ``sender``, carried and never parsed.
+    #: The union-find's *origin* identity, and the one that makes a shop
+    #: mailing eight times one support rather than eight. Required rather than
+    #: defaulted: a caller that forgets it is a ``TypeError``, where a default
+    #: of ``""`` would silently drop the axis for that source alone.
+    sender: str
     #: The digest of the scrubbed body. The other identity, and **not** the same
     #: value as ``source_id`` on purpose: were the source id the digest, the
     #: union-find's *content* identity would collapse exactly the sources its
@@ -442,13 +453,20 @@ class Candidate:
     def identity(self) -> tuple[str, Mapping[str, str]]:
         """This source, in the shape ``independent_groups`` reads.
 
+        Three axes are supplied and the mapping keys are ``IDENTITY_FIELDS``'
+        own, so a renamed field is a dropped axis rather than a quiet mismatch.
+        The sender travels verbatim — an empty one is handed over as empty and
+        ``identity_set`` skips it, which is what stops every senderless source
+        unioning into one group.
+
         ``independence_key`` is deliberately not supplied. It exists for a
         source that can *declare* what it is the same as; mail cannot, and
         inventing one here would be a matching rule of exactly the kind this
         story defers.
         """
         return (self.source_id, {
-            "thread_id": self.thread_id, "digest": self.digest,
+            "thread_id": self.thread_id, "sender": self.sender,
+            "digest": self.digest,
         })
 
 
@@ -1216,6 +1234,10 @@ class Revealed:
             label=doing.label,
             source_id=receipt.external_id,
             thread_id=receipt.thread_id,
+            # Carried, never derived: no domain, no plus-address, no display
+            # name. The matching rule is `_normalize`'s and lives in the
+            # union-find, so there is exactly one place an address is compared.
+            sender=receipt.sender,
             digest=receipt.digest,
         )
         if into.add(candidate):
@@ -1708,8 +1730,11 @@ def consumer_for(
 
     Built here rather than at the composition root because the mapping from a
     receipt to a candidate's identity is the part that must be right: the source
-    id is the message, the identities are its thread and its content digest, and
-    getting that wrong is a union-find that collapses everything or nothing.
+    id is the message, the identities are its thread, its sender and its content
+    digest, and getting that wrong is a union-find that collapses everything or
+    nothing. An axis the receipt carries and the candidate drops is the second
+    of those, and it is invisible: every count stays plausible and every one is
+    too high.
 
     The returned coroutine never raises, so a body nothing could be derived from
     never costs the run its receipts.

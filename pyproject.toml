@@ -91,6 +91,7 @@ markers = [
     "cap3: the revealed ledger — a claim derived at ingest from a scrubbed body, admitted only when the union-find finds two independent groups behind it, citing the messages it came from",
     "cap3_particular: a claim worth hearing — generated from a group's scrubbed texts in half's own words, admitted only on the support that claim itself has, one generation per admitted claim, and no scrubbed text alive when the run ends",
     "cap3_structure: the single-case structural rules the revealed ledger rests on — scrub before derive on every path including a raise, a threshold nothing can lower, a count that is the union-find's answer and never the support size, a closed claim vocabulary, and a body that persists nowhere",
+    "cap3_axes: the identity axes corroboration collapses on — origin, thread, content and declared key, each case naming the one axis it rests on, a blank value that is never an identity, and the guard that refuses a table with no origin in it",
     "cap5_admission: a message is evidence and a claim is a belief — the four admission gates, each naming itself and reporting every refusal, the mark that keeps a message out of every belief path, and the three readers that still read it",
     "cap5_structure: the single-case structural rules the separation rests on — the closed derivation vocabulary, the doors that hand out claims, the narrow holder that cannot author a claim, and a derivation that never costs a reply",
     "offline: the suite reaches no network, asserted at the socket rather than by convention",
