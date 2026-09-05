@@ -1645,82 +1645,107 @@ jobs:
           fi
           uv run --locked --extra dev pytest -q -m cap3_structure
 
-      - name: 'CAP-3: the identity axes corroboration collapses on'
-        # A fourth gate on this capability, over the union-find's own unit, and
-        # it exists because for eleven stories the three gates above were green
-        # while the machinery was missing an axis.
+      - name: 'CAP-3: the two levels corroboration is counted at'
+        # A fourth gate on this capability, over the counting itself, and it
+        # exists because for eleven stories the three gates above were green
+        # while the machinery was missing an axis — and then, for one commit,
+        # green while it had one too many.
         #
-        # `IDENTITY_FIELDS` was thread, content, declared. The extraction
-        # manifest records the machinery as collapsing *"sources sharing
-        # origin, content hash, or publisher"* and story 3's frozen block says
-        # *"union-find over origin, content hash, and declared key"* — the
-        # implementation substituted the thread for the origin. So two messages
-        # from one sender in two threads were two independent supports, CAP-3
-        # admits at two, and a shop's newsletter corroborated itself. Measured
-        # by `tools/mailbox_sim.py` and `tools/admits_sim.py`, not argued.
+        # **The defect.** `IDENTITY_FIELDS` was thread, content, declared. The
+        # extraction manifest records the machinery as collapsing *"sources
+        # sharing origin, content hash, or publisher"* and story 3's frozen
+        # block says *"union-find over origin, content hash, and declared
+        # key"* — the implementation substituted the thread for the origin. So
+        # two messages from one sender in two threads were two independent
+        # supports, CAP-3 admits at two, and a shop's newsletter corroborated
+        # itself.
         #
-        # **Why no gate would have caught it, and why this one is shaped as it
-        # is.** `tests/test_independence.py` had no marker at all, so nothing
-        # here selected it; and it would not have helped, because its `source()`
-        # helper took a `sender`, stored it in the fixture dict, and
-        # `identity_set` never read it. Every case in the file *read* as though
-        # it exercised an origin axis and not one of them could have failed if
-        # the axis were removed. **A fixture supplying a field the
-        # implementation ignores is the eleventh way a check has passed for the
-        # wrong reason on this project, and the only one that survived eleven
-        # stories.**
+        # **The fix that was worse.** Adding the origin as a fourth union-find
+        # axis is what both upstream sources say, and it ships an outage.
+        # Union-find is transitive *across* axes: A shares a thread with B, B
+        # shares a sender with C, so A, B and C are one group. 300 messages
+        # from 60 people across 150 threads then count as **one** support, the
+        # gate never opens, and Half says nothing at all — which does not look
+        # like a bug, it looks like a careful product with nothing to report.
+        # Story 3's implementation left a comment saying precisely this; story
+        # 17 deleted it and reproduced the failure.
+        #
+        # So the origin is applied at a **second level**: union-find over the
+        # same-moment axes gives voices, then each voice answers to its single
+        # origin if it has one. A map has no transitive closure, so nothing
+        # chains and no density collapses a mailbox.
+        #
+        # **Why no gate would have caught either.** Every shape in the frozen
+        # matrix and in `tools/mailbox_sim.py` is two to thirty hand-built
+        # sources, and all three rules — the flat union-find, the two levels,
+        # and the two levels without their third clause — get every one of them
+        # right. `tools/percolation_sim.py` prints that agreement above the
+        # sweep where they diverge, because it is the whole lesson: the rules
+        # only disagree at a size no fixture reaches.
+        #
+        # **And the case written to prevent it could not fail.** Story 17's
+        # first version added `test_ten_senders_across_ten_threads_at_scale_
+        # stay_ten_supports` as the anti-outage guard and built it with one
+        # sender per thread — its own docstring said *"nothing is shared across
+        # a thread boundary"* — so the chaining that causes the collapse could
+        # not occur in it. It was green on the build that shipped the outage.
+        # That is the eleventh cause on this project (a fixture supplying a
+        # field the implementation ignores) arriving as a **twelfth**: a
+        # fixture built so the failure it guards against cannot happen in it.
         #
         # What this gate protects, each rule with no second case:
         #
+        #   that a **dense mailbox does not collapse** — 360 messages, 60
+        #   people, 210 threads, chained so the rejected flat rule returns
+        #   exactly one, asserted *in the case* alongside the shipped rule's
+        #   sixty. The rejected rule is carried in the test file so the density
+        #   is demonstrated rather than claimed, and a fixture that stopped
+        #   percolating would fail rather than pass quietly;
+        #   that the same shape **without solo threads** behaves the same, so
+        #   the case above cannot be satisfied by a rule keyed on solo threads
+        #   existing;
         #   that **one sender is one source** — a newsletter across eight
-        #   threads, and thirty messages across ten, which is the shape that
-        #   used to assert *ten*;
+        #   threads, and thirty messages across ten;
         #   that the axis collapses what **shares** an origin and not
-        #   everything — ten senders across ten threads stay ten, at the same
-        #   size, because the failure mode of a collapsing fix is that Half
-        #   finds one support everywhere, admits nothing and goes quiet, which
-        #   looks like restraint and is a bug;
+        #   everything;
         #   that **a blank origin is never an identity**, parametrised over
-        #   every shape a missing sender arrives in — absent, empty, spaces,
-        #   tabs — plus the mixed mailbox, where the subtler failure is blank
-        #   sources unioning and dragging a real one in with them;
-        #   that matching is `_normalize`'s and **nothing is parsed** — no
-        #   domain, no plus-address, no display name;
-        #   that the namespaces hold, now that an address shares a table with a
-        #   thread id and a digest;
-        #   that every case names **the one axis it rests on**: each asserts
-        #   what the same sources would count to with the origin gone, so a case
-        #   whose two numbers are equal says out loud that it is evidence for
-        #   the thread, the content or the declared key instead;
-        #   and that the import-time guard **runs** — found in the module's own
-        #   syntax tree, counted rather than `all`-ed so a rename is a dead
-        #   anchor that fails, with a bypass case for the scan and one for the
-        #   predicate, because a guard that is only ever red everywhere at once
-        #   names nothing.
+        #   every shape a missing sender arrives in, plus the mixed mailbox;
+        #   that a **conversation adds nothing when everyone in it already
+        #   wrote separately** — the third clause, which is the difference
+        #   between 500 messages from ten people counting as ten and counting
+        #   as 142. Over-counting is the mirror of the percolation and the
+        #   direction CAP-3 exists to refuse;
+        #   that the **two levels stay two** — `voices` groups by the
+        #   same-moment axes alone, asserted directly, because every
+        #   behavioural case reads both levels through one number and could not
+        #   say which of them moved;
+        #   that matching is `_normalize`'s and **nothing is parsed**;
+        #   that every case names **the one axis it rests on**, asserting what
+        #   the same sources would count to with the origin never read;
+        #   and that the import-time guard **runs and refuses the percolation
+        #   by name**, found in the module's own syntax tree, counted rather
+        #   than `all`-ed so a rename is a dead anchor that fails, with a
+        #   bypass case for the scan, one for the predicate in each direction,
+        #   and an assertion that the refusal's message points at the tool that
+        #   measures why — because a rule without its reason is undone again.
         #
-        # **The margin is zero: 34 selected, 34 required**, on the condition
+        # **The margin is zero: 41 selected, 41 required**, on the condition
         # that makes a zero margin right — every case is the only one asserting
         # its rule. Applied per case rather than as a module-wide `pytestmark`,
         # so a case added here owes an edit to this number.
         #
-        # **Eleven mutations were run against these before this gate was
-        # written**, each with a purged bytecode cache on both sides, a green
-        # baseline asserted either side of it, every anchor asserted unique,
-        # `-rfE` so collection errors are parsed as well as failures, and the
-        # failing case *names* recorded rather than an exit code. All eleven are
-        # red and every one is red **by name** somewhere. Three came back green
-        # first time and all three were real: `Candidate.identity` no longer
-        # supplying the sender, the sender blanked between the receipt and the
-        # candidate, and the guard's call deleted from the bottom of the module
-        # — the first two being story 17's own defect reintroduced one layer
-        # below the union-find, where nothing in 5,178 cases could see it.
+        # **Sixteen mutations were run against these**, each with a purged
+        # bytecode cache on both sides, a green baseline asserted either side
+        # of it, every anchor asserted unique, `-rfE` so collection errors are
+        # parsed as well as failures, and the failing case *names* recorded
+        # rather than an exit code.
         run: |
           set -euo pipefail
           collected=$(uv run --locked --extra dev pytest -m cap3_axes -q --collect-only \
             | grep -c '::' || true)
-          echo "CAP-3 identity-axis cases collected: $collected"
+          echo "CAP-3 counting cases collected: $collected"
           if [ "$collected" -lt 41 ]; then
-            echo "::error::the CAP-3 identity-axis gate collected $collected cases; the origin axis, the blank origin that is never an identity, the namespacing or the import-time guard has stopped being asserted"
+            echo "::error::the CAP-3 counting gate collected $collected cases; the percolation floor, the origin level, the blank origin, the third clause or the import-time guard has stopped being asserted"
             exit 1
           fi
           uv run --locked --extra dev pytest -q -m cap3_axes
